@@ -1,7 +1,6 @@
 {
   "name": "Camera Gallery Card",
-  "content_in_root": false,
   "filename": "camera-gallery-card.js",
-  "render_readme": true,
-  "type": "frontend"
+  "content_in_root": false,
+  "render_readme": true
 }
