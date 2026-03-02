@@ -803,8 +803,7 @@ class CameraGalleryCardEditor extends HTMLElement {
 
             <!-- ✅ max_media -->
             <div class="row">
-              <div class="lbl">Maximum items shown</div>
-              <div class="desc">This is the ONLY limit. Set 3 = you see 3. Set 10 = you see 10.</div>
+              <div class="lbl">Maximum thumbnails shown</div>
               <input class="input" id="maxmedia" type="number" min="1" max="2000" value="${maxMedia}" />
             </div>
           </div>
