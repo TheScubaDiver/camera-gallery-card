@@ -10,7 +10,7 @@ Browse `.jpg` snapshots and `.mp4` clips stored on your system — sorted by dat
   </tr>
 </table>
 
-> **Current version:** 1.1.0
+> **Current version:** 1.0.2
 
 ---
 
@@ -39,11 +39,12 @@ Browse `.jpg` snapshots and `.mp4` clips stored on your system — sorted by dat
 - 🎬 Inline video playback with auto-generated poster thumbnails
 - 📅 Day-by-day filtering with date navigation
 - 🔄 Dual source mode (File sensor or Media folder)
+- 📦 Maximum thumbnail option to control exactly how many items are loaded and displayed
 - ✅ Bulk select & delete mode (sensor mode only)
 - ⬇️ One-tap download for any file
 - 🕒 Configurable timestamp bar (top / bottom / hidden)
 - 🔆 Adjustable timestamp bar opacity
-- 🎨 Smart visual editor with automatic dropdowns
+- 🎨 Smart visual editor with dropdowns
 - 📱 Fully responsive, touch-friendly design
 
 ---
@@ -76,10 +77,12 @@ Browse `.jpg` snapshots and `.mp4` clips stored on your system — sorted by dat
 The gallery supports two ways of loading media:
 
 ### File Sensor Mode
+
 Uses a `sensor` entity with a `fileList` attribute.  
 This mode supports delete functionality.
 
 ### Media Folder Mode
+
 Loads files directly from Home Assistant’s Media Source browser.  
 Delete functionality is not available in this mode.
 
@@ -136,6 +139,7 @@ entity: sensor.<your_file_sensor_entity>
 delete_service: shell_command.<your_delete_service_name>
 preview_height: 320
 thumb_size: 140
+max_media: 200
 bar_position: top
 bar_opacity: 45
 preview_click_to_open: false
@@ -149,6 +153,7 @@ source_mode: media
 media_source: local/<your_media_folder>
 preview_height: 320
 thumb_size: 140
+max_media: 200
 bar_position: top
 bar_opacity: 45
 preview_click_to_open: false
@@ -188,6 +193,7 @@ Example:
 ## Troubleshooting
 
 **No media found**
+
 - Check sensor exists
 - Check `fileList`
 - Confirm files are in `/config/www/`
@@ -197,6 +203,12 @@ Example:
 ## License
 
 MIT © TheScubadiver
+
+---
+
+## Credits
+
+Built for the Home Assistant community.
 
 ---
 
@@ -217,6 +229,7 @@ Blader door `.jpg` snapshots en `.mp4` videoclips die lokaal op je systeem zijn 
 - 🎬 Inline video-afspelen met automatisch gegenereerde thumbnails  
 - 📅 Filteren per dag met datum-navigatie  
 - 🔄 Twee bronmodi (Bestandssensor of Media map)  
+- 📦 `max_media` optie om exact te bepalen hoeveel items worden geladen en weergegeven  
 - ✅ Bulk selecteren & verwijderen (alleen sensormodus)  
 - ⬇️ Bestanden downloaden met één tik  
 - 🕒 Instelbare tijdsbalk (boven / onder / verborgen)  
@@ -248,10 +261,12 @@ Blader door `.jpg` snapshots en `.mp4` videoclips die lokaal op je systeem zijn 
 ## Bronmodi
 
 ### Bestandssensor-modus
+
 Gebruikt een `sensor` met een `fileList` attribuut.  
 Ondersteunt verwijderen van bestanden.
 
 ### Media map-modus
+
 Laadt bestanden rechtstreeks vanuit Home Assistant Media Source.  
 Verwijderen is hier niet beschikbaar.
 
@@ -281,8 +296,10 @@ source_mode: sensor
 entity: sensor.jouw_gallery_sensor
 preview_height: 320
 thumb_size: 140
+max_media: 200
 bar_position: top
 bar_opacity: 45
+preview_click_to_open: false
 ```
 
 ---
@@ -319,6 +336,7 @@ Voorbeeld:
 ## Probleemoplossing
 
 **Geen media zichtbaar**
+
 - Controleer of de sensor bestaat  
 - Controleer of `fileList` gevuld is  
 - Controleer of bestanden in `/config/www/` staan  
