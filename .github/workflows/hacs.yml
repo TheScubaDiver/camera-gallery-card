@@ -13,6 +13,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: HACS validation
-        uses: hacs/action@v4
+        uses: hacs/action@main
         with:
           category: plugin
