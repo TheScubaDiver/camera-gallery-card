@@ -1,8 +1,8 @@
 /* camera-gallery-card-editor.js
- * v1.0.2
+ * v1.1.0
  */
 
-console.warn("CAMERA GALLERY EDITOR LOADED v1.0.2");
+console.warn("CAMERA GALLERY EDITOR LOADED v1.1.0");
 
 class CameraGalleryCardEditor extends HTMLElement {
   constructor() {
@@ -10,20 +10,29 @@ class CameraGalleryCardEditor extends HTMLElement {
     this._config = {};
     this.attachShadow({ mode: "open" });
 
+    this._favScrollTop = 0;
+    this._favWasOpen = false;
+
     this._raf = null;
 
     // media source dropdown cache
     this._mediaFolders = null; // array of folder choices (strings)
     this._mediaFoldersLoading = false;
 
-    // ✅ keep section open/close state across renders
-    // ✅ DEFAULT: only General open; the rest closed
+    // keep section open/close state across renders
     this._secOpen = {
       "sec-general": true,
       "sec-viewer": false,
       "sec-thumbs": false,
       "sec-tsbar": false,
     };
+
+    // compact checkbox picker UI state
+    this._favPickerOpen = false;
+    this._favQuery = "";
+
+    // ✅ focus restore state
+    this._focusState = null;
   }
 
   _scheduleRender() {
@@ -34,16 +43,71 @@ class CameraGalleryCardEditor extends HTMLElement {
   _stripAlwaysTrueKeys(cfg) {
     const next = { ...(cfg || {}) };
 
-    // ✅ this option is ALWAYS true in the card and should never be stored in config
+    // this option is ALWAYS true in the card and should never be stored in config
     if ("preview_close_on_tap" in next) delete next.preview_close_on_tap;
 
+    // legacy/old keys - ensure YAML stays clean
+    if ("filter_folders_enabled" in next) delete next.filter_folders_enabled;
+    if ("media_folder_filter" in next) delete next.media_folder_filter;
+    if ("media_folder_favorites" in next) delete next.media_folder_favorites;
+
     return next;
+  }
+
+  // ─── Light/dark detection ──────────────────────────────────────────
+  _parseCssColorToRgb(v) {
+    const s = String(v || "").trim().toLowerCase();
+    if (!s) return null;
+
+    const m = s.match(/rgba?\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)/);
+    if (m) return { r: +m[1], g: +m[2], b: +m[3] };
+
+    if (s.startsWith("#")) {
+      const hex = s.slice(1);
+      if (hex.length === 3) {
+        const r = parseInt(hex[0] + hex[0], 16);
+        const g = parseInt(hex[1] + hex[1], 16);
+        const b = parseInt(hex[2] + hex[2], 16);
+        return { r, g, b };
+      }
+      if (hex.length >= 6) {
+        const r = parseInt(hex.slice(0, 2), 16);
+        const g = parseInt(hex.slice(2, 4), 16);
+        const b = parseInt(hex.slice(4, 6), 16);
+        return { r, g, b };
+      }
+    }
+    return null;
+  }
+
+  _luminance({ r, g, b }) {
+    const srgb = [r, g, b].map((x) => {
+      x = x / 255;
+      return x <= 0.03928 ? x / 12.92 : Math.pow((x + 0.055) / 1.055, 2.4);
+    });
+    return 0.2126 * srgb[0] + 0.7152 * srgb[1] + 0.0722 * srgb[2];
+  }
+
+  _isLightTheme() {
+    try {
+      const cs = getComputedStyle(this);
+      const bg =
+        cs.getPropertyValue("--primary-background-color") ||
+        cs.getPropertyValue("--lovelace-background") ||
+        cs.backgroundColor ||
+        "";
+      const rgb = this._parseCssColorToRgb(bg);
+      if (!rgb) return false;
+      return this._luminance(rgb) > 0.6;
+    } catch (_) {
+      return false;
+    }
   }
 
   set hass(hass) {
     this._hass = hass;
 
-    // ✅ if user is interacting with inputs/selects, don't re-render (prevents dropdown closing)
+    // if user is interacting with inputs/selects, don't re-render (prevents dropdown closing)
     const ae = this.shadowRoot?.activeElement;
     const interacting =
       ae &&
@@ -53,27 +117,25 @@ class CameraGalleryCardEditor extends HTMLElement {
         ae.id === "height" ||
         ae.id === "thumb" ||
         ae.id === "maxmedia" ||
-        ae.id === "barop") &&
+        ae.id === "barop" ||
+        ae.id === "favquery") &&
       ae.matches(":focus");
 
     if (interacting) return;
 
-    // ✅ load media folders once
+    // load media folders once
     if (!this._mediaFolders && !this._mediaFoldersLoading) {
       this._loadMediaFolders();
     }
 
-    // ✅ throttle renders
     this._scheduleRender();
   }
 
   setConfig(config) {
-    // ✅ strip keys we never want persisted/shown in YAML
     this._config = this._stripAlwaysTrueKeys({ ...(config || {}) });
 
     // legacy cleanup (also on load)
     if ("shell_command" in this._config) {
-      // keep reading legacy elsewhere, but don't keep it in config
       const next = { ...this._config };
       delete next.shell_command;
       this._config = next;
@@ -93,15 +155,10 @@ class CameraGalleryCardEditor extends HTMLElement {
   }
 
   _set(key, value) {
-    // ✅ never allow this key to exist in config (prevents YAML showing it)
-    if (key === "preview_close_on_tap") {
-      // silently ignore
-      return;
-    }
+    // never allow this key to exist in config (prevents YAML showing it)
+    if (key === "preview_close_on_tap") return;
 
     this._config = { ...this._config, [key]: value };
-
-    // ✅ always strip keys that should never be stored
     this._config = this._stripAlwaysTrueKeys(this._config);
 
     // legacy cleanup always
@@ -124,8 +181,6 @@ class CameraGalleryCardEditor extends HTMLElement {
 
   _looksLikeFile(relPath) {
     const v = String(relPath || "");
-    // If it's a full media-source id, don't classify as file by extension heuristics here.
-    // (Frigate paths often have no extension and weird trailing slashes)
     if (v.startsWith("media-source://")) return false;
 
     const last = v.split("/").pop() || "";
@@ -146,13 +201,7 @@ class CameraGalleryCardEditor extends HTMLElement {
   _prettyLabel(choiceValue) {
     const v = String(choiceValue || "");
     if (!v) return "";
-
-    // For full ids, show readable path (strip prefix)
-    if (v.startsWith("media-source://")) {
-      return this._toRel(v);
-    }
-
-    // For regular relative paths
+    if (v.startsWith("media-source://")) return this._toRel(v);
     return v;
   }
 
@@ -179,9 +228,9 @@ class CameraGalleryCardEditor extends HTMLElement {
         media_content_id,
       });
 
-    const getChildren = (res) => (Array.isArray(res?.children) ? res.children : []);
+    const getChildren = (res) =>
+      Array.isArray(res?.children) ? res.children : [];
 
-    // Strict: accept only folders (or unknown type but NOT file-like)
     const isFolder = (item) => {
       const mc = item?.media_class;
       const mct = item?.media_content_type;
@@ -197,20 +246,16 @@ class CameraGalleryCardEditor extends HTMLElement {
       const id = String(media_content_id || "").trim();
       if (!id) return "";
 
-      // If it’s the classic media_source tree, store as relative (keeps your old behavior)
       if (id.startsWith("media-source://media_source/")) {
         const rel = this._toRel(id).replace(/^media_source\//, "");
         return rel;
       }
 
-      // Otherwise (frigate etc): store full media_content_id so the card can use it directly
       if (id.startsWith("media-source://")) return id;
 
-      // Fallback: if HA ever returns without prefix
       return id;
     };
 
-    // ✅ provider blacklist (hide these roots + everything under them)
     const shouldSkip = (media_content_id) => {
       const store = normStoreValue(media_content_id);
       const label = this._prettyLabel(store);
@@ -220,9 +265,6 @@ class CameraGalleryCardEditor extends HTMLElement {
     try {
       const folderSet = new Set();
 
-      // ✅ Browse BOTH roots:
-      // - media-source://media_source  -> local/*
-      // - media-source://              -> other providers like frigate/*
       const rootIds = [];
       for (const root of ["media-source://media_source", "media-source://"]) {
         try {
@@ -234,10 +276,10 @@ class CameraGalleryCardEditor extends HTMLElement {
         } catch (_) {}
       }
 
-      // unique rootIds + filter blacklist
-      const uniqRootIds = Array.from(new Set(rootIds)).filter((rid) => !shouldSkip(rid));
+      const uniqRootIds = Array.from(new Set(rootIds)).filter(
+        (rid) => !shouldSkip(rid)
+      );
 
-      // Add roots themselves as selectable folders (if they are not file-like)
       for (const rid of uniqRootIds) {
         if (shouldSkip(rid)) continue;
 
@@ -246,7 +288,6 @@ class CameraGalleryCardEditor extends HTMLElement {
         if (label && !this._looksLikeFile(label)) folderSet.add(store);
       }
 
-      // Depth 1 + 2 only (prevents mega lists)
       for (const rid of uniqRootIds) {
         if (shouldSkip(rid)) continue;
 
@@ -270,7 +311,6 @@ class CameraGalleryCardEditor extends HTMLElement {
 
           if (!id1) continue;
 
-          // depth 2
           try {
             const level2 = await browse(id1);
             const kids2 = getChildren(level2);
@@ -292,13 +332,15 @@ class CameraGalleryCardEditor extends HTMLElement {
         const aa = this._prettyLabel(a);
         const bb = this._prettyLabel(b);
 
-        // local first
         const aLocal = aa === "local" || aa.startsWith("local/");
         const bLocal = bb === "local" || bb.startsWith("local/");
         if (aLocal && !bLocal) return -1;
         if (!aLocal && bLocal) return 1;
 
-        return aa.localeCompare(bb, undefined, { numeric: true, sensitivity: "base" });
+        return aa.localeCompare(bb, undefined, {
+          numeric: true,
+          sensitivity: "base",
+        });
       });
     } catch (e) {
       this._mediaFolders = [];
@@ -308,11 +350,86 @@ class CameraGalleryCardEditor extends HTMLElement {
     }
   }
 
+  _prettyMediaFolderLabel(p) {
+    const key = String(p || "")
+      .replace(/\/+$/g, "")
+      .toLowerCase();
+
+    const parts = key.split("/").filter(Boolean);
+    const last = parts.pop() || "";
+
+    // Special Frigate cases
+    if (last === "clips") return "Clips";
+    if (last === "snapshots") return "Snapshots";
+    if (last === "event-search") return "Event Search";
+
+    return last
+      .replace(/[-_]/g, " ")
+      .replace(/\b\w/g, (c) => c.toUpperCase());
+  }
+
+  // ✅ ONE favorites key (array): media_folders_fav
+  _getFavFolders() {
+    const raw = this._config?.media_folders_fav;
+    if (!raw) return [];
+    if (Array.isArray(raw)) {
+      return raw.map(String).map((s) => s.trim()).filter(Boolean);
+    }
+    // fallback if someone stored as string
+    return String(raw)
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+  }
+
+  _setFavFolders(nextArray) {
+    const cleaned = Array.from(
+      new Set((nextArray || []).map((x) => String(x).trim()).filter(Boolean))
+    );
+
+    if (!cleaned.length) {
+      const next = { ...this._config };
+      delete next.media_folders_fav; // keep YAML clean
+      this._config = next;
+      this._fire();
+      this._scheduleRender();
+      return;
+    }
+
+    this._set("media_folders_fav", cleaned);
+  }
+
+  _toggleFavPicker(open) {
+    this._favPickerOpen =
+      typeof open === "boolean" ? open : !this._favPickerOpen;
+    this._scheduleRender();
+  }
+
   _render() {
     const c = this._config || {};
 
-    // ✅ mutually exclusive mode
-    const sourceMode = String(c.source_mode || "sensor"); // "sensor" | "media"
+    // ✅ SAVE focus + caret BEFORE nuking innerHTML
+    try {
+      const ae = this.shadowRoot?.activeElement;
+      if (ae && ae.id) {
+        const st =
+          typeof ae.selectionStart === "number" ? ae.selectionStart : null;
+        const en = typeof ae.selectionEnd === "number" ? ae.selectionEnd : null;
+        this._focusState = {
+          id: ae.id,
+          // keep a copy of typed value for safety
+          value: typeof ae.value === "string" ? ae.value : null,
+          start: st,
+          end: en,
+        };
+      } else {
+        this._focusState = null;
+      }
+    } catch (_) {
+      this._focusState = null;
+    }
+
+    const sourceMode = String(c.source_mode || "sensor");
     const sensorModeOn = sourceMode === "sensor";
     const mediaModeOn = sourceMode === "media";
 
@@ -321,7 +438,9 @@ class CameraGalleryCardEditor extends HTMLElement {
     const sensorOptions = this._hass
       ? Object.values(this._hass.states)
           .filter(
-            (e) => e.entity_id.startsWith("sensor.") && e.attributes?.fileList !== undefined
+            (e) =>
+              e.entity_id.startsWith("sensor.") &&
+              e.attributes?.fileList !== undefined
           )
           .map((e) => e.entity_id)
           .sort((a, b) => a.localeCompare(b))
@@ -333,30 +452,34 @@ class CameraGalleryCardEditor extends HTMLElement {
     const mediaSource = String(c.media_source || "").trim();
     const mediaLoading = this._mediaFoldersLoading === true;
 
-    // For full ids, never treat as file
     const mediaSourceIsFile =
-      !mediaSource.startsWith("media-source://") && this._looksLikeFile(mediaSource);
+      !mediaSource.startsWith("media-source://") &&
+      this._looksLikeFile(mediaSource);
 
-    // Don't let a file value pollute the dropdown list
+    const baseList = Array.isArray(this._mediaFolders) ? this._mediaFolders : [];
+    const favs = this._getFavFolders();
+
+    // dropdown shows ONLY favorites if favorites exist; otherwise show all
+    const listForDropdown = favs.length
+      ? baseList.filter((p) => favs.includes(p))
+      : baseList;
+
     const mediaChoices = this._mergeChoices(
-      this._mediaFolders,
+      listForDropdown,
       mediaSourceIsFile ? "" : mediaSource
     );
 
     const height = Number(c.preview_height) || 320;
     const thumbSize = Number(c.thumb_size) || 140;
 
-    // ✅ max_media: editor default should match card default (200)
-    // ✅ and we allow 1..2000 because YOU want 3 to be valid
     const maxMedia = (() => {
       const n = this._numInt(c.max_media, 200);
       return this._clampInt(n, 1, 2000);
     })();
 
     const tsPos = String(c.bar_position || "top");
-    const previewPos = String(c.preview_position || "top"); // "top" | "bottom"
+    const previewPos = String(c.preview_position || "top");
 
-    // ✅ Delete service options from HA
     const allServices = this._hass?.services || {};
     const shellCmds = Object.keys(allServices.shell_command || {})
       .map((svc) => `shell_command.${svc}`)
@@ -371,7 +494,6 @@ class CameraGalleryCardEditor extends HTMLElement {
       return Array.from(set).sort((a, b) => a.localeCompare(b));
     })();
 
-    // ✅ consistent key: bar_opacity (read + write)
     const barOpacity = (() => {
       const n = Number(c.bar_opacity);
       if (!Number.isFinite(n)) return 45;
@@ -389,16 +511,142 @@ class CameraGalleryCardEditor extends HTMLElement {
 
     const secOpenAttr = (id) => (this._secOpen[id] ? "true" : "false");
 
+    // Theme-aware palette
+    const isLight = this._isLightTheme();
+
+    const dark = {
+      sectionBg: "rgba(0,0,0,0.08)",
+      sectionBorder: "rgba(255,255,255,0.06)",
+      rowBg: "rgba(255,255,255,0.04)",
+      rowBorder: "rgba(255,255,255,0.06)",
+      text: "rgba(255,255,255,0.92)",
+      text2: "rgba(255,255,255,0.72)",
+      inputBg: "rgba(255,255,255,0.06)",
+      inputBorder: "rgba(255,255,255,0.08)",
+      chevronBg: "rgba(255,255,255,0.06)",
+      chevronBorder: "rgba(255,255,255,0.10)",
+      segBg: "rgba(255,255,255,0.06)",
+      segBorder: "rgba(255,255,255,0.10)",
+      segTxt: "rgba(255,255,255,0.78)",
+      segOnBg: "#ffffff",
+      segOnTxt: "rgba(0,0,0,0.95)",
+      arrow: "rgba(255,255,255,0.85)",
+      pillBg: "rgba(255,255,255,0.10)",
+      pillBorder: "rgba(255,255,255,0.10)",
+      muted: "0.55",
+      invalid: "rgba(255, 77, 77, 0.85)",
+      invalidGlow: "rgba(255, 77, 77, 0.18)",
+      popBg: "rgba(20, 20, 24, 0.94)",
+      popBorder: "rgba(255,255,255,0.14)",
+      popShadow1: "rgba(0,0,0,0.55)",
+      popShadow2: "rgba(0,0,0,0.25)",
+      pillTxt: "rgba(255,255,255,0.92)",
+    };
+
+    const lightPal = {
+      sectionBg: "rgba(0,0,0,0.03)",
+      sectionBorder: "rgba(0,0,0,0.08)",
+      rowBg: "rgba(0,0,0,0.04)",
+      rowBorder: "rgba(0,0,0,0.08)",
+      text: "rgba(0,0,0,0.88)",
+      text2: "rgba(0,0,0,0.62)",
+      inputBg: "rgba(0,0,0,0.03)",
+      inputBorder: "rgba(0,0,0,0.12)",
+      chevronBg: "rgba(0,0,0,0.04)",
+      chevronBorder: "rgba(0,0,0,0.12)",
+      segBg: "rgba(0,0,0,0.05)",
+      segBorder: "rgba(0,0,0,0.10)",
+      segTxt: "rgba(0,0,0,0.68)",
+      segOnBg: "rgba(0,0,0,0.88)",
+      segOnTxt: "rgba(255,255,255,0.98)",
+      arrow: "rgba(0,0,0,0.60)",
+      pillBg: "rgba(0,0,0,0.06)",
+      pillBorder: "rgba(0,0,0,0.10)",
+      muted: "0.65",
+      invalid: "rgba(219, 68, 55, 0.85)",
+      invalidGlow: "rgba(219, 68, 55, 0.18)",
+      popBg: "rgba(255,255,255,0.96)",
+      popBorder: "rgba(0,0,0,0.14)",
+      popShadow1: "rgba(0,0,0,0.18)",
+      popShadow2: "rgba(0,0,0,0.10)",
+      pillTxt: "rgba(255,255,255,0.98)",
+      pillBg: "rgba(0,0,0,0.55)",
+      pillBorder: "rgba(0,0,0,0.18)",
+    };
+
+    const p = isLight ? lightPal : dark;
+
+    const rootVars = `
+      --ed-section-bg:${p.sectionBg};
+      --ed-section-border:${p.sectionBorder};
+      --ed-row-bg:${p.rowBg};
+      --ed-row-border:${p.rowBorder};
+
+      --ed-text:${p.text};
+      --ed-text2:${p.text2};
+
+      --ed-input-bg:${p.inputBg};
+      --ed-input-border:${p.inputBorder};
+
+      --ed-chev-bg:${p.chevronBg};
+      --ed-chev-border:${p.chevronBorder};
+
+      --ed-seg-bg:${p.segBg};
+      --ed-seg-border:${p.segBorder};
+      --ed-seg-txt:${p.segTxt};
+      --ed-seg-on-bg:${p.segOnBg};
+      --ed-seg-on-txt:${p.segOnTxt};
+
+      --ed-arrow:${p.arrow};
+
+      --ed-pill-bg:${p.pillBg};
+      --ed-pill-border:${p.pillBorder};
+      --ed-pill-txt:${p.pillTxt};
+
+      --ed-muted:${p.muted};
+
+      --ed-invalid:${p.invalid};
+      --ed-invalid-glow:${p.invalidGlow};
+
+      --ed-pop-bg:${p.popBg};
+      --ed-pop-border:${p.popBorder};
+      --ed-pop-shadow1:${p.popShadow1};
+      --ed-pop-shadow2:${p.popShadow2};
+    `;
+
+    // build picker list from ALL folders (not filtered), so you can always select favorites
+    const q = String(this._favQuery || "").trim().toLowerCase();
+    const pickerSource = baseList;
+
+    const pickerItems = pickerSource
+      .map((pval) => {
+        const path = this._prettyLabel(pval);
+        const nice = this._prettyMediaFolderLabel(path);
+        const searchKey = `${nice} ${path}`.toLowerCase();
+        return { value: String(pval), path, nice, searchKey };
+      })
+      .filter((it) => !q || it.searchKey.includes(q))
+      .sort((a, b) => a.searchKey.localeCompare(b.searchKey));
+
+    const favCount = favs.length;
+    const favBtnText = favCount ? `Choose folders (${favCount})` : `Choose folders`;
+
+    // save popover scroll before nuking DOM
+    try {
+      const list = this.shadowRoot?.querySelector("#favpop .poplist");
+      if (list) this._favScrollTop = list.scrollTop || 0;
+    } catch (_) {}
+
     this.shadowRoot.innerHTML = `
       <style>
-        :host { display:block; padding:8px 0; }
+        :host { display:block; padding:8px 0; color: var(--ed-text); }
         .wrap { display:grid; gap:14px; }
 
         .section{
           padding:14px;
           border-radius:16px;
-          background:rgba(0,0,0,0.08);
-          border:1px solid rgba(255,255,255,0.06);
+          background:var(--ed-section-bg);
+          border:1px solid var(--ed-section-border);
         }
 
         .shead{
@@ -416,6 +664,7 @@ class CameraGalleryCardEditor extends HTMLElement {
           gap:10px;
           font-size:16px;
           font-weight:1000;
+          color: var(--ed-text);
         }
 
         .ico{
@@ -430,12 +679,13 @@ class CameraGalleryCardEditor extends HTMLElement {
           width:28px;
           height:28px;
           border-radius:10px;
-          border:1px solid rgba(255,255,255,0.10);
-          background:rgba(255,255,255,0.06);
+          border:1px solid var(--ed-chev-border);
+          background:var(--ed-chev-bg);
           display:grid;
           place-items:center;
           opacity:0.85;
           transition:0.18s ease;
+          color: var(--ed-text);
         }
 
         .chev svg{
@@ -445,39 +695,33 @@ class CameraGalleryCardEditor extends HTMLElement {
           transition:0.18s ease;
         }
 
-        .section[data-open="false"] .chev svg{
-          transform:rotate(-90deg);
-        }
+        .section[data-open="false"] .chev svg{ transform:rotate(-90deg); }
 
-        .sbody{
-          margin-top:12px;
-          display:grid;
-          gap:12px;
-        }
-
-        .section[data-open="false"] .sbody{
-          display:none;
-        }
+        .sbody{ margin-top:12px; display:grid; gap:12px; }
+        .section[data-open="false"] .sbody{ display:none; }
 
         .row {
           display:grid;
           gap:8px;
           padding:14px;
           border-radius:14px;
-          background:rgba(255,255,255,0.04);
-          border:1px solid rgba(255,255,255,0.06);
+          background:var(--ed-row-bg);
+          border:1px solid var(--ed-row-border);
+          color: var(--ed-text);
         }
 
-        .lbl { font-size:13px; font-weight:900; }
-        .desc { font-size:12px; opacity:0.7; }
+        .lbl { font-size:13px; font-weight:900; color: var(--ed-text); }
+        .desc { font-size:12px; opacity:0.8; color: var(--ed-text2); }
+
+        code { opacity: 0.9; }
 
         .input {
           width:100%;
           box-sizing:border-box;
           border-radius:10px;
-          border:1px solid rgba(255,255,255,0.08);
-          background:rgba(255,255,255,0.06);
-          color:inherit;
+          border:1px solid var(--ed-input-border);
+          background:var(--ed-input-bg);
+          color:var(--ed-text);
           padding:10px 12px;
           font-size:13px;
           font-weight:800;
@@ -485,16 +729,16 @@ class CameraGalleryCardEditor extends HTMLElement {
         }
 
         .input.invalid{
-          border-color: rgba(255, 77, 77, 0.85);
-          box-shadow: 0 0 0 2px rgba(255, 77, 77, 0.18);
+          border-color: var(--ed-invalid);
+          box-shadow: 0 0 0 2px var(--ed-invalid-glow);
         }
 
         .segwrap { display:flex; gap:8px; }
         .seg {
           flex:1;
-          border:1px solid rgba(255,255,255,0.10);
-          background:rgba(255,255,255,0.06);
-          color:rgba(255,255,255,0.78);
+          border:1px solid var(--ed-seg-border);
+          background:var(--ed-seg-bg);
+          color:var(--ed-seg-txt);
           border-radius:10px;
           padding:10px 0;
           font-size:13px;
@@ -502,12 +746,11 @@ class CameraGalleryCardEditor extends HTMLElement {
           cursor:pointer;
         }
         .seg.on {
-          background:#ffffff;
-          color:rgba(0,0,0,0.95);
+          background:var(--ed-seg-on-bg);
+          color:var(--ed-seg-on-txt);
           border-color:transparent;
         }
 
-        /* custom dropdown wrapper + arrow */
         .selectwrap{ position:relative; }
         select.select{
           appearance:none;
@@ -522,8 +765,8 @@ class CameraGalleryCardEditor extends HTMLElement {
           width:10px;
           height:10px;
           transform:translateY(-50%) rotate(45deg);
-          border-right:2px solid rgba(255,255,255,0.85);
-          border-bottom:2px solid rgba(255,255,255,0.85);
+          border-right:2px solid var(--ed-arrow);
+          border-bottom:2px solid var(--ed-arrow);
           pointer-events:none;
           opacity:0.9;
         }
@@ -532,6 +775,8 @@ class CameraGalleryCardEditor extends HTMLElement {
           display:flex;
           align-items:center;
           justify-content:space-between;
+          color: var(--ed-text);
+          gap:12px;
         }
 
         .toggle{
@@ -541,9 +786,10 @@ class CameraGalleryCardEditor extends HTMLElement {
           height:28px;
           border-radius:999px;
           position:relative;
-          border:1px solid rgba(255,255,255,0.12);
-          background:rgba(255,255,255,0.08);
+          border:1px solid var(--ed-input-border);
+          background:var(--ed-input-bg);
           cursor:pointer;
+          flex: 0 0 auto;
         }
 
         .toggle::after{
@@ -559,13 +805,13 @@ class CameraGalleryCardEditor extends HTMLElement {
         }
 
         .toggle:checked{
-          background:#ffffff;
+          background:var(--ed-seg-on-bg);
           border-color:transparent;
         }
 
         .toggle:checked::after{
           transform:translateX(18px);
-          background:rgba(0,0,0,0.92);
+          background:var(--ed-seg-on-txt);
         }
 
         .barrow{
@@ -580,43 +826,123 @@ class CameraGalleryCardEditor extends HTMLElement {
           display: flex;
           align-items: center;
           gap: 6px;
-          opacity: 0.85;
+          opacity: 0.9;
+          color: var(--ed-text2);
         }
 
-        .hint ha-icon {
-          --mdc-icon-size: 14px;
-          color: var(--secondary-text-color);
-        }
+        .hint ha-icon { --mdc-icon-size: 14px; color: var(--ed-text2); }
 
         .hint a {
           color: var(--primary-color);
           text-decoration: none;
-          font-weight: 500;
+          font-weight: 700;
         }
+        .hint a:hover { text-decoration: underline; }
 
-        .hint a:hover {
-          text-decoration: underline;
-        }
+        .slider { width:100%; accent-color: var(--primary-color); }
 
-        .slider { width:100%; accent-color:#ffffff; }
         .pillval{
           min-width:52px;
           text-align:center;
           padding:6px 10px;
           border-radius:999px;
-          background:rgba(255,255,255,0.10);
-          border:1px solid rgba(255,255,255,0.10);
+          background:var(--ed-pill-bg);
+          border:1px solid var(--ed-pill-border);
           font-size:12px;
           font-weight:1000;
+          color: var(--ed-pill-txt);
         }
 
+        /* NOTE: muted no longer blocks clicks (fix) */
         .muted{
-          opacity:0.55;
-          pointer-events:none;
+          opacity: var(--ed-muted);
+        }
+
+        /* compact picker */
+        .btnrow{ display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+        .btnmini{
+          border-radius:10px;
+          border:1px solid var(--ed-input-border);
+          background:var(--ed-input-bg);
+          color: var(--ed-text);
+          padding:9px 10px;
+          font-size:12px;
+          font-weight:1000;
+          cursor:pointer;
+          white-space:nowrap;
+        }
+        .btnmini.primary{
+          background: var(--ed-seg-on-bg);
+          color: var(--ed-seg-on-txt);
+          border-color: transparent;
+        }
+        .pickwrap{ position:relative; }
+        .popover{
+          position:absolute;
+          z-index: 5;
+          left:0;
+          right:0;
+          margin-top:10px;
+          padding:12px;
+          border-radius:14px;
+          background: var(--ed-pop-bg);
+          backdrop-filter: blur(10px);
+          -webkit-backdrop-filter: blur(10px);
+          border: 1px solid var(--ed-pop-border);
+          box-shadow:
+            0 18px 44px var(--ed-pop-shadow1),
+            0 0 0 1px var(--ed-pop-shadow2);
+        }
+        .pophead{
+          display:flex;
+          gap:10px;
+          align-items:center;
+          justify-content:space-between;
+          margin-bottom:10px;
+        }
+        .poplist{
+          display:grid;
+          gap:8px;
+          max-height: 220px;
+          overflow:auto;
+          padding-right:4px;
+        }
+        .chk{
+          display:flex;
+          gap:10px;
+          align-items:flex-start;
+          padding:10px;
+          border-radius:12px;
+          background: var(--ed-row-bg);
+          border: 1px solid var(--ed-row-border);
+          cursor:pointer;
+        }
+        .chk input{
+          margin-top: 2px;
+          width: 18px;
+          height: 18px;
+          accent-color: var(--primary-color);
+          flex: 0 0 auto;
+        }
+        .chk .t{
+          display:grid;
+          gap:2px;
+        }
+        .chk .t .name{
+          font-weight: 1000;
+          font-size: 13px;
+          color: var(--ed-text);
+        }
+        .chk .t .path{
+          font-weight: 800;
+          font-size: 12px;
+          opacity: 0.75;
+          color: var(--ed-text2);
+          word-break: break-all;
         }
       </style>
 
-      <div class="wrap">
+      <div class="wrap" style="${rootVars}">
 
         <!-- GENERAL -->
         <div class="section" id="sec-general" data-open="${secOpenAttr("sec-general")}">
@@ -648,7 +974,9 @@ class CameraGalleryCardEditor extends HTMLElement {
               <div class="desc">Sensor entity that contains the <code>fileList</code> attribute</div>
 
               <div class="selectwrap">
-                <select class="input select ${fileSensor && (!isSensorDomain || !entityExists) ? "invalid" : ""}" id="entity" ${sensorModeOn ? "" : "disabled"}>
+                <select class="input select ${
+                  fileSensor && (!isSensorDomain || !entityExists) ? "invalid" : ""
+                }" id="entity" ${sensorModeOn ? "" : "disabled"}>
                   ${
                     entityChoices.length
                       ? entityChoices
@@ -669,9 +997,11 @@ class CameraGalleryCardEditor extends HTMLElement {
             <div class="row ${mediaModeOn ? "" : "muted"}">
               <div class="lbl">Media source</div>
               <div class="desc">Choose the media folder that contains your recordings or snapshots</div>
-
+              <div class="hint">Frigate users: use <code>frigate/frigate/clips</code> for clips or <code>frigate/frigate/snapshots</code> for snapshots</div>
               <div class="selectwrap">
-                <select class="input select ${mediaSourceIsFile ? "invalid" : ""}" id="mediasource" ${mediaModeOn ? "" : "disabled"}>
+                <select class="input select ${
+                  mediaSourceIsFile ? "invalid" : ""
+                }" id="mediasource" ${mediaModeOn ? "" : "disabled"}>
                   ${
                     mediaSourceIsFile
                       ? `<option value="${mediaSource}" selected>⚠️ ${mediaSource} (file — choose a folder)</option>`
@@ -681,18 +1011,69 @@ class CameraGalleryCardEditor extends HTMLElement {
                     mediaLoading
                       ? `<option value="${mediaSource}" selected>(loading…)</option>`
                       : mediaChoices.length
-                        ? mediaChoices
-                            .map((p) => {
-                              const label = this._prettyLabel(p);
-                              return `<option value="${p}" ${
-                                p === mediaSource ? "selected" : ""
-                              }>${label}</option>`;
-                            })
-                            .join("")
-                        : `<option value="${mediaSource}" selected>(no folders found)</option>`
+                      ? mediaChoices
+                          .map((pval) => {
+                            const label = this._prettyMediaFolderLabel(this._prettyLabel(pval));
+                            return `<option value="${pval}" ${
+                              pval === mediaSource ? "selected" : ""
+                            }>${label}</option>`;
+                          })
+                          .join("")
+                      : `<option value="${mediaSource}" selected>(no folders found)</option>`
                   }
                 </select>
                 <span class="selarrow"></span>
+              </div>
+
+              <div style="margin-top:10px; display:grid; gap:10px;">
+                <div class="pickwrap">
+                  <div class="btnrow">
+                    <button class="btnmini ${this._favPickerOpen ? "primary" : ""}" id="favbtn" type="button">
+                      ${favBtnText}
+                    </button>
+                    <button class="btnmini" id="favall" type="button">All</button>
+                    <button class="btnmini" id="favnone" type="button">None</button>
+                  </div>
+
+                  ${
+                    this._favPickerOpen
+                      ? `
+                    <div class="popover" id="favpop">
+                      <div class="pophead">
+                        <input class="input" id="favquery" placeholder="Search folders…" value="${String(
+                          this._favQuery || ""
+                        ).replace(/"/g, "&quot;")}" />
+                        <button class="btnmini" id="favclose" type="button">Close</button>
+                      </div>
+                      <div class="poplist">
+                        ${
+                          mediaLoading
+                            ? `<div class="desc">(loading…)</div>`
+                            : pickerItems.length
+                            ? pickerItems
+                                .map((it) => {
+                                  const checked = favs.includes(it.value);
+                                  return `
+                                    <label class="chk">
+                                      <input type="checkbox" data-fav="${it.value}" ${
+                                    checked ? "checked" : ""
+                                  }/>
+                                      <div class="t">
+                                        <div class="name">${it.nice}</div>
+                                        <div class="path">${it.path}</div>
+                                      </div>
+                                    </label>
+                                  `;
+                                })
+                                .join("")
+                            : `<div class="desc">(no results)</div>`
+                        }
+                      </div>
+                    </div>
+                  `
+                      : ""
+                  }
+                </div>
               </div>
             </div>
 
@@ -801,7 +1182,6 @@ class CameraGalleryCardEditor extends HTMLElement {
               <input class="input" id="thumb" type="number" value="${thumbSize}" />
             </div>
 
-            <!-- ✅ max_media -->
             <div class="row">
               <div class="lbl">Maximum thumbnails shown</div>
               <input class="input" id="maxmedia" type="number" min="1" max="2000" value="${maxMedia}" />
@@ -849,6 +1229,14 @@ class CameraGalleryCardEditor extends HTMLElement {
       </div>
     `;
 
+        // restore popover scroll after re-render
+    try {
+      const list = this.shadowRoot?.querySelector("#favpop .poplist");
+      if (list && Number.isFinite(this._favScrollTop)) {
+        list.scrollTop = this._favScrollTop;
+      }
+    } catch (_) {}
+
     const $ = (id) => this.shadowRoot.getElementById(id);
 
     // section toggles
@@ -862,13 +1250,15 @@ class CameraGalleryCardEditor extends HTMLElement {
         const next = !open;
 
         sec.setAttribute("data-open", next ? "true" : "false");
-        this._secOpen[id] = next; // ✅ persist
+        this._secOpen[id] = next;
       });
     });
 
     // source mode buttons
     this.shadowRoot.querySelectorAll("[data-src]").forEach((btn) => {
-      btn.addEventListener("click", () => this._set("source_mode", btn.dataset.src));
+      btn.addEventListener("click", () =>
+        this._set("source_mode", btn.dataset.src)
+      );
     });
 
     $("entity")?.addEventListener("change", (e) =>
@@ -879,13 +1269,62 @@ class CameraGalleryCardEditor extends HTMLElement {
       this._set("media_source", String(e.target.value || "").trim())
     );
 
+    // open/close picker (always allowed; UI is muted if not in media mode)
+    $("favbtn")?.addEventListener("click", () => this._toggleFavPicker());
+    $("favclose")?.addEventListener("click", () => this._toggleFavPicker(false));
+
+    // search
+    $("favquery")?.addEventListener("input", (e) => {
+      this._favQuery = String(e.target.value || "");
+      this._scheduleRender();
+    });
+
+    // all / none (writes ONE key)
+    $("favall")?.addEventListener("click", () => {
+      const all = (Array.isArray(this._mediaFolders) ? this._mediaFolders : []).map(String);
+      this._setFavFolders(all);
+    });
+
+    $("favnone")?.addEventListener("click", () => {
+      this._setFavFolders([]); // removes key
+    });
+
+    const pop = $("favpop");
+    const poplist = this.shadowRoot?.querySelector("#favpop .poplist");
+
+    // bind scroll listener once per render-cycle (to the new DOM node)
+    if (poplist) {
+      poplist.addEventListener(
+        "scroll",
+        () => {
+          this._favScrollTop = poplist.scrollTop || 0;
+        },
+        { passive: true }
+      );
+    }
+
+    pop?.addEventListener("change", (e) => {
+      const t = e.target;
+      if (!t || t.tagName !== "INPUT" || t.type !== "checkbox") return;
+
+      const val = String(t.getAttribute("data-fav") || "");
+      if (!val) return;
+
+      // keep scroll stable when checking/unchecking (DOM rebuild)
+      // scrollTop will be saved+restored by the _render() hooks above
+
+      const current = new Set(this._getFavFolders());
+      if (t.checked) current.add(val);
+      else current.delete(val);
+
+      this._setFavFolders(Array.from(current));
+    });
+
     $("delservice")?.addEventListener("change", (e) => {
       const v = String(e.target.value || "").trim();
       if (!v) {
         const next = { ...this._config };
         delete next.delete_service;
-
-        // ✅ also ensure this never persists
         delete next.preview_close_on_tap;
 
         this._config = next;
@@ -900,7 +1339,7 @@ class CameraGalleryCardEditor extends HTMLElement {
       this._set("preview_height", Number(e.target.value) || 320)
     );
 
-    // ✅ preview position segmented buttons
+    // preview position segmented buttons
     this.shadowRoot.querySelectorAll(".seg[data-ppos]").forEach((btn) => {
       btn.addEventListener("click", () =>
         this._set("preview_position", btn.dataset.ppos)
@@ -911,25 +1350,28 @@ class CameraGalleryCardEditor extends HTMLElement {
       this._set("thumb_size", Number(e.target.value) || 140)
     );
 
-    // ✅ max_media handler (live + on change)
+    // max_media handler (live + on change)
     const pushMaxMedia = (raw) => {
       const n = this._numInt(raw, 1);
       const v = this._clampInt(n, 1, 2000);
       this._set("max_media", v);
     };
-
-    $("maxmedia")?.addEventListener("input", (e) => pushMaxMedia(e.target.value));
-    $("maxmedia")?.addEventListener("change", (e) => pushMaxMedia(e.target.value));
+    $("maxmedia")?.addEventListener("input", (e) =>
+      pushMaxMedia(e.target.value)
+    );
+    $("maxmedia")?.addEventListener("change", (e) =>
+      pushMaxMedia(e.target.value)
+    );
 
     $("clicktoopen")?.addEventListener("change", (e) => {
-      const on = !!e.target.checked;
-      this._set("preview_click_to_open", on);
-      // preview_close_on_tap is always true in card when gated; editor never stores it
+      this._set("preview_click_to_open", !!e.target.checked);
     });
 
     // timestamp position segmented buttons
     this.shadowRoot.querySelectorAll(".seg[data-pos]").forEach((btn) => {
-      btn.addEventListener("click", () => this._set("bar_position", btn.dataset.pos));
+      btn.addEventListener("click", () =>
+        this._set("bar_position", btn.dataset.pos)
+      );
     });
 
     // bar opacity live update
@@ -943,6 +1385,26 @@ class CameraGalleryCardEditor extends HTMLElement {
       const v = Number(e.target.value);
       this._set("bar_opacity", Number.isFinite(v) ? v : 45);
     });
+
+    // ✅ RESTORE focus + caret AFTER render
+    try {
+      const fs = this._focusState;
+      if (fs && fs.id) {
+        const el = $(fs.id);
+        if (el && typeof el.focus === "function") {
+          // re-apply value (mainly for favquery safety)
+          if (fs.value != null && typeof el.value === "string" && el.value !== fs.value) {
+            el.value = fs.value;
+          }
+          el.focus({ preventScroll: true });
+
+          // restore caret/selection if possible
+          if (fs.start != null && fs.end != null && typeof el.setSelectionRange === "function") {
+            el.setSelectionRange(fs.start, fs.end);
+          }
+        }
+      }
+    } catch (_) {}
   }
 }
 
