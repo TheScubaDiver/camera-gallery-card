@@ -1,7 +1,5 @@
 {
   "name": "Camera Gallery Card",
-  "filename": "dist/camera-gallery-card.js",
   "content_in_root": false,
-  "render_readme": true,
-  "type": "plugin"
+  "render_readme": true
 }
