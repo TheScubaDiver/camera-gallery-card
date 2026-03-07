@@ -1,238 +1,411 @@
 # Camera Gallery Card
 
-A lightweight, swipeable media gallery card for Home Assistant Lovelace. Browse `.jpg` snapshots and `.mp4` clips stored on your system — sorted by date, with day-by-day navigation, bulk selection, download, and delete support.
+A lightweight, swipeable media gallery card for Home Assistant Lovelace. Browse snapshots and video clips from either file-list sensors or Home Assistant Media Source — with day-by-day navigation, object filters, download support, and optional delete actions.
 
-Now fully compatible with **Frigate Media Source** (images + video) with improved performance and light mode readability.
+The card is built for touch devices, tablets, and dashboards, and works especially well with Frigate media.
 
-<table>
-<tr>
-<td><img src="https://github.com/user-attachments/assets/49a8f360-185a-4e8d-bd4d-3ae464a2ac1e" width="280"/></td>
-<td><img src="https://github.com/user-attachments/assets/b62eb219-43fc-4238-af55-20d5ddf746ba" width="280"/></td>
-</tr>
-</table>
+> **Current version:** 1.1.3
 
-> **Current version:** 1.2.0
+---
+
+# Table of Contents
+
+- [Features](#features)
+- [Installation](#installation)
+  - [HACS Installation](#hacs-installation)
+  - [Manual Installation](#manual-installation)
+- [Source Modes](#source-modes)
+  - [Sensor Mode](#sensor-mode)
+  - [Media Source Mode](#media-source-mode)
+- [Frigate Usage](#frigate-usage)
+- [Delete Setup](#delete-setup)
+- [Configuration Options](#configuration-options)
+- [Example Configurations](#example-configurations)
+- [Notes](#notes)
+- [License](#license)
 
 ---
 
 # Features
 
-- Full-width preview with swipe navigation  
-- Configurable preview position (top / bottom)  
-- Optional preview-on-click behavior  
-- Inline video playback (MP4 supported)  
-- Optimized thumbnail loading (fixes lag with Frigate Media Source)  
-- Day-by-day filtering with date navigation  
-- Dual source mode (File sensor or Media folder)  
-- Folder favorites selector (Media Mode)  
-- Maximum thumbnail option to control how many items are loaded  
-- Bulk select & delete mode (Sensor mode only)  
-- One-tap download for any file  
-- Configurable timestamp bar (top / bottom / hidden)  
-- Adjustable timestamp bar opacity  
-- Smart visual editor with improved light mode readability  
-- Fully responsive, touch-friendly design  
+- Full preview area for images and videos
+- Swipe navigation inside the preview
+- Preview position configurable: **top** or **bottom**
+- Optional **click-to-open preview**
+- Optional **tap-to-close preview**
+- Inline video playback
+- Automatic video poster generation
+- Day-by-day navigation with **Today shortcut**
+- Object filter buttons (`person`, `car`, `dog`, `cat`, etc.)
+- Multi-select object filtering
+- Source mode: **sensor or media**
+- Support for **multiple sensors**
+- Support for **multiple media folders**
+- Horizontal thumbnail strip with **mouse wheel / trackpad scrolling**
+- Configurable thumbnail size
+- Configurable timestamp bar (top / bottom / hidden)
+- Adjustable timestamp bar opacity
+- Download button for current item
+- Select mode for multiple items
+- Bulk delete support (sensor mode)
+- UI-only config updates without full reload
+- Responsive layout
+- Optimized for **tablets and dashboards**
 
 ---
 
 # Installation
 
-## HACS (recommended)
+## HACS Installation
 
-1. Open **HACS** in Home Assistant  
-2. Go to **Frontend**  
-3. Click the **⋮ menu → Custom repositories**  
-4. Add this repository:
+1. Open **HACS**
+2. Go to **Frontend**
+3. Click **⋮ → Custom repositories**
+4. Add:
 
+```
 https://github.com/TheScubadiver/camera-gallery-card
+```
 
-5. Select **Dashboard** as the category  
-6. Click **Add**  
-7. Search for **Camera Gallery Card**  
-8. Click **Install**  
-9. Restart Home Assistant  
+Category: **Dashboard**
+
+5. Install **Camera Gallery Card**
+6. Restart Home Assistant
 
 ---
 
 ## Manual Installation
 
-1. Download the latest release files:
+Download:
 
-camera-gallery-card.js  
-camera-gallery-card-editor.js  
+- `camera-gallery-card.js`
+- `camera-gallery-card-editor.js`
 
-2. Copy both files to:
+Copy them to:
 
+```
 /config/www/camera-gallery-card/
+```
 
-3. Add the resource in **Settings → Dashboards → Resources**
+Add resource:
 
-URL: /local/camera-gallery-card/camera-gallery-card.js  
-Type: JavaScript Module  
+**Settings → Dashboards → Resources**
 
-4. Restart Home Assistant
+```
+URL: /local/camera-gallery-card/camera-gallery-card.js
+Type: JavaScript Module
+```
+
+Restart Home Assistant.
 
 ---
 
 # Source Modes
 
-The card supports two different ways to load media.
+The card supports two different ways of loading media.
 
 ---
 
-# File Sensor Mode
+# Sensor Mode
 
-Uses a `sensor` entity with a `fileList` attribute containing file paths.
+Uses a sensor with a `fileList` attribute.
 
 Example sensor output:
 
-/config/www/camera-gallery/clip1.mp4  
-/config/www/camera-gallery/snapshot1.jpg  
+```
+/config/www/camera-gallery/clip1.mp4
+/config/www/camera-gallery/snapshot1.jpg
+```
 
-Example card configuration:
+Example card:
 
-type: custom:camera-gallery-card  
-source_mode: sensor  
-entity: sensor.camera_files  
+```yaml
+type: custom:camera-gallery-card
+source_mode: sensor
+entity: sensor.camera_files
+```
 
-Advantages
+Multiple sensors:
 
-✔ Full delete support  
-✔ Works with any folder structure  
-✔ Very fast loading  
+```yaml
+type: custom:camera-gallery-card
+source_mode: sensor
+entities:
+  - sensor.camera_files_front
+  - sensor.camera_files_back
+```
 
-Disadvantages
+### Advantages
 
-✖ Requires a sensor that provides file paths  
+✔ Delete support  
+✔ Fast loading  
+✔ Works with custom folders  
 
----
+### Notes
 
-# Media Folder Mode
+Sensor must expose:
 
-Loads files directly from Home Assistant **Media Source**.
+```
+fileList
+```
 
-This is the recommended method when using **Frigate**.
+Paths under:
 
-Example configuration:
+```
+/config/www/
+```
 
-type: custom:camera-gallery-card  
-source_mode: media  
-media_folder: frigate  
+are automatically converted to:
 
-Advantages
-
-✔ Works directly with Media Source  
-✔ Perfect for Frigate clips and snapshots  
-✔ No sensors required  
-
-Disadvantages
-
-✖ Delete functionality is not available  
-
----
-
-# Frigate Media Source
-
-The card is fully compatible with **Frigate Media Source**.
-
-Typical folders:
-
-frigate/clips  
-frigate/snapshots  
-
-Recommended configuration:
-
-type: custom:camera-gallery-card  
-source_mode: media  
-media_folders_fav:  
-  - frigate/clips  
-  - frigate/snapshots  
-
-In the editor you can also select folders using the **Choose folders** button.
+```
+/local/
+```
 
 ---
 
-# Folder Favorites (Media Mode)
+# Media Source Mode
 
-When using **Media Folder Mode**, you can optionally limit the dropdown to selected folders.
+Loads files directly from **Home Assistant Media Source**.
 
-Features
-
-- Checkbox folder picker  
-- Search field  
-- All / None buttons  
-- Clean YAML (key removed when empty)
+Recommended when using **Frigate**.
 
 Example:
 
-media_folders_fav:  
-  - frigate/clips  
-  - frigate/snapshots  
+```yaml
+type: custom:camera-gallery-card
+source_mode: media
+media_source: media-source://frigate/frigate/event-search/clips
+```
+
+Multiple folders:
+
+```yaml
+type: custom:camera-gallery-card
+source_mode: media
+media_sources:
+  - media-source://frigate/frigate/event-search/clips
+  - media-source://frigate/frigate/event-search/snapshots
+```
+
+### Advantages
+
+✔ Works directly with Media Source  
+✔ Ideal for Frigate  
+✔ No sensors required  
+
+### Notes
+
+Delete functionality is **not available** in media mode.
+
+---
+
+# Frigate Usage
+
+Example configuration for Frigate media:
+
+```yaml
+type: custom:camera-gallery-card
+source_mode: media
+media_sources:
+  - media-source://frigate/frigate/event-search/clips
+  - media-source://frigate/frigate/event-search/snapshots
+preview_position: top
+object_filters:
+  - person
+  - car
+  - dog
+  - cat
+```
 
 ---
 
 # Delete Setup
 
-In **File Sensor Mode**, the card can delete items. Home Assistant itself cannot delete arbitrary files, so you must provide a delete service.
+Delete only works in **sensor mode**.
 
-The easiest way is using a `shell_command`.
+Create a shell command.
 
-Step 1 — Create a shell command
+Add to `configuration.yaml`:
 
-Add this to `configuration.yaml`:
+```yaml
+shell_command:
+  camera_gallery_delete: 'bash -lc "rm -f -- \"{{ path }}\""'
+```
 
-shell_command:  
-  camera_gallery_delete: 'bash -lc "rm -f -- \"{{ filepath }}\""'  
+Restart Home Assistant.
 
-Restart Home Assistant after adding it.
+Then configure the card:
 
-Step 2 — Configure the card
+```yaml
+type: custom:camera-gallery-card
+source_mode: sensor
+entity: sensor.camera_files
+delete_service: shell_command.camera_gallery_delete
+```
 
-type: custom:camera-gallery-card  
-source_mode: sensor  
-entity: sensor.camera_files  
-delete_service: shell_command.camera_gallery_delete  
+### Safety
 
-Safety note
+Files can only be deleted inside:
 
-For safety reasons the card only allows deleting files inside:
-
+```
 /config/www/
+```
 
-Your sensor should therefore output file paths like:
+Example valid path:
 
-/config/www/camera-gallery/clip1.mp4  
+```
+/config/www/camera-gallery/clip1.mp4
+```
 
-Files outside this path will not be deleted.
+---
+
+# Configuration Options
+
+### Source
+
+| Option | Description |
+|------|------|
+| `source_mode` | sensor or media |
+| `entity` | single sensor |
+| `entities` | multiple sensors |
+| `media_source` | single media folder |
+| `media_sources` | multiple media folders |
+| `max_media` | limit number of items |
+
+### Preview
+
+| Option | Description |
+|------|------|
+| `preview_position` | top / bottom |
+| `preview_height` | preview height |
+| `preview_click_to_open` | enable gated preview |
+| `preview_close_on_tap` | allow closing preview |
+
+### Bars & Thumbnails
+
+| Option | Description |
+|------|------|
+| `bar_position` | top / bottom / hidden |
+| `bar_opacity` | preview bar opacity |
+| `thumb_size` | thumbnail size |
+| `thumb_bar_position` | top / bottom / hidden |
+
+### Object Filters
+
+```
+object_filters:
+  - person
+  - car
+  - dog
+  - cat
+```
+
+Max: **4 filters**
+
+Supported:
+
+- person
+- car
+- dog
+- cat
+- truck
+- bus
+- bicycle
+- motorcycle
+- bird
+
+### Delete Options
+
+- `allow_delete`
+- `allow_bulk_delete`
+- `delete_service`
+- `delete_confirm`
 
 ---
 
 # Example Configurations
 
-Basic sensor example
+### Basic sensor setup
 
-type: custom:camera-gallery-card  
-source_mode: sensor  
-entity: sensor.camera_files  
-preview_position: top  
+```yaml
+type: custom:camera-gallery-card
+source_mode: sensor
+entity: sensor.camera_files
+preview_position: top
+preview_height: 320
+```
 
-Frigate example
+### Multiple sensors
 
-type: custom:camera-gallery-card  
-source_mode: media  
-media_folders_fav:  
-  - frigate/clips  
-  - frigate/snapshots  
-preview_position: top  
+```yaml
+type: custom:camera-gallery-card
+source_mode: sensor
+entities:
+  - sensor.camera_files_front
+  - sensor.camera_files_back
+delete_service: shell_command.camera_gallery_delete
+allow_delete: true
+allow_bulk_delete: true
+delete_confirm: true
+```
+
+### Media Source
+
+```yaml
+type: custom:camera-gallery-card
+source_mode: media
+media_source: media-source://media_source/camera-gallery
+thumb_size: 140
+max_media: 30
+```
+
+### Frigate setup
+
+```yaml
+type: custom:camera-gallery-card
+source_mode: media
+media_sources:
+  - media-source://frigate/frigate/event-search/clips
+  - media-source://frigate/frigate/event-search/snapshots
+preview_position: top
+preview_click_to_open: true
+object_filters:
+  - person
+  - car
+  - dog
+  - cat
+```
 
 ---
 
 # Notes
 
-- Supports `.jpg`, `.jpeg`, `.png`, `.webp`, `.mp4`  
-- Automatically sorts files by timestamp  
-- Designed for touch interaction  
-- Works great on tablets and wall dashboards  
+Supported image formats:
+
+```
+jpg
+jpeg
+png
+webp
+gif
+```
+
+Supported video formats:
+
+```
+mp4
+webm
+mov
+m4v
+```
+
+Media is automatically sorted by timestamp when possible.
+
+Works best on:
+
+- Tablets
+- Wall dashboards
+- Touch screens
 
 ---
 
