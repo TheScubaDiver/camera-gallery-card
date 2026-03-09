@@ -2,7 +2,7 @@
  * Camera Gallery Card
  */
 
-const CARD_VERSION = "1.4.0";
+const CARD_VERSION = "1.5.0";
 
 // -------- HARD CODED SETTINGS --------
 const ATTR_NAME = "fileList";
@@ -21,6 +21,7 @@ const DEFAULT_BROWSE_TIMEOUT_MS = 8000;
 const DEFAULT_DELETE_CONFIRM = true;
 const DEFAULT_DELETE_PREFIX = "/config/www/";
 const DEFAULT_DELETE_SERVICE = "";
+const DEFAULT_FILENAME_DATETIME_FORMAT = "";
 const DEFAULT_LIVE_CAMERAS = [];
 const DEFAULT_LIVE_DEFAULT = false;
 const DEFAULT_LIVE_DEFAULT_CAMERA = "";
@@ -140,6 +141,7 @@ class CameraGalleryCard extends LitElement {
       delete_service: "",
       entities: [],
       entity: "",
+      filename_datetime_format: DEFAULT_FILENAME_DATETIME_FORMAT,
       live_camera_entity: "",
       live_cameras: DEFAULT_LIVE_CAMERAS,
       live_default: DEFAULT_LIVE_DEFAULT,
@@ -231,6 +233,133 @@ class CameraGalleryCard extends LitElement {
   }
 
   // ─── Generic helpers ───────────────────────────────────────────────
+
+  _buildFilenameDateRegex(format) {
+    const fmt = String(format || "").trim();
+    if (!fmt) return null;
+
+    const supportedTokens = ["YYYY", "YY", "MM", "DD", "HH", "mm", "ss"];
+    const tokenRegex = /(YYYY|YY|MM|DD|HH|mm|ss)/g;
+
+    const escapeRegex = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+    let regexStr = "";
+    let lastIndex = 0;
+    const fields = [];
+
+    let match;
+    while ((match = tokenRegex.exec(fmt)) !== null) {
+      const token = match[0];
+      const idx = match.index;
+
+      if (idx > lastIndex) {
+        regexStr += escapeRegex(fmt.slice(lastIndex, idx));
+      }
+
+      if (token === "YYYY") {
+        regexStr += "(\\d{4})";
+        fields.push("year");
+      } else if (token === "YY") {
+        regexStr += "(\\d{2})";
+        fields.push("year2");
+      } else if (token === "MM") {
+        regexStr += "(\\d{2})";
+        fields.push("month");
+      } else if (token === "DD") {
+        regexStr += "(\\d{2})";
+        fields.push("day");
+      } else if (token === "HH") {
+        regexStr += "(\\d{2})";
+        fields.push("hour");
+      } else if (token === "mm") {
+        regexStr += "(\\d{2})";
+        fields.push("minute");
+      } else if (token === "ss") {
+        regexStr += "(\\d{2})";
+        fields.push("second");
+      }
+
+      lastIndex = idx + token.length;
+    }
+
+    if (lastIndex < fmt.length) {
+      regexStr += escapeRegex(fmt.slice(lastIndex));
+    }
+
+    if (!fields.length) return null;
+
+    return {
+      regex: new RegExp(regexStr),
+      fields,
+    };
+  }
+
+  _parseDateFromFilename(src, format) {
+    const name = this._sourceNameForParsing(src);
+    if (!name || !format) return null;
+
+    try {
+      const built = this._buildFilenameDateRegex(format);
+      if (!built?.regex || !built?.fields?.length) return null;
+
+      const match = String(name).match(built.regex);
+      if (!match) return null;
+
+      let year = null;
+      let month = null;
+      let day = null;
+      let hour = 0;
+      let minute = 0;
+      let second = 0;
+
+      built.fields.forEach((field, i) => {
+        const value = match[i + 1];
+        if (value == null) return;
+
+        if (field === "year") year = Number(value);
+        if (field === "year2") year = 2000 + Number(value);
+        if (field === "month") month = Number(value);
+        if (field === "day") day = Number(value);
+        if (field === "hour") hour = Number(value);
+        if (field === "minute") minute = Number(value);
+        if (field === "second") second = Number(value);
+      });
+
+      if (
+        !Number.isFinite(year) ||
+        !Number.isFinite(month) ||
+        !Number.isFinite(day)
+      ) {
+        return null;
+      }
+
+      if (month < 1 || month > 12) return null;
+      if (day < 1 || day > 31) return null;
+      if (hour < 0 || hour > 23) return null;
+      if (minute < 0 || minute > 59) return null;
+      if (second < 0 || second > 59) return null;
+
+      const y = String(year).padStart(4, "0");
+      const mo = String(month).padStart(2, "0");
+      const d = String(day).padStart(2, "0");
+      const hh = String(hour).padStart(2, "0");
+      const mm = String(minute).padStart(2, "0");
+      const ss = String(second).padStart(2, "0");
+
+      const dtKey = `${y}-${mo}-${d}T${hh}:${mm}:${ss}`;
+      const ms = new Date(dtKey).getTime();
+
+      if (!Number.isFinite(ms)) return null;
+
+      return {
+        dayKey: `${y}-${mo}-${d}`,
+        dtKey,
+        ms,
+      };
+    } catch (_) {
+      return null;
+    }
+  }
 
   _configChangedKeys(prev = {}, next = {}) {
     const keys = new Set([
@@ -1593,6 +1722,12 @@ class CameraGalleryCard extends LitElement {
   }
 
   _dtMsFromSrc(src) {
+    const custom = this._parseDateFromFilename(
+      src,
+      this.config?.filename_datetime_format
+    );
+    if (custom?.ms != null) return custom.ms;
+
     const ems = this._extractEpochMs(src);
     if (Number.isFinite(ems)) return ems;
 
@@ -1633,6 +1768,12 @@ class CameraGalleryCard extends LitElement {
   }
 
   _extractDateTimeKey(src) {
+    const custom = this._parseDateFromFilename(
+      src,
+      this.config?.filename_datetime_format
+    );
+    if (custom?.dtKey) return custom.dtKey;
+
     const ymd = this._extractYmdHms(src);
     if (ymd?.dtKey) return ymd.dtKey;
 
@@ -1650,6 +1791,12 @@ class CameraGalleryCard extends LitElement {
   }
 
   _extractDayKey(src) {
+    const custom = this._parseDateFromFilename(
+      src,
+      this.config?.filename_datetime_format
+    );
+    if (custom?.dayKey) return custom.dayKey;
+
     const ymd = this._extractYmdHms(src);
     if (ymd?.dayKey) return ymd.dayKey;
 
@@ -2357,6 +2504,10 @@ class CameraGalleryCard extends LitElement {
   setConfig(config) {
     const prevConfig = this.config ? { ...this.config } : null;
 
+    const filename_datetime_format = String(
+      config.filename_datetime_format || ""
+    ).trim();
+
     const clamp = (n, a, b) => Math.min(b, Math.max(a, n));
     const num = (v, d) => {
       if (v === null || v === undefined) return d;
@@ -2524,6 +2675,7 @@ class CameraGalleryCard extends LitElement {
       delete_service: delete_service || "",
       entities: source_mode === "sensor" ? sensorEntitiesClean : [],
       entity: source_mode === "sensor" ? sensorEntitiesClean[0] || "" : "",
+      filename_datetime_format,
       live_camera_entity,
       live_cameras,
       live_default,
