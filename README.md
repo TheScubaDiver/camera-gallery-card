@@ -320,10 +320,10 @@ for safety.
 
 # Editor
 <p align="center">
-  <img src="https://github.com/user-attachments/assets/a0858a81-3ad3-4b24-b3f8-3ce8107d98b0" width="220">
-  <img src="https://github.com/user-attachments/assets/4cd00913-ceef-4556-a1fc-0802c231d9e4" width="220">
-  <img src="https://github.com/user-attachments/assets/306dc7b2-880d-456a-94cb-32d64f70e4aa" width="220">
-  <img src="https://github.com/user-attachments/assets/3fc8fbf1-5fda-4240-87c6-354c49940bc2" width="220">
+  <img src="https://github.com/user-attachments/assets/a0858a81-3ad3-4b24-b3f8-3ce8107d98b0" width="200">
+  <img src="https://github.com/user-attachments/assets/4cd00913-ceef-4556-a1fc-0802c231d9e4" width="200">
+  <img src="https://github.com/user-attachments/assets/306dc7b2-880d-456a-94cb-32d64f70e4aa" width="200">
+  <img src="https://github.com/user-attachments/assets/3fc8fbf1-5fda-4240-87c6-354c49940bc2" width="200">
 </p>
 
 The card includes a custom Lovelace editor.
