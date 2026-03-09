@@ -548,6 +548,10 @@ class CameraGalleryCardEditor extends HTMLElement {
       this._looksLikeFile(this._prettyLabel(s))
     );
 
+    const filenameDatetimeFormat = String(
+      c.filename_datetime_format || ""
+    ).trim();
+
     const objectFiltersArr = this._normalizeObjectFilters(c.object_filters || []);
     const selectedCount = objectFiltersArr.length;
 
@@ -1507,6 +1511,27 @@ class CameraGalleryCardEditor extends HTMLElement {
               </div>
 
               <div class="row">
+                <div class="lbl">Filename datetime format</div>
+                <div class="desc">
+                  Optional custom parser for date and time found in filenames.
+                </div>
+
+                <ha-textfield
+                  id="filenamefmt"
+                  label="Filename datetime format"
+                  placeholder="YYYYMMDDHHmmss"
+                ></ha-textfield>
+
+                <div class="hint">
+                  <ha-icon icon="mdi:information-outline"></ha-icon>
+                  Examples:
+                  <code>YYYYMMDDHHmmss</code>,
+                  <code>DD-MM-YYYY_HH-mm-ss</code>,
+                  <code>YYYY-MM-DDTHH:mm:ss</code>
+                </div>
+              </div>
+
+              <div class="row">
                 <div class="lbl">Delete service</div>
                 <div class="hint">
                   <ha-icon icon="mdi:help-circle-outline"></ha-icon>
@@ -1757,6 +1782,7 @@ class CameraGalleryCardEditor extends HTMLElement {
 
     const entitiesEl = $("entities");
     const mediaEl = $("mediasources");
+    const filenameFmtEl = $("filenamefmt");
     const delserviceEl = $("delservice");
     const heightEl = $("height");
     const thumbEl = $("thumb");
@@ -1767,6 +1793,7 @@ class CameraGalleryCardEditor extends HTMLElement {
 
     this._setControlValue(entitiesEl, entitiesText);
     this._setControlValue(mediaEl, mediaSourcesText);
+    this._setControlValue(filenameFmtEl, filenameDatetimeFormat);
     this._setControlValue(heightEl, String(height));
     this._setControlValue(thumbEl, String(thumbSize));
     this._setControlValue(maxmediaEl, String(maxMedia));
@@ -1905,6 +1932,36 @@ class CameraGalleryCardEditor extends HTMLElement {
         });
       }
     };
+
+    const commitFilenameFormat = (commit = false) => {
+      const raw = String(filenameFmtEl?.value ?? "").trim();
+
+      if (!raw) {
+        const next = { ...this._config };
+        delete next.filename_datetime_format;
+        this._config = this._stripAlwaysTrueKeys(next);
+
+        if (commit) {
+          this._fire();
+          this._scheduleRender();
+        }
+        return;
+      }
+
+      this._config = this._stripAlwaysTrueKeys({
+        ...this._config,
+        filename_datetime_format: raw,
+      });
+
+      if (commit) {
+        this._fire();
+        this._scheduleRender();
+      }
+    };
+
+    filenameFmtEl?.addEventListener("input", () => commitFilenameFormat(false));
+    filenameFmtEl?.addEventListener("change", () => commitFilenameFormat(true));
+    filenameFmtEl?.addEventListener("blur", () => commitFilenameFormat(true));
 
     heightEl?.addEventListener("input", () =>
       commitNumberField("preview_height", heightEl, 320, false)
@@ -2280,6 +2337,7 @@ class CameraGalleryCardEditor extends HTMLElement {
       (ae.id === "barop" ||
         ae.id === "delservice" ||
         ae.id === "entities" ||
+        ae.id === "filenamefmt" ||
         ae.id === "height" ||
         ae.id === "livecam" ||
         ae.id === "maxmedia" ||
