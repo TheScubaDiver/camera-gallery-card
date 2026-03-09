@@ -446,6 +446,59 @@ Used for:
 - preview timestamps
 - thumbnail labels
 
+### Filename date format
+
+The card can read the date and time from your filenames.
+
+If your files use a custom format, you can define it with:
+
+```yaml
+filename_datetime_format:
+```
+
+### Tokens
+
+| Token | Meaning |
+|------|--------|
+| YYYY | Year |
+| MM | Month |
+| DD | Day |
+| HH | Hour |
+| mm | Minutes |
+| ss | Seconds |
+
+### Example 1
+
+Filename:
+
+```
+Deurbel_00_20260309183452.mp4
+```
+
+Config:
+
+```yaml
+filename_datetime_format: YYYYMMDDHHmmss
+```
+
+### Example 2
+
+Filename:
+
+```
+Deurbel_00_2026-03-09-183452.mp4
+```
+
+Config:
+
+```yaml
+filename_datetime_format: YYYY-MM-DD-HHmmss
+```
+
+Only define the **date/time pattern**, not the full filename.
+
+If this option is not set, the card will try to detect the date automatically.
+
 ---
 
 # License
