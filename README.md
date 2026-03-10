@@ -2,7 +2,7 @@
 
 Custom Home Assistant Lovelace card for browsing camera media with a clean timeline-style gallery, preview player, object filters, optional camera live view, and a built-in visual editor.
 
-**Current version:** `v1.5.1`
+**Current version:** `v1.6.0`
 
 <p align="center">
   <img src="https://github.com/user-attachments/assets/5efa9e10-9ac3-48bf-8abf-2a009e797e79" width="48%" />
