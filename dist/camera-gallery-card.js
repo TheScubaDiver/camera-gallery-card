@@ -2,7 +2,7 @@
  * Camera Gallery Card
  */
 
-const CARD_VERSION = "1.5.1";
+const CARD_VERSION = "1.6.0";
 
 // -------- HARD CODED SETTINGS --------
 const ATTR_NAME = "fileList";
@@ -22,9 +22,7 @@ const DEFAULT_DELETE_CONFIRM = true;
 const DEFAULT_DELETE_PREFIX = "/config/www/";
 const DEFAULT_DELETE_SERVICE = "";
 const DEFAULT_FILENAME_DATETIME_FORMAT = "";
-const DEFAULT_LIVE_CAMERAS = [];
 const DEFAULT_LIVE_DEFAULT = false;
-const DEFAULT_LIVE_DEFAULT_CAMERA = "";
 const DEFAULT_LIVE_ENABLED = false;
 const DEFAULT_MAX_MEDIA = 20;
 const DEFAULT_PER_ROOT_MIN_LIMIT = 40;
@@ -143,9 +141,7 @@ class CameraGalleryCard extends LitElement {
       entity: "",
       filename_datetime_format: DEFAULT_FILENAME_DATETIME_FORMAT,
       live_camera_entity: "",
-      live_cameras: DEFAULT_LIVE_CAMERAS,
       live_default: DEFAULT_LIVE_DEFAULT,
-      live_default_camera: DEFAULT_LIVE_DEFAULT_CAMERA,
       live_enabled: DEFAULT_LIVE_ENABLED,
       max_media: DEFAULT_MAX_MEDIA,
       media_source: "",
@@ -359,6 +355,27 @@ class CameraGalleryCard extends LitElement {
     } catch (_) {
       return null;
     }
+  }
+
+  _getAllLiveCameraEntities() {
+    const states = this._hass?.states || {};
+
+    return Object.keys(states)
+      .filter((entityId) => entityId.startsWith("camera."))
+      .filter((entityId) => {
+        const st = states[entityId];
+        if (!st) return false;
+
+        const state = String(st.state || "").toLowerCase();
+        if (state === "unavailable" || state === "unknown") return false;
+
+        return true;
+      })
+      .sort((a, b) => {
+        const an = this._friendlyCameraName(a).toLowerCase();
+        const bn = this._friendlyCameraName(b).toLowerCase();
+        return an.localeCompare(bn, this._locale());
+      });
   }
 
   _configChangedKeys(prev = {}, next = {}) {
@@ -719,21 +736,15 @@ class CameraGalleryCard extends LitElement {
   _getEffectiveLiveCamera() {
     const options = this._getLiveCameraOptions();
     const selected = String(this._liveSelectedCamera || "").trim();
-    const def = String(this.config?.live_default_camera || "").trim();
-    const legacy = String(this.config?.live_camera_entity || "").trim();
+    const preferred = String(this.config?.live_camera_entity || "").trim();
 
-    if (selected && options.some((x) => x === selected)) return selected;
-    if (def && options.some((x) => x === def)) return def;
-    if (legacy && options.some((x) => x === legacy)) return legacy;
+    if (selected && options.includes(selected)) return selected;
+    if (preferred && options.includes(preferred)) return preferred;
     return options[0] || "";
   }
 
   _getLiveCameraOptions() {
-    const arr = Array.isArray(this.config?.live_cameras)
-      ? this.config.live_cameras
-      : [];
-    const fallbackSingle = String(this.config?.live_camera_entity || "").trim();
-    return this._normalizeLiveCameras(arr, fallbackSingle);
+    return this._getAllLiveCameraEntities();
   }
 
   _hideLiveQuickSwitchButton() {
@@ -2654,13 +2665,6 @@ class CameraGalleryCard extends LitElement {
         : DEFAULT_LIVE_ENABLED;
 
     const live_camera_entity = String(config.live_camera_entity || "").trim();
-    const live_cameras = this._normalizeLiveCameras(
-      config.live_cameras ?? DEFAULT_LIVE_CAMERAS,
-      live_camera_entity
-    );
-    const live_default_camera = String(
-      config.live_default_camera || ""
-    ).trim();
     const live_default =
       config.live_default !== undefined
         ? !!config.live_default
@@ -2677,9 +2681,7 @@ class CameraGalleryCard extends LitElement {
       entity: source_mode === "sensor" ? sensorEntitiesClean[0] || "" : "",
       filename_datetime_format,
       live_camera_entity,
-      live_cameras,
       live_default,
-      live_default_camera,
       live_enabled,
       max_media,
       media_source: source_mode === "media" ? mediaRaw : "",
@@ -2714,16 +2716,16 @@ class CameraGalleryCard extends LitElement {
     const visibleSet = new Set(this._getVisibleObjectFilters());
     this._objectFilters = this._objectFilters.filter((x) => visibleSet.has(x));
 
-    const liveOptions = nextConfig.live_cameras;
+    const liveOptions = this._getAllLiveCameraEntities();
     const validSelected =
       this._liveSelectedCamera &&
       liveOptions.some((x) => x === this._liveSelectedCamera);
 
     if (!validSelected) {
       this._liveSelectedCamera =
-        liveOptions.find((x) => x === nextConfig.live_default_camera) ||
-        liveOptions[0] ||
-        "";
+        (live_camera_entity && liveOptions.includes(live_camera_entity)
+          ? live_camera_entity
+          : liveOptions[0]) || "";
     }
 
     if (!prevConfig) {
@@ -2750,12 +2752,7 @@ class CameraGalleryCard extends LitElement {
     }
 
     const liveCameraConfigChanged = changedKeys.some((k) =>
-      [
-        "live_camera_entity",
-        "live_cameras",
-        "live_default_camera",
-        "live_enabled",
-      ].includes(k)
+      ["live_camera_entity", "live_enabled"].includes(k)
     );
 
     if (liveCameraConfigChanged) {
@@ -3676,15 +3673,18 @@ class CameraGalleryCard extends LitElement {
         left: 50%;
         top: 50%;
         transform: translate(-50%, -50%);
-        width: min(86%, 440px);
-        max-height: min(76%, 420px);
+        width: min(78%, 360px);
+        max-height: min(80%, 500px);
         overflow: hidden;
-        border-radius: 22px;
+        border-radius: 18px;
         z-index: 24;
-        background: rgba(24, 24, 28, 0.92);
+        background: rgba(24, 24, 28, 0.94);
         border: 1px solid rgba(255, 255, 255, 0.10);
         box-shadow: 0 18px 40px rgba(0, 0, 0, 0.34);
         color: #fff;
+
+        display: grid;
+        grid-template-rows: auto minmax(0, 1fr);
       }
 
       .live-picker-head {
@@ -3723,10 +3723,11 @@ class CameraGalleryCard extends LitElement {
       }
 
       .live-picker-list {
+        min-height: 0;
+        overflow-y: auto;
+        overflow-x: hidden;
         display: flex;
         flex-direction: column;
-        overflow: auto;
-        max-height: calc(min(76%, 420px) - 68px);
       }
 
       .live-picker-item {
@@ -3737,7 +3738,7 @@ class CameraGalleryCard extends LitElement {
         display: flex;
         align-items: center;
         justify-content: space-between;
-        gap: 14px;
+        gap: 10px;
         padding: 16px 18px;
         cursor: pointer;
         text-align: left;
