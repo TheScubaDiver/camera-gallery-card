@@ -13,6 +13,9 @@ const AVAILABLE_OBJECT_FILTERS = [
   "visitor",
 ];
 
+const DEFAULT_AUTOPLAY = false;
+const DEFAULT_AUTOMUTED = true;
+
 const MAX_VISIBLE_OBJECT_FILTERS = AVAILABLE_OBJECT_FILTERS.length;
 
 const STYLE_COLOR_CONTROLS = [
@@ -29,7 +32,7 @@ const STYLE_COLOR_CONTROLS = [
   {
     hostId: "iconactive-host",
     variable: "--cgc-obj-icon-active-color",
-    label: "Active filter icon",  
+    label: "Active filter icon",
   },
   {
     hostId: "btnactive-host",
@@ -48,8 +51,6 @@ class CameraGalleryCardEditor extends HTMLElement {
     super();
     this._config = {};
     this.attachShadow({ mode: "open" });
-
-
 
     this._scrollRestore = {
       windowY: 0,
@@ -74,14 +75,11 @@ class CameraGalleryCardEditor extends HTMLElement {
     this._mediaBrowserItems = [];
     this._mediaBrowserHistory = [];
 
-    this._webrtcAvailable = false;
-    this._webrtcCheckPending = false;
-
     this._suggestState = {
       entities: { open: false, items: [], index: -1 },
       mediasources: { open: false, items: [], index: -1 },
     };
-  } 
+  }
 
   _applyFieldValidation(id) {
     const el = this.shadowRoot?.getElementById(id);
@@ -263,6 +261,38 @@ class CameraGalleryCardEditor extends HTMLElement {
         }
       } catch (_) {}
     });
+  }
+
+  _lockPageScroll() {
+    this._captureScrollState();
+
+    const body = document.body;
+    const docEl = document.documentElement;
+
+    if (body) {
+      body.style.overflow = "hidden";
+      body.style.touchAction = "none";
+    }
+
+    if (docEl) {
+      docEl.style.overflow = "hidden";
+    }
+  }
+
+  _unlockPageScroll() {
+    const body = document.body;
+    const docEl = document.documentElement;
+
+    if (body) {
+      body.style.overflow = "";
+      body.style.touchAction = "";
+    }
+
+    if (docEl) {
+      docEl.style.overflow = "";
+    }
+
+    this._restoreScrollState();
   }
 
   _clampInt(n, min, max) {
@@ -466,61 +496,6 @@ class CameraGalleryCardEditor extends HTMLElement {
       return true;
     }
     return false;
-  }
-
-  _isWebRTCAvailable() {
-    try {
-      const ctor = customElements.get("webrtc-camera");
-      if (!ctor) return false;
-
-      const el = document.createElement("webrtc-camera");
-      return typeof el.setConfig === "function";
-    } catch (_) {
-      return false;
-    }
-  }
-
-  async _checkWebRTCResource() {
-    if (!this._hass?.callWS) return false;
-
-    try {
-      const resources = await this._hass.callWS({ type: "lovelace/resources" });
-      return (resources || []).some((r) =>
-        String(r?.url || "").toLowerCase().includes("webrtc")
-      );
-    } catch (_) {
-      return false;
-    }
-  }
-
-  async _refreshWebRTCState(force = false) {
-    if (this._webrtcCheckPending && !force) return;
-
-    this._webrtcCheckPending = true;
-
-    try {
-      const hasElement = this._isWebRTCAvailable();
-      const hasResource = await this._checkWebRTCResource();
-      const next = !!(hasElement && hasResource);
-
-      if (this._webrtcAvailable !== next) {
-        this._webrtcAvailable = next;
-        this._scheduleRender();
-        return;
-      }
-
-      this._webrtcAvailable = next;
-    } catch (_) {
-      if (this._webrtcAvailable !== false) {
-        this._webrtcAvailable = false;
-        this._scheduleRender();
-        return;
-      }
-
-      this._webrtcAvailable = false;
-    } finally {
-      this._webrtcCheckPending = false;
-    }
   }
 
   _looksLikeFile(relPath) {
@@ -791,10 +766,113 @@ class CameraGalleryCardEditor extends HTMLElement {
 
   _getStyleVariableValue(variableName) {
     const styleVariables = String(this._config?.style_variables || "");
-    const escaped = String(variableName || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const match = styleVariables.match(new RegExp(`${escaped}\\s*:\\s*([^;]+)`));
+    const escaped = String(variableName || "").replace(
+      /[.*+?^${}()|[\]\\]/g,
+      "\\$&"
+    );
+    const match = styleVariables.match(
+      new RegExp(`${escaped}\\s*:\\s*([^;]+)`)
+    );
 
     return match ? match[1].trim() : "";
+  }
+
+  _setStyleVariable(variable, value) {
+    const current = String(this._config.style_variables || "");
+
+    const lines = current
+      .split("\n")
+      .map((l) => l.trim())
+      .filter(Boolean)
+      .filter((l) => !l.startsWith(variable));
+
+    lines.push(`${variable}: ${value};`);
+
+    this._config = this._stripAlwaysTrueKeys({
+      ...this._config,
+      style_variables: lines.join("\n"),
+    });
+  }
+
+  _removeStyleVariable(variable) {
+    const current = String(this._config.style_variables || "");
+
+    const lines = current
+      .split("\n")
+      .map((l) => l.trim())
+      .filter(Boolean)
+      .filter((l) => !l.startsWith(variable));
+
+    this._config = this._stripAlwaysTrueKeys({
+      ...this._config,
+      style_variables: lines.join("\n"),
+    });
+  }
+
+  _createColorPicker(hostId, variable, value) {
+    const host = this.shadowRoot?.getElementById(hostId);
+    if (!host) return;
+
+    host.innerHTML = "";
+
+    const picker = document.createElement("input");
+    picker.type = "color";
+    picker.className = "cgc-color";
+
+    const isTransparent = value === "transparent";
+
+    picker.value =
+      value && /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(value)
+        ? value
+        : "#000000";
+
+    picker.disabled = isTransparent;
+
+    host.appendChild(picker);
+
+    picker.addEventListener("change", (e) => {
+      const color = e.target.value;
+      this._setStyleVariable(variable, color);
+      this._fire();
+      this._scheduleRender();
+    });
+  }
+
+  _bindColorControls() {
+    STYLE_COLOR_CONTROLS.forEach((item) => {
+      this._createColorPicker(
+        item.hostId,
+        item.variable,
+        this._getStyleVariableValue(item.variable)
+      );
+    });
+
+    this.shadowRoot.querySelectorAll("[data-reset]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const variable = btn.dataset.reset;
+        this._removeStyleVariable(variable);
+        this._fire();
+        this._scheduleRender();
+      });
+    });
+
+    this.shadowRoot.querySelectorAll("[data-transparent]").forEach((el) => {
+      const variable = el.dataset.transparent;
+      const current = this._getStyleVariableValue(variable);
+
+      el.checked = current === "transparent";
+
+      el.addEventListener("change", (e) => {
+        if (e.target.checked) {
+          this._setStyleVariable(variable, "transparent");
+        } else {
+          this._removeStyleVariable(variable);
+        }
+
+        this._fire();
+        this._scheduleRender();
+      });
+    });
   }
 
   _render() {
@@ -805,8 +883,7 @@ class CameraGalleryCardEditor extends HTMLElement {
       if (ae && ae.id) {
         const st =
           typeof ae.selectionStart === "number" ? ae.selectionStart : null;
-        const en =
-          typeof ae.selectionEnd === "number" ? ae.selectionEnd : null;
+        const en = typeof ae.selectionEnd === "number" ? ae.selectionEnd : null;
         this._focusState = {
           id: ae.id,
           value: typeof ae.value === "string" ? ae.value : null,
@@ -908,16 +985,28 @@ class CameraGalleryCardEditor extends HTMLElement {
       return Math.min(100, Math.max(0, n));
     })();
 
+    const autoplay = c.autoplay === true;
+    const autoMuted =
+      c.auto_muted !== undefined ? c.auto_muted === true : DEFAULT_AUTOMUTED;
+
     const barDisabled = tsPos === "hidden";
     const clickToOpen = c.preview_click_to_open === true;
 
     const liveEnabled = c.live_enabled === true;
     const liveCameraEntity = String(c.live_camera_entity || "").trim();
-    const webrtcAvailable = this._webrtcAvailable;
-    const liveControlsDisabled = !webrtcAvailable;
+    const liveControlsDisabled = false;
 
     const cameraEntities = Object.keys(this._hass?.states || {})
-      .filter((id) => id.startsWith("camera."))
+      .filter((id) => {
+        if (!id.startsWith("camera.")) return false;
+
+        const st = this._hass?.states?.[id];
+        if (!st) return false;
+
+        const state = String(st.state || "").toLowerCase();
+
+        return state !== "unavailable" && state !== "unknown";
+      })
       .sort((a, b) => {
         const an = String(
           this._hass?.states?.[a]?.attributes?.friendly_name || a
@@ -1300,7 +1389,7 @@ class CameraGalleryCardEditor extends HTMLElement {
         }
 
         .tabbtn:hover {
-          transform: translateY(-1px);
+          border-color: var(--ed-tab-border);
         }
 
         .tabbtn ha-icon {
@@ -1319,19 +1408,23 @@ class CameraGalleryCardEditor extends HTMLElement {
 
         .tabpanel {
           padding: 16px;
+          padding-right: 20px;
           border-radius: var(--ed-radius-panel);
           background: var(--ed-section-bg);
           border: 1px solid var(--ed-section-border);
           display: grid;
           gap: 14px;
           box-shadow: var(--ed-section-glow);
+          min-height: 420px;
+          box-sizing: border-box;
+          scrollbar-gutter: stable;
         }
 
         .panelhead {
           display: flex;
           align-items: center;
-          gap: 14px;
-          padding-bottom: 14px;
+          gap: 4px;
+          padding-bottom: 6px;
           min-width: 0;
         }
 
@@ -1682,7 +1775,7 @@ class CameraGalleryCardEditor extends HTMLElement {
         .color-row .lbl {
           margin: 0;
         }
-          
+
         .color-reset {
           appearance: none;
           border: none;
@@ -1696,19 +1789,22 @@ class CameraGalleryCardEditor extends HTMLElement {
           cursor: pointer;
           color: var(--ed-text2);
           opacity: 0.7;
-          transition: opacity 0.15s ease, transform 0.15s ease, color 0.15s ease;
+          transition:
+            opacity 0.15s ease,
+            transform 0.15s ease,
+            color 0.15s ease;
         }
 
         .color-reset:hover {
           opacity: 1;
-          transform: rotate(-30deg);
+          border-color: var(--ed-tab-border);
           color: var(--ed-text);
         }
 
         .color-reset ha-icon {
           --mdc-icon-size: 16px;
         }
-        
+
         .select:focus {
           border-color: color-mix(
             in srgb,
@@ -1768,7 +1864,7 @@ class CameraGalleryCardEditor extends HTMLElement {
         }
 
         .seg:hover {
-          transform: translateY(-1px);
+          border-color: var(--ed-tab-border);
         }
 
         .seg.on {
@@ -1877,7 +1973,6 @@ class CameraGalleryCardEditor extends HTMLElement {
         }
 
         .actionbtn:hover {
-          transform: translateY(-1px);
           border-color: color-mix(
             in srgb,
             var(--ed-input-border) 65%,
@@ -1931,7 +2026,7 @@ class CameraGalleryCardEditor extends HTMLElement {
         }
 
         .objchip:hover {
-          transform: translateY(-1px);
+          border-color: var(--ed-tab-border);
         }
 
         .objchip.on {
@@ -2004,6 +2099,8 @@ class CameraGalleryCardEditor extends HTMLElement {
         .cgc-color {
           width: 42px;
           height: 28px;
+          min-width: 42px;
+          flex: 0 0 42px;
           padding: 0;
           border: 1px solid var(--ed-input-border);
           border-radius: 6px;
@@ -2011,6 +2108,13 @@ class CameraGalleryCardEditor extends HTMLElement {
           cursor: pointer;
           appearance: none;
           -webkit-appearance: none;
+          position: relative;
+          z-index: 2;
+        }
+
+        .cgc-color:disabled {
+          opacity: 0.35;
+          cursor: not-allowed;
         }
 
         .cgc-color::-webkit-color-swatch-wrapper {
@@ -2020,6 +2124,19 @@ class CameraGalleryCardEditor extends HTMLElement {
         .cgc-color::-webkit-color-swatch {
           border: none;
           border-radius: 6px;
+        }
+
+        .subrows {
+          display: flex;
+          flex-direction: column;
+          gap: 8px;
+          margin-top: 8px;
+        }
+
+        .lbl.sub {
+          font-size: 14px;
+          font-weight: 500;
+          opacity: 0.95;
         }
 
         .objmeta {
@@ -2043,71 +2160,6 @@ class CameraGalleryCardEditor extends HTMLElement {
           font-size: 11px;
           font-weight: 950;
           letter-spacing: 0.02em;
-        }
-
-        .live-status {
-          display: grid;
-          grid-template-columns: 36px minmax(0, 1fr);
-          gap: 12px;
-          align-items: flex-start;
-          padding: 14px 16px;
-          border-radius: 14px;
-          border: 1px solid transparent;
-          min-width: 0;
-        }
-
-        .live-status-icon {
-          width: 36px;
-          height: 36px;
-          min-width: 36px;
-          border-radius: 12px;
-          display: grid;
-          place-items: center;
-        }
-
-        .live-status-icon ha-icon {
-          --mdc-icon-size: 18px;
-          width: 18px;
-          height: 18px;
-        }
-
-        .live-status-copy {
-          min-width: 0;
-          display: grid;
-          gap: 4px;
-        }
-
-        .live-status-title {
-          font-size: 13px;
-          font-weight: 950;
-          line-height: 1.2;
-          color: var(--ed-text);
-        }
-
-        .live-status-text {
-          font-size: 12px;
-          line-height: 1.45;
-          color: var(--ed-text2);
-        }
-
-        .live-status--ok {
-          background: var(--ed-success-bg);
-          border-color: var(--ed-success-border);
-        }
-
-        .live-status--ok .live-status-icon {
-          background: var(--ed-success-icon-bg);
-          color: var(--ed-valid);
-        }
-
-        .live-status--warn {
-          background: var(--ed-warning-bg);
-          border-color: var(--ed-warning-border);
-        }
-
-        .live-status--warn .live-status-icon {
-          background: var(--ed-warning-icon-bg);
-          color: var(--ed-warning);
         }
 
         .browser-backdrop {
@@ -2360,6 +2412,20 @@ class CameraGalleryCardEditor extends HTMLElement {
           white-space: nowrap;
         }
 
+        .color-transparent {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          font-size: 11px;
+          font-weight: 800;
+          color: var(--ed-text2);
+          cursor: pointer;
+        }
+
+        .color-transparent input {
+          cursor: pointer;
+        }
+
         .browser-empty {
           display: grid;
           place-items: center;
@@ -2572,6 +2638,24 @@ class CameraGalleryCardEditor extends HTMLElement {
               ${panelHead("mdi:image-outline", "Viewer")}
 
               <div class="row">
+                <div class="subrows">
+                  <div class="row-head">
+                    <div class="lbl">Autoplay</div>
+                    <div class="togrow">
+                      <ha-switch id="autoplay"></ha-switch>
+                    </div>
+                  </div>
+
+                  <div class="row-head">
+                    <div class="lbl">Auto muted</div>
+                    <div class="togrow">
+                      <ha-switch id="auto_muted"></ha-switch>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="row">
                 <div class="lbl">Height</div>
                 <ha-textfield id="height" label="Height" type="number"></ha-textfield>
               </div>
@@ -2628,32 +2712,6 @@ class CameraGalleryCardEditor extends HTMLElement {
             <div class="tabpanel" data-panel="live">
               ${panelHead("mdi:video-outline", "Live")}
 
-              <div class="live-status ${webrtcAvailable ? "live-status--ok" : "live-status--warn"}">
-                <div class="live-status-icon">
-                  <ha-icon icon="${
-                    webrtcAvailable
-                      ? "mdi:check-circle-outline"
-                      : "mdi:alert-circle-outline"
-                  }"></ha-icon>
-                </div>
-                <div class="live-status-copy">
-                  <div class="live-status-title">
-                    ${
-                      webrtcAvailable
-                        ? "WebRTC detected"
-                        : "WebRTC not detected"
-                    }
-                  </div>
-                  <div class="live-status-text">
-                    ${
-                      webrtcAvailable
-                        ? `<code>custom:webrtc-camera</code> is available. Live streams can be used.`
-                        : `Live streams require <code>custom:webrtc-camera</code>. Install/load WebRTC in Home Assistant first.`
-                    }
-                  </div>
-                </div>
-              </div>
-
               <div class="row ${liveControlsDisabled ? "muted" : ""}">
                 <div class="row-head">
                   <div class="lbl">Live preview</div>
@@ -2683,12 +2741,14 @@ class CameraGalleryCardEditor extends HTMLElement {
                     <select class="select" id="livecam" ${liveControlsDisabled ? "disabled" : ""}>
                       <option value="">Automatic (first available camera)</option>
                       ${cameraEntities
-                        .map(
-                          (id) =>
-                            `<option value="${id}" ${
-                              id === liveCameraEntity ? "selected" : ""
-                            }>${id}</option>`
-                        )
+                        .map((id) => {
+                          const friendlyName = String(
+                            this._hass?.states?.[id]?.attributes?.friendly_name || id
+                          );
+                          return `<option value="${id}" ${
+                            id === liveCameraEntity ? "selected" : ""
+                          }>${friendlyName}</option>`;
+                        })
                         .join("")}
                     </select>
                     <span class="selarrow"></span>
@@ -2806,6 +2866,14 @@ class CameraGalleryCardEditor extends HTMLElement {
                           <div class="color-controls">
                             <div id="${item.hostId}"></div>
 
+                            <label class="color-transparent">
+                              <input
+                                type="checkbox"
+                                data-transparent="${item.variable}"
+                              >
+                              Transparent
+                            </label>
+
                             <button
                               type="button"
                               class="color-reset"
@@ -2833,45 +2901,6 @@ class CameraGalleryCardEditor extends HTMLElement {
 
     const $ = (id) => this.shadowRoot.getElementById(id);
 
-    const createColorPicker = (hostId, variable, value) => {
-      const host = $(hostId);
-      if (!host) return;
-
-      host.innerHTML = "";
-
-      const picker = document.createElement("input");
-      picker.type = "color";
-      picker.className = "cgc-color";
-
-      picker.value =
-        value && /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(value)
-          ? value
-          : "#000000";
-
-      host.appendChild(picker);
-
-      picker.addEventListener("change", (e) => {
-        const color = e.target.value;
-
-        const current = String(this._config.style_variables || "");
-
-        const lines = current
-          .split("\n")
-          .map((l) => l.trim())
-          .filter(Boolean)
-          .filter((l) => !l.startsWith(variable));
-
-        lines.push(`${variable}: ${color};`);
-
-        this._config = this._stripAlwaysTrueKeys({
-          ...this._config,
-          style_variables: lines.join("\n"),
-        });
-
-        this._fire();
-      });
-    };
-
     const entitiesEl = $("entities");
     const mediaEl = $("mediasources");
     const filenameFmtEl = $("filenamefmt");
@@ -2882,14 +2911,8 @@ class CameraGalleryCardEditor extends HTMLElement {
     const baropEl = $("barop");
     const barvalEl = $("barval");
     const livecamEl = $("livecam");
-
-    STYLE_COLOR_CONTROLS.forEach((item) => {
-      createColorPicker(
-        item.hostId,
-        item.variable,
-        this._getStyleVariableValue(item.variable)
-      );
-    });
+    const autoplayEl = $("autoplay");
+    const autoMutedEl = $("auto_muted");
 
     this._setControlValue(entitiesEl, entitiesText);
     this._setControlValue(mediaEl, mediaSourcesText);
@@ -2898,12 +2921,16 @@ class CameraGalleryCardEditor extends HTMLElement {
     this._setControlValue(thumbEl, String(thumbSize));
     this._setControlValue(maxmediaEl, String(maxMedia));
     this._setControlValue(baropEl, barOpacity);
+    if (autoplayEl) autoplayEl.checked = autoplay;
+    if (autoMutedEl) autoMutedEl.checked = autoMuted;
 
     if (delserviceEl) delserviceEl.value = deleteService;
     if (livecamEl) livecamEl.value = liveCameraEntity;
 
     this._applyFieldValidation("entities");
     this._applyFieldValidation("mediasources");
+
+    this._bindColorControls();
 
     this.shadowRoot.querySelectorAll("[data-tab]").forEach((btn) => {
       btn.addEventListener("click", () => this._setActiveTab(btn.dataset.tab));
@@ -3004,29 +3031,6 @@ class CameraGalleryCardEditor extends HTMLElement {
     this.shadowRoot.querySelectorAll("[data-objchip]").forEach((btn) => {
       btn.addEventListener("click", () => {
         this._toggleObjectFilter(btn.dataset.objchip);
-      });
-    });
-
-    /* COLOR RESET BUTTONS */
-    this.shadowRoot.querySelectorAll("[data-reset]").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        const variable = btn.dataset.reset;
-
-        const current = String(this._config.style_variables || "");
-
-        const lines = current
-          .split("\n")
-          .map((l) => l.trim())
-          .filter(Boolean)
-          .filter((l) => !l.startsWith(variable));
-
-        this._config = this._stripAlwaysTrueKeys({
-          ...this._config,
-          style_variables: lines.join("\n"),
-        });
-
-        this._fire();
-        this._scheduleRender();
       });
     });
 
@@ -3180,12 +3184,15 @@ class CameraGalleryCardEditor extends HTMLElement {
       this._set("preview_click_to_open", !!e.target.checked);
     });
 
-    $("liveenabled")?.addEventListener("change", (e) => {
-      if (!this._isWebRTCAvailable()) {
-        e.target.checked = false;
-        return;
-      }
+    autoplayEl?.addEventListener("change", (e) => {
+      this._set("autoplay", !!e.target.checked);
+    });
 
+    autoMutedEl?.addEventListener("change", (e) => {
+      this._set("auto_muted", !!e.target.checked);
+    });
+
+    $("liveenabled")?.addEventListener("change", (e) => {
       const enabled = !!e.target.checked;
 
       if (enabled) {
@@ -3205,9 +3212,8 @@ class CameraGalleryCardEditor extends HTMLElement {
     });
 
     livecamEl?.addEventListener("change", (e) => {
-      if (!this._isWebRTCAvailable()) return;
-
       const v = String(e.target.value || "").trim();
+
       if (!v) {
         const next = { ...this._config };
         delete next.live_camera_entity;
@@ -3357,18 +3363,6 @@ class CameraGalleryCardEditor extends HTMLElement {
     });
   }
 
-  _lockPageScroll() {
-    try {
-      document.body.style.overflow = "hidden";
-    } catch (_) {}
-  }
-
-  _unlockPageScroll() {
-    try {
-      document.body.style.overflow = "";
-    } catch (_) {}
-  }
-
   _replaceCurrentLine(el, newLine) {
     const info = this._getTextareaLineInfo(el);
     const before = info.value.slice(0, info.lineStart);
@@ -3413,11 +3407,6 @@ class CameraGalleryCardEditor extends HTMLElement {
 
   _setActiveTab(tab) {
     this._activeTab = String(tab || "general");
-
-    if (this._activeTab === "live") {
-      this._refreshWebRTCState(true);
-    }
-
     this._scheduleRender();
   }
 
@@ -3433,6 +3422,14 @@ class CameraGalleryCardEditor extends HTMLElement {
 
   setConfig(config) {
     this._config = this._stripAlwaysTrueKeys({ ...(config || {}) });
+
+    if (typeof this._config.autoplay === "undefined") {
+      this._config.autoplay = DEFAULT_AUTOPLAY;
+    }
+
+    if (typeof this._config.auto_muted === "undefined") {
+      this._config.auto_muted = DEFAULT_AUTOMUTED;
+    }
 
     if ("shell_command" in this._config) {
       const next = { ...this._config };
@@ -3541,10 +3538,6 @@ class CameraGalleryCardEditor extends HTMLElement {
 
   set hass(hass) {
     this._hass = hass;
-
-    if (!this._webrtcCheckPending) {
-      this._refreshWebRTCState();
-    }
 
     const ae = this.shadowRoot?.activeElement;
     const tag = String(ae?.tagName || "").toLowerCase();
