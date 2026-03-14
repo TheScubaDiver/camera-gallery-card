@@ -2,7 +2,7 @@
 
 Custom **Home Assistant Lovelace card** for browsing camera media in a clean **timeline-style gallery** with preview player, object filters, optional live view, and a built-in visual editor.
 
-**Current version:** `v1.7.1`
+**Current version:** `v1.8.0`
 
 <p align="center">
   <img src="https://github.com/user-attachments/assets/5efa9e10-9ac3-48bf-8abf-2a009e797e79" width="48%" />
@@ -13,15 +13,13 @@ Custom **Home Assistant Lovelace card** for browsing camera media in a clean **t
 
 # Requirements
 
-## WebRTC (required for Live View)
+## Native WebRTC (required for Live View)
 
-Live camera preview requires **WebRTC Camera** by AlexxIT.
+Live camera preview now uses **Home Assistant’s native WebRTC streaming**.
 
-<a href="https://my.home-assistant.io/redirect/hacs_repository/?owner=AlexxIT&repository=WebRTC&category=integration">
-  <img src="https://my.home-assistant.io/badges/hacs_repository.svg" />
-</a>
+No additional WebRTC integration is required anymore.
 
-https://github.com/AlexxIT/WebRTC
+Your camera entity only needs to support WebRTC streaming within Home Assistant.
 
 ---
 
@@ -40,6 +38,7 @@ https://github.com/TarheelGrad1998/files
 # Features
 
 ### Gallery
+
 - Image & video preview
 - Timeline thumbnails
 - Day grouping
@@ -47,25 +46,36 @@ https://github.com/TarheelGrad1998/files
 - Object filter buttons
 - Horizontal or vertical thumbnail layout
 - Mobile friendly
+- Media type icon (image / video)
 
 ### Sources
+
 - `sensor` entities with `fileList`
 - Home Assistant `media_source`
 - Multiple sensors or media folders
 
 ### Live view
-- Optional camera preview
+
+- Native Home Assistant **WebRTC live preview**
 - Live badge
 - Camera switching
 - Default live mode
+- Camera friendly names in selector
+
+### Video controls
+
+- Video autoplay toggle
+- Video auto-mute toggle
 
 ### Actions
+
 - Delete
 - Multiple delete
 - Download
 - Long-press action menu
 
 ### Editor
+
 Built-in Lovelace editor with tabs:
 
 - **General**
@@ -237,6 +247,8 @@ Notes:
 | `live_enabled` | Enable live mode |
 | `live_camera_entity` | Camera entity |
 | `live_default` | Start in live mode |
+| `video_autoplay` | Enable automatic video playback |
+| `video_auto_mute` | Automatically mute videos |
 | `delete_service` | Delete file service |
 
 ---
@@ -255,6 +267,7 @@ dog
 motorcycle
 person
 truck
+visitor
 ```
 
 Example:
