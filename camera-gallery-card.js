@@ -123,6 +123,8 @@ class CameraGalleryCard extends LitElement {
       _suppressNextThumbClick: { type: Boolean },
       _swipeStartX: { type: Number },
       _swipeStartY: { type: Number },
+      _swipeCurX: { type: Number },
+      _swipeCurY: { type: Number },
       _swiping: { type: Boolean },
       _thumbMenuItem: { type: Object },
       _thumbMenuOpen: { type: Boolean },
@@ -199,6 +201,8 @@ class CameraGalleryCard extends LitElement {
     this._suppressNextThumbClick = false;
     this._swipeStartX = 0;
     this._swipeStartY = 0;
+    this._swipeCurX = 0;
+    this._swipeCurY = 0;
     this._swiping = false;
     this._thumbLongPressStartX = 0;
     this._thumbLongPressStartY = 0;
@@ -1099,6 +1103,45 @@ class CameraGalleryCard extends LitElement {
     }
 
     card.hass = this._hass;
+    this._injectLiveFillStyle(card);
+  }
+
+  _injectLiveFillStyle(card) {
+    const cssHuiImage = `
+      :host { display:block!important; width:100%!important; height:100%!important; }
+      .image-container { width:100%!important; height:100%!important; }
+      .ratio { padding-bottom:0!important; padding-top:0!important; width:100%!important; height:100%!important; position:relative!important; }
+      img, video, ha-hls-player, ha-web-rtc-player { width:100%!important; height:100%!important; object-fit:cover!important; display:block!important; position:static!important; }
+    `;
+
+    const injectIntoHuiImage = (huiImage) => {
+      const sr = huiImage.shadowRoot;
+      if (!sr || sr.querySelector("#cgc-fill-hui")) return;
+      const s = document.createElement("style");
+      s.id = "cgc-fill-hui";
+      s.textContent = cssHuiImage;
+      sr.appendChild(s);
+      // Also directly nullify the inline padding-bottom on .ratio
+      const ratio = sr.querySelector(".ratio");
+      if (ratio) ratio.style.setProperty("padding-bottom", "0", "important");
+    };
+
+    const tryInject = () => {
+      const sr = card.shadowRoot;
+      if (!sr) return false;
+      const huiImage = sr.querySelector("hui-image");
+      if (!huiImage) return false;
+      injectIntoHuiImage(huiImage);
+      return true;
+    };
+
+    if (!tryInject()) {
+      const obs = new MutationObserver(() => {
+        if (tryInject()) obs.disconnect();
+      });
+      obs.observe(card.shadowRoot || card, { childList: true, subtree: true });
+      setTimeout(() => obs.disconnect(), 5000);
+    }
   }
 
   _openLivePicker() {
@@ -1127,12 +1170,6 @@ class CameraGalleryCard extends LitElement {
     return html`
       <div class="live-stage">
         ${this._renderLiveCardHost()}
-
-        <div class="live-badge">
-          <span class="live-dot"></span>
-          <span>LIVE</span>
-        </div>
-
 
         ${this._renderLivePicker()}
       </div>
@@ -1938,11 +1975,11 @@ class CameraGalleryCard extends LitElement {
       );
 
       const internalCap = isFrigateRoot
-        ? Math.min(120, Math.max(visibleCap * 2, 40))
+        ? Math.min(400, Math.max(visibleCap * 4, 200))
         : Math.min(300, Math.max(visibleCap * 4, 80));
 
       const walkLimitTotal = isFrigateRoot
-        ? Math.min(240, Math.max(internalCap * 2, internalCap + 20))
+        ? Math.min(800, Math.max(internalCap * 2, 400))
         : Math.min(600, Math.max(internalCap * 3, internalCap + 40));
       const perRootLimit = Math.max(
         DEFAULT_PER_ROOT_MIN_LIMIT,
@@ -2780,8 +2817,12 @@ class CameraGalleryCard extends LitElement {
     return !!obj && active.includes(obj);
   }
 
-  _objectColor() {
-    return "rgba(255,255,255,0.92)";
+  _objectColor(obj) {
+    const colors = this.config?.object_colors;
+    if (obj && colors && typeof colors === "object" && colors[obj]) {
+      return colors[obj];
+    }
+    return "var(--cgc-tsbar-txt, #fff)";
   }
 
   _objectForSrc(src) {
@@ -3037,6 +3078,8 @@ class CameraGalleryCard extends LitElement {
     this._swiping = true;
     this._swipeStartX = e.clientX;
     this._swipeStartY = e.clientY;
+    this._swipeCurX = e.clientX;
+    this._swipeCurY = e.clientY;
 
     try {
       e.currentTarget?.setPointerCapture?.(e.pointerId);
@@ -3064,8 +3107,10 @@ class CameraGalleryCard extends LitElement {
 
     if (this.config?.preview_click_to_open && !this._previewOpen) return;
 
-    const dx = e.clientX - this._swipeStartX;
-    const dy = e.clientY - this._swipeStartY;
+    const endX = (e.clientX !== 0 || e.clientY !== 0) ? e.clientX : this._swipeCurX;
+    const endY = (e.clientX !== 0 || e.clientY !== 0) ? e.clientY : this._swipeCurY;
+    const dx = endX - this._swipeStartX;
+    const dy = endY - this._swipeStartY;
 
     if (Math.abs(dx) < 10 && Math.abs(dy) < 10) {
       this._showNavChevrons();
@@ -3310,6 +3355,7 @@ class CameraGalleryCard extends LitElement {
       max_media,
       media_source: source_mode === "media" ? mediaRaw : "",
       media_sources: source_mode === "media" ? normalizedMediaRoots : [],
+      object_colors: (typeof config.object_colors === "object" && config.object_colors !== null) ? config.object_colors : {},
       object_filters: visibleObjectFilters,
       preview_click_to_open,
       preview_close_on_tap,
@@ -3684,7 +3730,9 @@ class CameraGalleryCard extends LitElement {
               }
               this._onPreviewPointerDown(e);
             }}
+            @pointermove=${(e) => { if (this._swiping && e.isPrimary !== false) { this._swipeCurX = e.clientX; this._swipeCurY = e.clientY; } }}
             @pointerup=${(e) => this._onPreviewPointerUp(e, filtered.length)}
+            @pointercancel=${(e) => this._onPreviewPointerUp(e, filtered.length)}
             @click=${(e) => this._onPreviewClick(e)}
           >
             ${isLive
@@ -3711,23 +3759,23 @@ class CameraGalleryCard extends LitElement {
             ${tsPosClass !== "hidden" ? html`
               <div class="tsbar ${tsPosClass}">
                 ${!isLive ? html`
-                  ${(() => { const obj = selected ? this._objectForSrc(selected) : null; const icon = obj ? this._objectIcon(obj) : ""; return icon ? html`<div class="tspill tspill-left"><ha-icon icon="${icon}"></ha-icon></div>` : html``; })()}
-                  <div class="tsleft">${tsLabel || "—"}</div>
-
                   ${previewGated && previewOpen ? html`
-                    <button class="pbackbtn-center" style="pointer-events:auto;" @pointerdown=${(e) => e.stopPropagation()} @click=${(e) => {
+                    <button class="tspill tspill-left tsbar-back-btn" style="pointer-events:auto;" @pointerdown=${(e) => e.stopPropagation()} @click=${(e) => {
                       e.stopPropagation();
                       this._previewOpen = false;
                       this.requestUpdate();
                     }}>
-                      <ha-icon icon="mdi:close-circle-outline"></ha-icon>
+                      <ha-icon icon="mdi:arrow-left"></ha-icon>
                     </button>
-                  ` : html``}
-
+                  ` : (() => { const obj = selected ? this._objectForSrc(selected) : null; const icon = obj ? this._objectIcon(obj) : ""; const color = obj ? this._objectColor(obj) : ""; return icon ? html`<div class="tspill tspill-left"><ha-icon icon="${icon}" style="color:${color}"></ha-icon></div>` : html``; })()}
+                  <div class="tsleft">${tsLabel || "—"}</div>
                   <div class="tspill">
                     <span class="tspill-val">${idx + 1}/${filtered.length}</span>
                   </div>
                 ` : html`
+                  <button class="tspill tspill-left tsbar-back-btn" style="pointer-events:auto;" @pointerdown=${(e) => e.stopPropagation()} @click=${(e) => { e.stopPropagation(); this._setViewMode("media"); this._previewOpen = false; this.requestUpdate(); }}>
+                    <ha-icon icon="mdi:arrow-left"></ha-icon>
+                  </button>
                   ${this._getLiveCameraOptions().length > 1 ? html`
                     <button class="tsbar-cam-btn" style="pointer-events:auto;" @pointerdown=${(e) => e.stopPropagation()} @click=${(e) => { e.stopPropagation(); this._openLivePicker(); }}>
                       <ha-icon icon="mdi:video-switch"></ha-icon>
@@ -3749,6 +3797,7 @@ class CameraGalleryCard extends LitElement {
             ${visibleObjectFilters.map((filterValue) => {
               const objIcon = this._objectIcon(filterValue);
               const label = this._filterLabel(filterValue);
+              const objColor = this._objectColor(filterValue);
               return html`
                 <button
                   class="objbtn icon-only ${this._isObjectFilterActive(filterValue)
@@ -3759,7 +3808,7 @@ class CameraGalleryCard extends LitElement {
                   aria-label="Filter ${label}"
                 >
                   ${objIcon
-                    ? html`<ha-icon icon="${objIcon}"></ha-icon>`
+                    ? html`<ha-icon icon="${objIcon}" style="color:${objColor}"></ha-icon>`
                     : html``}
                 </button>
               `;
@@ -4131,7 +4180,7 @@ class CameraGalleryCard extends LitElement {
         --cgc-divider:      var(--divider-color,              rgba(0,0,0,0.10));
         --cgc-thumb-bg:     var(--secondary-background-color, rgba(0,0,0,0.06));
         --cgc-tbar-bg:      var(--secondary-background-color, rgba(0,0,0,0.16));
-        --cgc-pill-bg:      var(--secondary-background-color, rgba(0,0,0,0.10));
+        --cgc-pill-bg:      var(--secondary-background-color, rgba(0,0,0,0.45));
 
         /* ── nav overlay buttons ── */
         --cgc-nav-bg:       rgba(0,0,0,0.18);
@@ -4148,6 +4197,7 @@ class CameraGalleryCard extends LitElement {
         --cgc-ts-r: 0;
         --cgc-ts-g: 0;
         --cgc-ts-b: 0;
+        --cgc-tsbar-txt: #fff;
       }
 
       @media (prefers-color-scheme: dark) {
@@ -4187,8 +4237,8 @@ class CameraGalleryCard extends LitElement {
       }
       .divider {
         height: 1px;
-        background: var(--cgc-divider);
-        margin: 12px 0;
+        background: transparent;
+        margin: 6px 0;
       }
 
       .preview {
@@ -4206,6 +4256,7 @@ class CameraGalleryCard extends LitElement {
         height: 100%;
         object-fit: cover;
         width: 100%;
+        pointer-events: none;
       }
 
       .live-stage {
@@ -4247,32 +4298,14 @@ class CameraGalleryCard extends LitElement {
         object-fit: cover !important;
       }
 
-      .live-badge {
-        position: absolute;
-        top: 10px;
-        left: 10px;
-        z-index: 20;
-        display: inline-flex;
-        align-items: center;
-        gap: 6px;
-        padding: 4px 8px;
-        border-radius: 999px;
-        background: rgba(255, 0, 0, 0.88);
-        color: #fff;
-        font-size: 9px;
-        font-weight: 800;
-        letter-spacing: 0.4px;
-        line-height: 1;
-        pointer-events: none;
-      }
 
       .segbtn.livebtn {
         width: 60px;
       }
 
       .segbtn.livebtn.on {
-        background: #ff0000;
-        color: #ffffff;
+        background: var(--error-color, #c62828);
+        color: var(--text-primary-color, #fff);
       }
 
       .preview-video-host {
@@ -4285,17 +4318,9 @@ class CameraGalleryCard extends LitElement {
         height: 100%;
         display: block;
         object-fit: cover;
+        pointer-events: auto;
       }
 
-      .live-dot {
-        width: 7px;
-        height: 7px;
-        border-radius: 999px;
-        background: #fff;
-        display: inline-block;
-        box-shadow: 0 0 0 0 rgba(255, 255, 255, 0.75);
-        animation: livePulse 1.35s infinite;
-      }
 
 
       @keyframes livePulse {
@@ -4623,7 +4648,7 @@ class CameraGalleryCard extends LitElement {
           var(--cgc-ts-b, 0),
           calc(var(--barOpacity, 45) / 100)
         );
-        color: #fff;
+        color: var(--cgc-tsbar-txt, #fff);
         font-size: 12px;
         font-weight: 700;
         display: flex;
@@ -4803,7 +4828,10 @@ class CameraGalleryCard extends LitElement {
         padding-bottom: 2px;
         overscroll-behavior-x: contain;
         overscroll-behavior-y: none;
+        scrollbar-width: none;
       }
+
+      .tthumbs.horizontal::-webkit-scrollbar { display: none; }
 
       .tthumbs.vertical {
         display: grid;
@@ -4819,7 +4847,10 @@ class CameraGalleryCard extends LitElement {
         overscroll-behavior-y: contain;
         overscroll-behavior-x: none;
         padding-right: 2px;
+        scrollbar-width: none;
       }
+
+      .tthumbs.vertical::-webkit-scrollbar { display: none; }
 
       .tthumbs.vertical .tthumb {
         width: 100%;
@@ -4883,7 +4914,7 @@ class CameraGalleryCard extends LitElement {
       }
 
       .tthumb.sel::after {
-        border: 2px solid rgba(255, 192, 203, 0.95);
+        border: 2px solid var(--primary-color, #2196f3);
       }
 
       .timg {
@@ -5050,8 +5081,8 @@ class CameraGalleryCard extends LitElement {
       }
 
       .bulkdelete {
-        background: rgba(255, 0, 0, 0.18);
-        border: 1px solid rgba(255, 0, 0, 0.35);
+        background: color-mix(in srgb, var(--error-color, #c62828) 18%, transparent);
+        border: 1px solid color-mix(in srgb, var(--error-color, #c62828) 35%, transparent);
       }
 
       @media (max-width: 700px) {
@@ -5265,7 +5296,7 @@ class CameraGalleryCard extends LitElement {
         justify-content: center;
         background: transparent;
         border: none;
-        color: #fff;
+        color: var(--cgc-tsbar-txt, #fff);
         cursor: pointer;
         pointer-events: auto;
         padding: 0;
@@ -5281,28 +5312,17 @@ class CameraGalleryCard extends LitElement {
         display: block;
       }
 
-      .pbackbtn-center {
-        position: absolute;
-        left: 50%;
-        transform: translateX(-50%);
-        display: flex;
-        align-items: center;
-        gap: 6px;
-        background: transparent;
-        border: none;
-        border-radius: 999px;
-        padding: 4px 12px;
-        color: #fff;
-        font-size: 11px;
-        font-weight: 800;
+      .tsbar-back-btn {
         cursor: pointer;
-        pointer-events: auto;
+        border: none;
       }
 
-      .pbackbtn-center ha-icon {
-        --mdc-icon-size: 24px;
-        width: 24px;
-        height: 24px;
+      .tsbar-back-btn ha-icon {
+        --ha-icon-size: 16px;
+        --mdc-icon-size: 16px;
+        width: 16px;
+        height: 16px;
+        display: block;
       }
 
       .thumb-menu-cancel {
