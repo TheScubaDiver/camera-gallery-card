@@ -2,7 +2,7 @@
 
 Custom **Home Assistant Lovelace card** for browsing camera media in a clean **timeline-style gallery** with preview player, object filters, optional live view, and a built-in visual editor.
 
-**Current version:** `v1.9.0`
+**Current version:** `v1.9.1`
 
 <p align="center">
   <img src="https://github.com/user-attachments/assets/5efa9e10-9ac3-48bf-8abf-2a009e797e79" width="48%" />
@@ -40,7 +40,7 @@ https://github.com/TarheelGrad1998/files
 ### Gallery
 
 - Image & video preview
-- Timeline thumbnails
+- Timeline thumbnails with lazy loading
 - Day grouping
 - Filename timestamp parsing
 - Object filter buttons with custom icon support
@@ -85,6 +85,7 @@ Built-in Lovelace editor with tabs:
 - **Viewer**
 - **Live**
 - **Thumbnails**
+- **Styling**
 
 Features:
 
@@ -93,6 +94,21 @@ Features:
 - Field validation
 - Object filter picker
 - Cleanup of legacy config keys
+- Live preview in the HA card picker
+
+### Styling
+
+The **Styling** tab provides a visual editor for colors and border radius, organized in collapsible sections:
+
+| Section | Options |
+|---|---|
+| Card | Background, Border color, Border radius |
+| Preview bar | Bar text color, Pill color |
+| Thumbnails | Bar background, Bar text color, Border radius |
+| Filter buttons | Background, Icon color, Active background, Active icon color, Border radius |
+| Today / Date / Live | Text color, Chevron color, Live active color, Border radius |
+
+All styling options can also be set manually via `style_variables` using CSS custom properties (see below).
 
 ---
 
@@ -265,7 +281,43 @@ Notes:
 | `allow_bulk_delete` | Enable bulk delete |
 | `delete_confirm` | Show confirmation before deleting |
 | `delete_service` | Delete file service |
-| `style_variables` | Custom CSS variable overrides |
+| `style_variables` | Custom CSS variable overrides (see styling section) |
+
+---
+
+# Styling / CSS variables
+
+All visual styling can be customized via the **Styling** tab in the editor, or manually via `style_variables` in YAML.
+
+| Variable | Element | Default |
+|---|---|---|
+| `--cgc-card-bg` | Card background | theme card color |
+| `--cgc-card-border-color` | Card border | theme divider color |
+| `--r` | Card border radius | `10px` |
+| `--cgc-tsbar-txt` | Preview bar text color | `#fff` |
+| `--cgc-pill-bg` | Preview pill background | theme secondary bg |
+| `--cgc-tbar-bg` | Thumbnail bar background | theme secondary bg |
+| `--cgc-tbar-txt` | Thumbnail bar text color | theme text color |
+| `--cgc-thumb-radius` | Thumbnail border radius | `10px` |
+| `--cgc-obj-btn-bg` | Filter button background | theme secondary bg |
+| `--cgc-obj-icon-color` | Filter icon color | theme text color |
+| `--cgc-obj-btn-active-bg` | Active filter background | primary color |
+| `--cgc-obj-icon-active-color` | Active filter icon color | `#fff` |
+| `--cgc-obj-btn-radius` | Filter button border radius | `10px` |
+| `--cgc-ctrl-txt` | Today/date/live text color | theme secondary text |
+| `--cgc-ctrl-chevron` | Date navigation chevron color | theme text color |
+| `--cgc-live-active-bg` | Live button active background | error color |
+| `--cgc-ctrl-radius` | Controls bar border radius | `10px` |
+
+Example:
+
+```yaml
+style_variables: |
+  --cgc-card-bg: transparent;
+  --cgc-card-border-color: transparent;
+  --r: 0px;
+  --cgc-thumb-radius: 4px;
+```
 
 ---
 
