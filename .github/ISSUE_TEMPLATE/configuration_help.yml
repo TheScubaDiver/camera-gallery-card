@@ -1,0 +1,67 @@
+name: Configuration Help
+description: Your sensor or media source isn't working as expected
+labels: ["configuration"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## Configuration Help
+        Use this template if your setup isn't working — for example, no media showing up, sensor not found, or media source not loading.
+
+  - type: dropdown
+    id: source-mode
+    attributes:
+      label: Source mode
+      options:
+        - Sensor (file sensor)
+        - Media source
+        - Both
+    validations:
+      required: true
+
+  - type: textarea
+    id: card-config
+    attributes:
+      label: Card configuration (YAML)
+      description: "Paste your full card configuration"
+      render: yaml
+    validations:
+      required: true
+
+  - type: textarea
+    id: sensor-config
+    attributes:
+      label: Sensor configuration (if applicable)
+      description: "Paste your Files integration sensor config from configuration.yaml"
+      render: yaml
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What is happening?
+      placeholder: "Describe what you see (or don't see) and what you expected"
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Error message / logs
+      description: "Browser console (F12 → Console) and/or HA logs via Settings → System → Logs"
+      render: shell
+
+  - type: input
+    id: card-version
+    attributes:
+      label: Camera Gallery Card version
+      placeholder: "e.g. 1.9.2"
+    validations:
+      required: true
+
+  - type: input
+    id: ha-version
+    attributes:
+      label: Home Assistant version
+      placeholder: "e.g. 2024.3.1"
+    validations:
+      required: true

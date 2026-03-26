@@ -1,0 +1,48 @@
+name: Question / Help
+description: Something is unclear or you need help getting started
+labels: ["question"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## Question or Help Request
+        Before asking, please check the [README](https://github.com/TheScubadiver/camera-gallery-card#readme) — your answer may already be there.
+
+  - type: dropdown
+    id: topic
+    attributes:
+      label: Topic
+      options:
+        - Installation
+        - Configuration (YAML)
+        - Sensor / media source setup
+        - Object filters
+        - Live view
+        - Styling / CSS variables
+        - Delete setup
+        - Something else
+    validations:
+      required: true
+
+  - type: textarea
+    id: question
+    attributes:
+      label: Your question
+      placeholder: "What are you trying to do, and what's unclear?"
+    validations:
+      required: true
+
+  - type: textarea
+    id: config
+    attributes:
+      label: Your current card configuration
+      description: "Paste your card YAML here — it helps a lot"
+      render: yaml
+
+  - type: input
+    id: card-version
+    attributes:
+      label: Camera Gallery Card version
+      placeholder: "e.g. 1.9.2"
+    validations:
+      required: true
