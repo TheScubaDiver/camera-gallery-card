@@ -43,18 +43,7 @@ FileTrack is a fork of the archived [files integration by TarheelGrad1998](https
 
 No YAML configuration is needed — sensors are configured entirely through the UI.
 
-### Step 2 — Store your files
-
-Files must be placed inside `/config/www/` so Home Assistant can serve them at `/local/`:
-
-```
-/config/www/camera/frontdoor/2026-03-09_12-31-10_person.jpg
-/config/www/camera/frontdoor/2026-03-09_12-32-01_car.mp4
-```
-
-The recommended filename format includes a timestamp and optional object label — see [Filename parsing](#filename-parsing) below.
-
-### Step 3 — Use in the card
+### Step 2 — Use in the card
 
 Once your FileTrack sensor is created, use it in the card:
 
