@@ -5,19 +5,9 @@ Custom **Home Assistant Lovelace card** for browsing camera media in a clean **t
 **Current version:** `v2.0.1`
 
 <p align="center">
-  <img src="https://github.com/user-attachments/assets/5efa9e10-9ac3-48bf-8abf-2a009e797e79" width="48%" />
-  <img src="https://github.com/user-attachments/assets/75fbfa4c-c49b-4633-b304-79a939776d4f" width="48%" />
+  <img src="https://github.com/user-attachments/assets/1c71ada8-98bb-435e-bbc6-b6974186c2e0" width="48%" />
+  <img src="https://github.com/user-attachments/assets/40caf878-bc55-4cfd-9381-3a353785acf3" width="48%" />
 </p>
-
----
-
-## Requirements
-
-### Native WebRTC (required for Live View)
-
-Live camera preview uses **Home Assistant's native WebRTC streaming**.
-
-No additional WebRTC integration is required. Your camera entity only needs to support WebRTC streaming within Home Assistant.
 
 ---
 
@@ -47,11 +37,10 @@ FileTrack is a fork of the archived [files integration by TarheelGrad1998](https
 6. **Restart Home Assistant**
 7. Go to **Settings → Devices & Services** and add **FileTrack**
 
-No YAML configuration is needed — sensors are configured entirely through the card editor UI.
+> [!NOTE]
+> Once you have installed FileTrack, you can leave it alone. No need to configure anything in FileTrack — everything is configured in the card editor UI.
 
 <img width="434" height="181" alt="Scherm­afbeelding 2026-03-28 om 13 51 00" src="https://github.com/user-attachments/assets/3d0bb033-7523-4204-bedf-2548cebbbec1" />
-
-**Make sure to restart Home Assistant after creating the sensor.**
 
 ---
 
@@ -69,6 +58,8 @@ No YAML configuration is needed — sensors are configured entirely through the 
 - Mobile friendly
 - Media type icon (image / video)
 - Cover / Contain option for media display
+
+<img width="490" height="407" alt="Scherm­afbeelding 2026-03-29 om 17 05 49" src="https://github.com/user-attachments/assets/6817a0ae-5d57-4ebf-8c8d-b5452c66ad66" />
 
 ### Sources
 
@@ -98,6 +89,8 @@ No YAML configuration is needed — sensors are configured entirely through the 
 - Download
 - Long-press action menu
 
+<img width="441" height="307" alt="Scherm­afbeelding 2026-03-29 om 20 49 53" src="https://github.com/user-attachments/assets/bdcde10e-b882-444f-a99d-0ae0073e68a7" />
+
 ### Editor
 
 Built-in Lovelace editor with tabs:
@@ -120,7 +113,10 @@ Features:
 
 ### Styling
 
-The **Styling** tab provides a visual editor for colors and border radius, organized in collapsible sections:
+The **Styling** tab provides a visual editor for colors and border radius.
+
+<details>
+<summary>Show styling sections</summary>
 
 | Section | Options |
 |---|---|
@@ -130,22 +126,29 @@ The **Styling** tab provides a visual editor for colors and border radius, organ
 | Filter buttons | Background, Icon color, Active background, Active icon color, Border radius |
 | Today / Date / Live | Text color, Chevron color, Live active color, Border radius |
 
+</details>
+
 ---
 
 ## Delete setup
 
-To enable delete actions, configure a shell command in Home Assistant and provide the service name in the card editor under **General → Delete service**.
+> [!TIP]
+> To enable delete actions, configure a shell command in Home Assistant and provide the service name in the card editor under **General → Delete service**.
 
 Optional delete options are also available in the editor:
 
 - Confirm before deleting
 - Allow bulk delete
 
+> [!NOTE]
 > Delete is intended for files inside `/config/www/`. Frigate media sources do not support delete actions.
 
 ---
 
 ## Configuration options
+
+<details>
+<summary>Show all configuration options</summary>
 
 | Option | Description |
 |------|------|
@@ -177,11 +180,16 @@ Optional delete options are also available in the editor:
 | `delete_service` | Delete file service |
 | `style_variables` | Custom CSS variable overrides |
 
+</details>
+
 ---
 
 ## Styling / CSS variables
 
 All visual styling can be customized via the **Styling** tab in the editor.
+
+<details>
+<summary>Show all CSS variables</summary>
 
 | Variable | Element | Default |
 |---|---|---|
@@ -203,12 +211,13 @@ All visual styling can be customized via the **Styling** tab in the editor.
 | `--cgc-live-active-bg` | Live button active background | error color |
 | `--cgc-ctrl-radius` | Controls bar border radius | `10px` |
 
+</details>
+
 ---
 
 ## Object filters
 
 Supported built-in filters:
-
 ```
 bicycle · bird · bus · car · cat · dog · motorcycle · person · truck · visitor
 ```
@@ -217,12 +226,12 @@ Custom filters with a custom icon can be added via the editor.
 
 Object filter colors can be assigned per filter type in the editor.
 
-Recommended filename format for object detection:
-
-```
-2026-03-09_12-31-10_person.jpg
-2026-03-09_12-31-10_car.mp4
-```
+> [!TIP]
+> Recommended filename format for object detection:
+> ```
+> 2026-03-09_12-31-10_person.jpg
+> 2026-03-09_12-31-10_car.mp4
+> ```
 
 ---
 
@@ -231,7 +240,6 @@ Recommended filename format for object detection:
 The card extracts timestamps from filenames for sorting, day grouping, preview timestamps, and thumbnail labels.
 
 Example supported formats:
-
 ```
 2026-03-09_12-31-10_person.jpg
 20260309_123110_person.jpg
