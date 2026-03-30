@@ -203,7 +203,7 @@ class CameraGalleryCard extends LitElement {
     this._liveSelectedCamera = "";
     this._liveMuted = false;
     this._liveFullscreen = false;
-    this._onFullscreenChange = () => {};
+    this._onFullscreenChange = () => { this.requestUpdate(); };
 
     this._ms = {
       key: "",
@@ -230,12 +230,14 @@ class CameraGalleryCard extends LitElement {
   connectedCallback() {
     super.connectedCallback();
     document.addEventListener("fullscreenchange", this._onFullscreenChange);
+    document.addEventListener("webkitfullscreenchange", this._onFullscreenChange);
   }
 
   disconnectedCallback() {
     super.disconnectedCallback();
 
     document.removeEventListener("fullscreenchange", this._onFullscreenChange);
+    document.removeEventListener("webkitfullscreenchange", this._onFullscreenChange);
     if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
 
     if (this._liveQuickSwitchTimer) clearTimeout(this._liveQuickSwitchTimer);
@@ -374,7 +376,6 @@ class CameraGalleryCard extends LitElement {
   _enqueuePoster(src) {
     const key = String(src || "").trim();
     if (!key) return;
-    if (this.config?.source_mode !== "sensor") return;
     if (this._posterCache.has(key)) return;
     if (this._posterPending.has(key)) return;
     if (this._posterQueued.has(key)) return;
@@ -1091,6 +1092,92 @@ class CameraGalleryCard extends LitElement {
     return player;
   }
 
+  async _ensureLiveCardFromUrl(url) {
+    const key = `stream:${url}`;
+    if (this._liveCard && this._liveCardConfigKey === key) {
+      return this._liveCard;
+    }
+
+    // Sluit bestaande peer connection en WebSocket als die er zijn
+    if (this._rtcWebSocket) {
+      try { this._rtcWebSocket.close(); } catch (_) {}
+      this._rtcWebSocket = null;
+    }
+    if (this._rtcPeerConnection) {
+      try { this._rtcPeerConnection.close(); } catch (_) {}
+      this._rtcPeerConnection = null;
+    }
+
+    const video = document.createElement("video");
+    video.autoplay = true;
+    video.muted = true;
+    video.playsInline = true;
+    video.controls = false;
+    video.style.cssText = "display:block;width:100%;height:100%;margin:0;object-fit:cover;";
+
+    try {
+      const pc = new RTCPeerConnection({ iceServers: [{ urls: "stun:stun.l.google.com:19302" }] });
+      this._rtcPeerConnection = pc;
+
+      pc.addTransceiver("video", { direction: "recvonly" });
+      pc.addTransceiver("audio", { direction: "recvonly" });
+
+      pc.ontrack = (e) => {
+        if (e.streams?.[0]) video.srcObject = e.streams[0];
+      };
+
+      // Gebruik WebSocket naar go2rtc — vermijdt CORS problemen met HTTP fetch
+      const go2rtcBase = this._getGo2rtcUrl();
+      const wsUrl = go2rtcBase.replace(/^http/, "ws") + "/api/webrtc?src=" + encodeURIComponent(url);
+      const ws = new WebSocket(wsUrl);
+      this._rtcWebSocket = ws;
+
+      await new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => reject(new Error("go2rtc WS timeout")), 10000);
+
+        ws.onopen = async () => {
+          try {
+            const offer = await pc.createOffer();
+            await pc.setLocalDescription(offer);
+            ws.send(JSON.stringify({ type: "webrtc/offer", value: pc.localDescription.sdp }));
+          } catch (err) { reject(err); }
+        };
+
+        ws.onmessage = async (evt) => {
+          try {
+            const msg = JSON.parse(evt.data);
+            if (msg.type === "webrtc/answer") {
+              await pc.setRemoteDescription({ type: "answer", sdp: msg.value });
+              clearTimeout(timeout);
+              resolve();
+            } else if (msg.type === "webrtc/candidate") {
+              pc.addIceCandidate({ candidate: msg.value, sdpMid: "0" }).catch(() => {});
+            } else if (msg.type === "error") {
+              clearTimeout(timeout);
+              reject(new Error("go2rtc error: " + msg.value));
+            }
+          } catch (err) { reject(err); }
+        };
+
+        ws.onerror = (e) => { clearTimeout(timeout); reject(new Error("go2rtc WS error")); };
+        ws.onclose = (e) => { if (e.code !== 1000) { clearTimeout(timeout); reject(new Error("go2rtc WS closed: " + e.code)); } };
+      });
+
+      // Stuur ICE candidates door naar go2rtc
+      pc.onicecandidate = (e) => {
+        if (e.candidate && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: "webrtc/candidate", value: e.candidate.candidate }));
+        }
+      };
+    } catch (err) {
+      console.warn("[CGC] RTSP stream failed:", err);
+    }
+
+    this._liveCard = video;
+    this._liveCardConfigKey = key;
+    return video;
+  }
+
   _getEffectiveLiveCamera() {
     const selected = String(this._liveSelectedCamera || "").trim();
     if (selected) return selected;
@@ -1140,8 +1227,30 @@ class CameraGalleryCard extends LitElement {
   }
 
   _toggleLiveFullscreen() {
+    const video = this._findLiveVideo();
+
+    // Uitgang fullscreen
+    if (document.fullscreenElement || document.webkitFullscreenElement) {
+      (document.exitFullscreen || document.webkitExitFullscreen).call(document).catch(() => {});
+      return;
+    }
+
+    // iOS Safari: webkitEnterFullscreen op video element
+    if (video && video.webkitSupportsFullscreen) {
+      video.webkitEnterFullscreen();
+      return;
+    }
+
+    // Standard fullscreen API
+    if (document.fullscreenEnabled) {
+      (video || this).requestFullscreen().catch(() => {});
+      return;
+    }
+
+    // CSS fallback
     this._liveFullscreen = !this._liveFullscreen;
     this.toggleAttribute("data-live-fs", this._liveFullscreen);
+    this.requestUpdate();
   }
 
   _applyLiveMuteState() {
@@ -2472,6 +2581,17 @@ class CameraGalleryCard extends LitElement {
       if (Number.isFinite(ms)) return ms;
     }
 
+    const pathDtKey = (() => {
+      const m = String(src || "").match(/\/(\d{8})\/(\d{6})\./);
+      if (!m) return null;
+      return `${m[1].slice(0,4)}-${m[1].slice(4,6)}-${m[1].slice(6,8)}T${m[2].slice(0,2)}:${m[2].slice(2,4)}:${m[2].slice(4,6)}`;
+    })();
+
+    if (pathDtKey) {
+      const ms = new Date(pathDtKey).getTime();
+      if (Number.isFinite(ms)) return ms;
+    }
+
     return NaN;
   }
 
@@ -2680,13 +2800,17 @@ class CameraGalleryCard extends LitElement {
         try {
           wrap.scrollTo({ behavior: "auto", top: 0 });
         } catch (_) {}
-        return;
+      } else {
+        wrap.scrollLeft = 0;
+        try {
+          wrap.scrollTo({ behavior: "auto", left: 0 });
+        } catch (_) {}
       }
 
-      wrap.scrollLeft = 0;
-      try {
-        wrap.scrollTo({ behavior: "auto", left: 0 });
-      } catch (_) {}
+      // Herstart observer na scroll reset zodat zichtbare elementen
+      // correct worden gedetecteerd op de nieuwe scroll positie
+      this._observedThumbs = new WeakSet();
+      this._setupThumbObserver();
     });
   }
 
@@ -3964,21 +4088,23 @@ class CameraGalleryCard extends LitElement {
                 <div class="gallery-pill"><span>${idx + 1}/${filtered.length}</span></div>
               </div>
             ` : isLive ? html`
-              <div class="gallery-pills top ${this._pillsVisible || this._showLivePicker ? "visible" : ""}">
-                ${previewGated ? html`
-                  <button class="gallery-pill live-pill-btn" @pointerdown=${(e) => e.stopPropagation()} @click=${(e) => { e.stopPropagation(); this._setViewMode("media"); this._previewOpen = false; this.requestUpdate(); }}>
-                    <ha-icon icon="mdi:arrow-left"></ha-icon>
+              <div class="live-controls-bar ${this._pillsVisible || this._showLivePicker ? "visible" : ""}">
+                <div class="live-pills-left">
+                  <div class="gallery-pill"><span>${this._friendlyCameraName(this._getEffectiveLiveCamera())}</span></div>
+                </div>
+                <div class="live-pills-right">
+                  <button class="gallery-pill live-pill-btn" @pointerdown=${(e) => e.stopPropagation()} @click=${(e) => { e.stopPropagation(); this._toggleLiveMute(); }}>
+                    <ha-icon icon=${this._liveMuted ? "mdi:volume-off" : "mdi:volume-high"}></ha-icon>
                   </button>
-                ` : html``}
-                <button class="gallery-pill live-pill-btn" @pointerdown=${(e) => e.stopPropagation()} @click=${(e) => { e.stopPropagation(); this._toggleLiveMute(); }}>
-                  <ha-icon icon=${this._liveMuted ? "mdi:volume-off" : "mdi:volume-high"}></ha-icon>
-                </button>
-                <div class="gallery-pill"><span>${this._friendlyCameraName(this._getEffectiveLiveCamera())}</span></div>
-                ${this._getLiveCameraOptions().length > 1 ? html`
-                  <button class="gallery-pill live-pill-btn" @pointerdown=${(e) => e.stopPropagation()} @click=${(e) => { e.stopPropagation(); this._openLivePicker(); }}>
-                    <ha-icon icon="mdi:cctv"></ha-icon>
+                  ${this._getLiveCameraOptions().length > 1 ? html`
+                    <button class="gallery-pill live-pill-btn" @pointerdown=${(e) => e.stopPropagation()} @click=${(e) => { e.stopPropagation(); this._openLivePicker(); }}>
+                      <ha-icon icon="mdi:cctv"></ha-icon>
+                    </button>
+                  ` : html``}
+                  <button class="gallery-pill live-pill-btn" @pointerdown=${(e) => e.stopPropagation()} @click=${(e) => { e.stopPropagation(); this._toggleLiveFullscreen(); }}>
+                    <ha-icon icon=${document.fullscreenElement || document.webkitFullscreenElement || this._liveFullscreen ? "mdi:fullscreen-exit" : "mdi:fullscreen"}></ha-icon>
                   </button>
-                ` : html``}
+                </div>
               </div>
             ` : html``}
           </div>
@@ -4110,7 +4236,12 @@ class CameraGalleryCard extends LitElement {
                           }
                         }
 
-                        poster = snapshotUrl || "";
+                        if (snapshotUrl) {
+                          poster = snapshotUrl;
+                        } else if (thumbUrl) {
+                          poster = this._posterCache.get(thumbUrl) || "";
+                          if (!poster) this._enqueuePoster(thumbUrl);
+                        }
                       } else {
                         poster = this._posterCache.get(it.src) || "";
                       }
@@ -4937,6 +5068,33 @@ class CameraGalleryCard extends LitElement {
         bottom: 0;
       }
 
+      .live-controls-bar {
+        position: absolute;
+        top: 8px;
+        left: 8px;
+        right: 8px;
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        gap: 6px;
+        opacity: 0;
+        transition: opacity 0.25s ease;
+        pointer-events: none;
+        z-index: 10;
+      }
+      .live-controls-bar.visible {
+        opacity: 1;
+        pointer-events: auto;
+      }
+      .live-controls-bar:not(.visible) .live-pill-btn {
+        pointer-events: none;
+      }
+      .live-pills-left, .live-pills-right {
+        display: flex;
+        flex-direction: row;
+        gap: 6px;
+        align-items: center;
+      }
       .gallery-pills {
         position: absolute;
         left: 50%;
