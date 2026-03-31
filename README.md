@@ -2,7 +2,7 @@
 
 Custom **Home Assistant Lovelace card** for browsing camera media in a clean **timeline-style gallery** with preview player, object filters, optional live view, and a built-in visual editor.
 
-**Current version:** `v2.1.0`
+**Current version:** `v2.2.0`
 
 <p align="center">
   <img src="https://github.com/user-attachments/assets/1c71ada8-98bb-435e-bbc6-b6974186c2e0" width="30%" />
@@ -72,6 +72,8 @@ FileTrack is a fork of the archived [files integration by TarheelGrad1998](https
 - Native Home Assistant **WebRTC live preview**
 - Redesigned live view layout: camera name on the left, controls on the right
 - Native fullscreen button (iOS + Android/desktop)
+- **Pinch to zoom in fullscreen** — touch, trackpad, and Ctrl + scroll wheel
+- **Aspect ratio toggle** — quickly switch between 16:9, 4:3 and 1:1, remembered per camera
 - Live badge
 - Camera switching with configurable picker
 - Default live camera
@@ -163,7 +165,8 @@ Optional delete options are also available in the editor:
 | `source_mode` | `sensor` or `media` |
 | `entity / entities` | Sensor source |
 | `media_source / media_sources` | Media browser source |
-| `preview_height` | Preview player height |
+| `start_mode` | Default view: `gallery` or `live` |
+| `aspect_ratio` | Preview aspect ratio: `16:9`, `4:3`, or `1:1` |
 | `preview_position` | `top` or `bottom` |
 | `preview_click_to_open` | Click to open preview |
 | `bar_position` | Timestamp bar position |
