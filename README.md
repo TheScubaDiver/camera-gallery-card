@@ -74,6 +74,9 @@ FileTrack is a fork of the archived [files integration by TarheelGrad1998](https
 - Native fullscreen button (iOS + Android/desktop)
 - **Pinch to zoom in fullscreen** — touch, trackpad, and Ctrl + scroll wheel
 - **Aspect ratio toggle** — quickly switch between 16:9, 4:3 and 1:1, remembered per camera
+
+  <img width="128" height="37" alt="Scherm­afbeelding 2026-03-31 om 09 05 18" src="https://github.com/user-attachments/assets/d5f45a05-819c-45ae-b83c-eda384da5f83" />
+
 - Live badge
 - Camera switching with configurable picker
 - Default live camera
