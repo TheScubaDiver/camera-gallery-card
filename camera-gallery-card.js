@@ -2,7 +2,7 @@
  * Camera Gallery Card
  */
 
-const CARD_VERSION = "2.2.0";
+const CARD_VERSION = "2.3.0";
 
 // -------- HARD CODED SETTINGS --------
 const ATTR_NAME = "fileList";
@@ -20,7 +20,7 @@ const THUMB_SIZE = 86;
 const DEFAULT_ALLOW_BULK_DELETE = true;
 const DEFAULT_ALLOW_DELETE = true;
 const DEFAULT_BAR_OPACITY = 30;
-const DEFAULT_BROWSE_TIMEOUT_MS = 3000;
+const DEFAULT_BROWSE_TIMEOUT_MS = 10000;
 const DEFAULT_DELETE_CONFIRM = true;
 const DEFAULT_DELETE_PREFIX = "/config/www/";
 const DEFAULT_DELETE_SERVICE = "";
@@ -31,7 +31,7 @@ const DEFAULT_PER_ROOT_MIN_LIMIT = 40;
 const DEFAULT_PREVIEW_CLICK_TO_OPEN = false;
 const DEFAULT_PREVIEW_CLOSE_ON_TAP_WHEN_GATED = true;
 const DEFAULT_PREVIEW_POSITION = "top"; // "top" | "bottom"
-const DEFAULT_RESOLVE_BATCH = 4;
+const DEFAULT_RESOLVE_BATCH = 8;
 const DEFAULT_SOURCE_MODE = "sensor"; // "sensor" | "media"
 const DEFAULT_THUMB_BAR_POSITION = "bottom"; // "bottom" | "top" | "hidden"
 const DEFAULT_THUMB_LAYOUT = "horizontal"; // "horizontal" | "vertical"
@@ -134,6 +134,8 @@ class CameraGalleryCard extends LitElement {
       _liveFullscreen: { type: Boolean },
       _imgFsOpen: { type: Boolean },
       _aspectRatio: { type: String },
+      _liveMicActive: { type: Boolean },
+      _hamburgerOpen: { type: Boolean },
     };
   }
 
@@ -173,6 +175,7 @@ class CameraGalleryCard extends LitElement {
     this._objectFilters = [];
     this._pendingScrollToI = null;
     this._posterCache = new Map();
+    this._msBrowseTtlCache = new Map();
     this._posterPending = new Set();
     this._snapshotCache = new Map();
     this._frigateSnapshots = [];
@@ -205,6 +208,7 @@ class CameraGalleryCard extends LitElement {
     this._liveMuted = false;
     this._liveFullscreen = false;
     this._imgFsOpen = false;
+    this._hamburgerOpen = false;
 
     // Pinch-to-zoom state (alleen actief in fullscreen live mode)
     this._zoomScale = 1;
@@ -334,6 +338,7 @@ class CameraGalleryCard extends LitElement {
     this.addEventListener('touchend', this._onZoomTouchEnd);
     this.addEventListener('touchcancel', this._onZoomTouchEnd);
     this.addEventListener('wheel', this._onZoomWheel, { passive: false });
+    if (navigator.maxTouchPoints > 0) this._showPills(5000);
   }
 
   disconnectedCallback() {
@@ -364,14 +369,40 @@ class CameraGalleryCard extends LitElement {
       this._thumbObserver.disconnect();
       this._thumbObserver = null;
     }
+
+    this._stopMicStream();
   }
 
   set hass(hass) {
     const firstHass = !this._hass;
+    const oldHass = this._hass;
     this._hass = hass;
-    if (firstHass && this.config?.start_mode === "live" && this._hasLiveConfig()) {
-      this._viewMode = "live";
+
+    if (firstHass) {
+      if (this.config?.start_mode === "live" && this._hasLiveConfig()) {
+        this._viewMode = "live";
+      }
+      this.requestUpdate();
+      return;
     }
+
+    // Forward hass to live card immediately — no re-render needed just for token refresh
+    if (this._liveCard) this._liveCard.hass = hass;
+
+    // Only re-render when an entity we actually display has changed state
+    const sensorIds = this._sensorEntityList();
+    const cameraIds = Array.isArray(this.config?.live_camera_entities)
+      ? this.config.live_camera_entities
+      : [];
+    const watchIds = [...sensorIds, ...cameraIds];
+
+    if (
+      watchIds.length > 0 &&
+      !watchIds.some((id) => oldHass?.states[id] !== hass.states[id])
+    ) {
+      return;
+    }
+
     this.requestUpdate();
   }
 
@@ -438,6 +469,7 @@ class CameraGalleryCard extends LitElement {
       this._clearPreviewVideoHostPlayback();
       return;
     }
+    this._syncCurrentMedia(selected);
 
     let selectedUrl = selected;
     if (this._isMediaSourceId(selected)) {
@@ -531,6 +563,7 @@ class CameraGalleryCard extends LitElement {
     this._posterQueue = [];
     this._posterQueued.clear();
     this._posterInFlight.clear();
+    this._posterPending.clear();
   }
 
   _closePreview() {
@@ -717,7 +750,12 @@ class CameraGalleryCard extends LitElement {
       usingMediaSource: !!usingMediaSource,
     });
 
-    if (this._prefetchKey === key) return;
+    const selectedNeedsResolve = usingMediaSource
+      && selectedSrc
+      && this._isMediaSourceId(selectedSrc)
+      && !this._ms.urlCache.has(selectedSrc);
+
+    if (this._prefetchKey === key && !selectedNeedsResolve) return;
     this._prefetchKey = key;
 
     queueMicrotask(() => {
@@ -762,6 +800,146 @@ class CameraGalleryCard extends LitElement {
     }
 
     return out;
+  }
+
+  _parseRawDateFields(name, format) {
+    if (!name || !format) return null;
+    try {
+      const built = this._buildFilenameDateRegex(format);
+      if (!built?.regex || !built?.fields?.length) return null;
+      const match = String(name).match(built.regex);
+      if (!match) return null;
+      const f = { year: null, month: null, day: null, hour: null, minute: null, second: null };
+      built.fields.forEach((field, i) => {
+        const v = match[i + 1];
+        if (v == null) return;
+        if (field === "year") f.year = Number(v);
+        else if (field === "year2") f.year = 2000 + Number(v);
+        else if (field === "month") f.month = Number(v);
+        else if (field === "day") f.day = Number(v);
+        else if (field === "hour") f.hour = Number(v);
+        else if (field === "minute") f.minute = Number(v);
+        else if (field === "second") f.second = Number(v);
+      });
+      return f;
+    } catch (_) { return null; }
+  }
+
+  _parseFolderFileDatetime(src) {
+    const folderFmt = this.config?.folder_datetime_format;
+    const fileFmt = this.config?.filename_datetime_format;
+    if (!folderFmt) return null;
+
+    // Haal folder- en bestandsnaam-segment op uit het pad
+    const raw = String(src || "");
+    const parts = raw.split("/").filter(Boolean);
+    if (parts.length < 2) return null;
+    const fileSegment = parts[parts.length - 1].replace(/\.[^./.]+$/, "");
+    const folderSegment = parts[parts.length - 2];
+
+    const folderFields = this._parseRawDateFields(folderSegment, folderFmt);
+    if (!folderFields) return null;
+
+    const fileFields = fileFmt ? this._parseRawDateFields(fileSegment, fileFmt) : null;
+
+    // Samenvoegen: folder levert datum, bestand levert tijdstip
+    const year  = folderFields.year  ?? fileFields?.year  ?? new Date().getFullYear();
+    const month = folderFields.month ?? fileFields?.month ?? null;
+    const day   = folderFields.day   ?? fileFields?.day   ?? null;
+    const hour   = fileFields?.hour   ?? folderFields.hour   ?? 0;
+    const minute = fileFields?.minute ?? folderFields.minute ?? 0;
+    const second = fileFields?.second ?? folderFields.second ?? 0;
+
+    if (month == null || day == null) return null;
+    if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+
+    const ms = new Date(year, month - 1, day, hour, minute, second).getTime();
+    if (!Number.isFinite(ms)) return null;
+
+    const pad = (n, l = 2) => String(n).padStart(l, "0");
+    const dtKey = `${pad(year, 4)}-${pad(month)}-${pad(day)}T${pad(hour)}:${pad(minute)}:${pad(second)}`;
+    return { dayKey: `${pad(year, 4)}-${pad(month)}-${pad(day)}`, dtKey, ms };
+  }
+
+  _autoDetectFolderDate(folderSegment) {
+    const s = String(folderSegment || "").trim();
+    const thisYear = new Date().getFullYear();
+    let m;
+
+    // YYYY-MM-DD or YYYY.MM.DD or YYYY_MM_DD
+    m = s.match(/^(\d{4})[_\-.](\d{2})[_\-.](\d{2})$/);
+    if (m) {
+      const year = +m[1], month = +m[2], day = +m[3];
+      if (month >= 1 && month <= 12 && day >= 1 && day <= 31) return { year, month, day };
+    }
+
+    // DD-MM-YYYY or DD.MM.YYYY or DD_MM_YYYY
+    m = s.match(/^(\d{2})[_\-.](\d{2})[_\-.](\d{4})$/);
+    if (m) {
+      const day = +m[1], month = +m[2], year = +m[3];
+      if (month >= 1 && month <= 12 && day >= 1 && day <= 31) return { year, month, day };
+    }
+
+    // 8 digits YYYYMMDD
+    m = s.match(/^(\d{4})(\d{2})(\d{2})$/);
+    if (m) {
+      const year = +m[1], month = +m[2], day = +m[3];
+      if (month >= 1 && month <= 12 && day >= 1 && day <= 31) return { year, month, day };
+    }
+
+    // 4 digits: DDMM first (European), fallback MMDD
+    m = s.match(/^(\d{2})(\d{2})$/);
+    if (m) {
+      const a = +m[1], b = +m[2];
+      if (b >= 1 && b <= 12 && a >= 1 && a <= 31) return { year: thisYear, month: b, day: a };
+      if (a >= 1 && a <= 12 && b >= 1 && b <= 31) return { year: thisYear, month: a, day: b };
+    }
+
+    return null;
+  }
+
+  _autoDetectFileTime(fileSegment) {
+    const s = String(fileSegment || "").trim();
+    let m;
+
+    // HH:MM:SS or HH-MM-SS or HH_MM_SS (with optional surrounding chars)
+    m = s.match(/(?:^|[^0-9])(\d{2})[:_-](\d{2})[:_-](\d{2})(?:[^0-9]|$)/);
+    if (m) {
+      const hour = +m[1], minute = +m[2], second = +m[3];
+      if (hour <= 23 && minute <= 59 && second <= 59) return { hour, minute, second };
+    }
+
+    // Exact 6 digits only (no surrounding digits)
+    m = s.match(/^\d{6}$/);
+    if (m) {
+      const hour = +s.slice(0, 2), minute = +s.slice(2, 4), second = +s.slice(4, 6);
+      if (hour <= 23 && minute <= 59 && second <= 59) return { hour, minute, second };
+    }
+
+    return null;
+  }
+
+  _autoDetectFolderFileDate(src) {
+    const parts = String(src || "").split("/").filter(Boolean);
+    if (parts.length < 2) return null;
+    const fileSegment = parts[parts.length - 1].replace(/\.[^./.]+$/, "");
+    const folderSegment = parts[parts.length - 2];
+
+    const dateFields = this._autoDetectFolderDate(folderSegment);
+    if (!dateFields) return null;
+
+    const timeFields = this._autoDetectFileTime(fileSegment);
+    const { year, month, day } = dateFields;
+    const hour   = timeFields?.hour   ?? 0;
+    const minute = timeFields?.minute ?? 0;
+    const second = timeFields?.second ?? 0;
+
+    const ms = new Date(year, month - 1, day, hour, minute, second).getTime();
+    if (!Number.isFinite(ms)) return null;
+
+    const pad = (n, l = 2) => String(n).padStart(l, "0");
+    const dtKey = `${pad(year,4)}-${pad(month)}-${pad(day)}T${pad(hour)}:${pad(minute)}:${pad(second)}`;
+    return { dayKey: `${pad(year,4)}-${pad(month)}-${pad(day)}`, dtKey, ms };
   }
 
   _parseDateFromFilename(src, format) {
@@ -942,15 +1120,21 @@ class CameraGalleryCard extends LitElement {
     }, 2500);
   }
 
-  _showPills() {
+  _showPills(duration = 2500) {
     this._pillsVisible = true;
     clearTimeout(this._pillsTimer);
+    if (this.config?.persistent_controls) {
+      this._pillsTimer = null;
+      this.requestUpdate();
+      return;
+    }
     this._pillsTimer = setTimeout(() => {
-      if (!this._showLivePicker) {
+      if (!this._showLivePicker && !this.config?.persistent_controls) {
         this._pillsVisible = false;
+        this._hamburgerOpen = false;
         this.requestUpdate();
       }
-    }, 2500);
+    }, duration);
     this.requestUpdate();
   }
 
@@ -962,11 +1146,12 @@ class CameraGalleryCard extends LitElement {
   }
 
   _hidePillsHover() {
-    if (this._showLivePicker) return;
+    if (this._showLivePicker || this.config?.persistent_controls) return;
     clearTimeout(this._pillsTimer);
     this._pillsTimer = setTimeout(() => {
       if (!this._showLivePicker) {
         this._pillsVisible = false;
+        this._hamburgerOpen = false;
         this.requestUpdate();
       }
     }, 200);
@@ -1461,6 +1646,18 @@ class CameraGalleryCard extends LitElement {
     this.requestUpdate();
   }
 
+  _syncCurrentMedia(src) {
+    if (!src || src === this._lastSyncedSrc) return;
+    this._lastSyncedSrc = src;
+    const syncEntity = this.config?.sync_entity;
+    if (!syncEntity || !syncEntity.startsWith("input_text.")) return;
+    const filename = src.split("/").pop().split("?")[0];
+    this._hass?.callService("input_text", "set_value", {
+      entity_id: syncEntity,
+      value: filename,
+    });
+  }
+
   _applyLiveMuteState() {
     const muted = this._liveMuted;
     if (this._liveCard) this._liveCard.muted = muted;
@@ -1480,6 +1677,102 @@ class CameraGalleryCard extends LitElement {
     }
   }
 
+  _stopMicStream() {
+    if (this._micStream) {
+      this._micStream.getTracks().forEach(t => t.stop());
+      this._micStream = null;
+    }
+    if (this._micPeerConnection) {
+      try { this._micPeerConnection.close(); } catch (_) {}
+      this._micPeerConnection = null;
+    }
+    if (this._micWebSocket) {
+      try { this._micWebSocket.close(); } catch (_) {}
+      this._micWebSocket = null;
+    }
+    this._liveMicActive = false;
+  }
+
+  async _toggleMic() {
+    if (this._liveMicActive) {
+      this._stopMicStream();
+      return;
+    }
+
+    const streamName = this.config?.live_go2rtc_stream;
+    if (!streamName) return;
+
+    try {
+      const data = await this._hass.callWS({ type: "auth/sign_path", path: "/api/webrtc/ws" });
+      const wsUrl = "ws" + this._hass.hassUrl(data.path).substring(4)
+                    + "&url=" + encodeURIComponent(streamName);
+
+      if (!navigator.mediaDevices?.getUserMedia) {
+      console.warn("[CGC] Two-way audio requires HTTPS (secure context). Open your dashboard via https://");
+      return;
+    }
+    const micStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+      this._micStream = micStream;
+
+      const pc = new RTCPeerConnection({ iceServers: [{ urls: "stun:stun.l.google.com:19302" }] });
+      this._micPeerConnection = pc;
+
+      const audioTrack = micStream.getAudioTracks()[0];
+      pc.addTransceiver(audioTrack, { direction: "sendrecv" });
+
+      const ws = new WebSocket(wsUrl);
+      this._micWebSocket = ws;
+
+      await new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => reject(new Error("go2rtc mic WS timeout")), 10000);
+
+        ws.onopen = async () => {
+          try {
+            const offer = await pc.createOffer();
+            await pc.setLocalDescription(offer);
+            ws.send(JSON.stringify({ type: "webrtc/offer", value: pc.localDescription.sdp }));
+          } catch (err) { reject(err); }
+        };
+
+        ws.onmessage = async (evt) => {
+          try {
+            const msg = JSON.parse(evt.data);
+            if (msg.type === "webrtc/answer") {
+              await pc.setRemoteDescription({ type: "answer", sdp: msg.value });
+              clearTimeout(timeout);
+              resolve();
+            } else if (msg.type === "webrtc/candidate") {
+              pc.addIceCandidate({ candidate: msg.value, sdpMid: "0" }).catch(() => {});
+            } else if (msg.type === "error") {
+              clearTimeout(timeout);
+              reject(new Error("go2rtc mic error: " + msg.value));
+            }
+          } catch (err) { reject(err); }
+        };
+
+        ws.onerror = () => { clearTimeout(timeout); reject(new Error("go2rtc mic WS error")); };
+        ws.onclose = (e) => {
+          if (e.code !== 1000) { clearTimeout(timeout); reject(new Error("go2rtc mic WS closed: " + e.code)); }
+        };
+      });
+
+      pc.onicecandidate = (e) => {
+        if (e.candidate && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: "webrtc/candidate", value: e.candidate.candidate }));
+        }
+      };
+
+      ws.close(1000);
+      this._micWebSocket = null;
+
+      this._liveMicActive = true;
+
+    } catch (err) {
+      console.warn("[CGC] Two-way audio failed:", err);
+      this._stopMicStream();
+    }
+  }
+
   async _mountLiveCard() {
     if (!this._isLiveActive()) return;
 
@@ -1496,16 +1789,17 @@ class CameraGalleryCard extends LitElement {
       host.appendChild(card);
     }
 
-    card.hass = this._hass;
+    // hass wordt al direct doorgegeven in set hass() — hier alleen stateObj updaten
     const entity = this._getEffectiveLiveCamera();
     const newStateObj = this._hass?.states?.[entity];
     if (newStateObj?.last_changed !== card.stateObj?.last_changed) {
       card.stateObj = newStateObj;
     }
-    this._injectLiveFillStyle(card);
 
+    // Style-injectie alleen bij nieuwe mount (timers + MutationObserver doen de rest)
     if (isNewMount) {
-      // Alleen bij nieuwe mount muted state initialiseren vanuit config
+      card.hass = this._hass;
+      this._injectLiveFillStyle(card);
       this._liveMuted = this.config?.live_auto_muted !== false;
       this._syncLiveMuted();
     }
@@ -1682,6 +1976,10 @@ class CameraGalleryCard extends LitElement {
     this._viewMode = mode;
     this._showNav = false;
 
+    if (mode === "live" && navigator.maxTouchPoints > 0) {
+      this._showPills(5000);
+    }
+
     if (mode !== "live") {
       this._hideLiveQuickSwitchButton();
       this._showLivePicker = false;
@@ -1720,6 +2018,11 @@ class CameraGalleryCard extends LitElement {
       this._pathHasClass(path, "live-picker-backdrop") ||
       this._pathHasClass(path, "live-quick-switch")
     ) return;
+
+    if (this._hamburgerOpen && !this._pathHasClass(path, "live-hamburger-wrap")) {
+      this._hamburgerOpen = false;
+      return;
+    }
 
     this._showLiveQuickSwitchButton();
   }
@@ -2354,14 +2657,76 @@ class CameraGalleryCard extends LitElement {
     });
   }
 
+  _thumbHash(url) {
+    let h = 2166136261;
+    for (let i = 0; i < url.length; i++) {
+      h ^= url.charCodeAt(i);
+      h = Math.imul(h, 16777619) >>> 0;
+    }
+    return "cgc_p_" + h.toString(36);
+  }
+
+  _lsThumbGet(url) {
+    try {
+      return localStorage.getItem(this._thumbHash(url)) || null;
+    } catch (_) { return null; }
+  }
+
+  _lsThumbSet(url, dataUrl) {
+    try {
+      const key = this._thumbHash(url);
+      const indexKey = "cgc_poster_index";
+      const index = JSON.parse(localStorage.getItem(indexKey) || "[]");
+      // Evict oldest entries if over limit (max 150)
+      if (index.length >= 150) {
+        const toRemove = index.splice(0, index.length - 149);
+        toRemove.forEach((k) => { try { localStorage.removeItem(k); } catch (_) {} });
+      }
+      if (!index.includes(key)) index.push(key);
+      localStorage.setItem(indexKey, JSON.stringify(index));
+      localStorage.setItem(key, dataUrl);
+    } catch (_) {}
+  }
+
   async _ensurePoster(src) {
     if (!src || this._posterCache.has(src) || this._posterPending.has(src)) {
       return;
     }
+    // Check persistent localStorage cache first
+    const cached = this._lsThumbGet(src);
+    if (cached) {
+      this._posterCache.set(src, cached);
+      this.requestUpdate();
+      return;
+    }
     this._posterPending.add(src);
     try {
-      const dataUrl = await this._captureFirstFrame(src);
-      if (dataUrl) this._posterCache.set(src, dataUrl);
+      let dataUrl = null;
+      // HA relative image URLs (thumbnails from browse_media) need auth — fetch directly.
+      // Video files (sensor mode) must use _captureFirstFrame regardless of path format.
+      if (src.startsWith("/") && !this._isVideo(src)) {
+        const token = this._hass?.auth?.data?.access_token;
+        if (token) {
+          const res = await fetch(window.location.origin + src, {
+            headers: { Authorization: `Bearer ${token}` },
+          });
+          if (res.ok) {
+            const blob = await res.blob();
+            dataUrl = await new Promise((resolve, reject) => {
+              const reader = new FileReader();
+              reader.onload = () => resolve(reader.result);
+              reader.onerror = reject;
+              reader.readAsDataURL(blob);
+            });
+          }
+        }
+      } else {
+        dataUrl = await this._captureFirstFrame(src);
+      }
+      if (dataUrl) {
+        this._posterCache.set(src, dataUrl);
+        this._lsThumbSet(src, dataUrl);
+      }
     } catch (_) {
     } finally {
       this._posterPending.delete(src);
@@ -2372,10 +2737,16 @@ class CameraGalleryCard extends LitElement {
   // ─── Media source ─────────────────────────────────────────────────
 
   async _msBrowse(rootId) {
-    return await this._wsWithTimeout({
+    const cached = this._msBrowseTtlCache.get(rootId);
+    if (cached && Date.now() - cached.ts < 60 * 60 * 1000) return cached.data;
+    const isReolink = String(rootId || "").startsWith("media-source://reolink/");
+    const timeout = isReolink ? 60000 : DEFAULT_BROWSE_TIMEOUT_MS;
+    const data = await this._wsWithTimeout({
       type: "media_source/browse_media",
       media_content_id: rootId,
-    });
+    }, timeout);
+    this._msBrowseTtlCache.set(rootId, { ts: Date.now(), data });
+    return data;
   }
 
   async _msEnsureLoaded() {
@@ -2399,6 +2770,23 @@ class CameraGalleryCard extends LitElement {
       this._ms.list = [];
       this._ms.roots = roots.slice();
       this._ms.urlCache = new Map();
+    }
+
+    // Serve from persistent walk cache instantly, then refresh in background
+    const walkedCache = this._msWalkCacheLoad(key);
+    if (walkedCache && walkedCache.length > 0) {
+      this._ms.list = walkedCache;
+      this._ms.loadedAt = Date.now();
+      this.requestUpdate();
+      // If cache is older than 5 minutes, refresh in background
+      try {
+        const raw = localStorage.getItem(this._msWalkCacheKey(key));
+        const entry = raw ? JSON.parse(raw) : null;
+        if (!entry || Date.now() - entry.ts > 5 * 60 * 1000) {
+          setTimeout(() => this._msEnsureLoaded(), 0);
+        }
+      } catch (_) {}
+      return;
     }
 
     this._ms.loading = true;
@@ -2429,17 +2817,20 @@ class CameraGalleryCard extends LitElement {
             const rootStr = String(root);
             const isLocalRoot = rootStr.includes("media_source/local/");
             const isFrigateRoot = rootStr.includes("media-source://frigate/");
+            const isReolinkRoot = rootStr.includes("media-source://reolink/");
 
             const depthLimit = isFrigateRoot
               ? 3
-              : isLocalRoot
-                ? Math.min(6, DEFAULT_WALK_DEPTH)
-                : DEFAULT_WALK_DEPTH;
+              : isReolinkRoot
+                ? 4
+                : isLocalRoot
+                  ? Math.min(6, DEFAULT_WALK_DEPTH)
+                  : DEFAULT_WALK_DEPTH;
 
             // For single-root: progressively show first items while the rest loads
             const onProgress = roots.length === 1
               ? (partial) => {
-                  if (this._ms.list.length === 0 && partial.length >= 3) {
+                  if (partial.length >= 1) {
                     this._ms.list = partial
                       .filter((x) => !!x?.media_content_id)
                       .map((x) => ({
@@ -2447,6 +2838,7 @@ class CameraGalleryCard extends LitElement {
                         id: String(x.media_content_id || ""),
                         mime: String(x.mime_type || ""),
                         title: String(x.title || ""),
+                        thumb: String(x.thumbnail || ""),
                       }))
                       .filter((x) => !!x.id)
                       .slice(0, internalCap);
@@ -2480,6 +2872,7 @@ class CameraGalleryCard extends LitElement {
               title: String(x.title || ""),
               mime: String(x.mime_type || ""),
               cls: String(x.media_class || ""),
+              thumb: String(x.thumbnail || ""),
               dtMs: this._dtMsFromSrc(String(x.title || x.media_content_id || "")),
               dayKey: this._extractDayKey(String(x.title || x.media_content_id || "")),
             }))
@@ -2499,6 +2892,7 @@ class CameraGalleryCard extends LitElement {
           id: String(x.media_content_id || ""),
           mime: String(x.mime_type || ""),
           title: String(x.title || ""),
+          thumb: String(x.thumbnail || ""),
         }))
         .filter((x) => !!x.id);
 
@@ -2517,6 +2911,7 @@ class CameraGalleryCard extends LitElement {
 
       this._ms.list = items.slice(0, internalCap);
       this._ms.loadedAt = Date.now();
+      this._msWalkCacheSave(key, this._ms.list);
     } catch (e) {
       console.warn("MS ensure load failed:", e);
       console.warn("MS roots used:", roots);
@@ -2525,6 +2920,31 @@ class CameraGalleryCard extends LitElement {
       this._ms.loading = false;
       this.requestUpdate();
     }
+  }
+
+  _msWalkCacheKey(key) {
+    let h = 2166136261;
+    for (let i = 0; i < key.length; i++) {
+      h ^= key.charCodeAt(i);
+      h = Math.imul(h, 16777619) >>> 0;
+    }
+    return "cgc_mswalk_" + h.toString(36);
+  }
+
+  _msWalkCacheSave(key, list) {
+    try {
+      localStorage.setItem(this._msWalkCacheKey(key), JSON.stringify({ ts: Date.now(), list }));
+    } catch (_) {}
+  }
+
+  _msWalkCacheLoad(key, maxAgeMs = 30 * 60 * 1000) {
+    try {
+      const raw = localStorage.getItem(this._msWalkCacheKey(key));
+      if (!raw) return null;
+      const entry = JSON.parse(raw);
+      if (!Array.isArray(entry?.list) || Date.now() - entry.ts > maxAgeMs) return null;
+      return entry.list;
+    } catch (_) { return null; }
   }
 
   _msIds() {
@@ -2560,8 +2980,8 @@ class CameraGalleryCard extends LitElement {
 
   _msMetaById(id) {
     const it = (this._ms?.list || []).find((x) => x.id === id);
-    if (!it) return { cls: "", mime: "", title: "" };
-    return { cls: it.cls || "", mime: it.mime || "", title: it.title || "" };
+    if (!it) return { cls: "", mime: "", title: "", thumb: "" };
+    return { cls: it.cls || "", mime: it.mime || "", title: it.title || "", thumb: it.thumb || "" };
   }
 
   _msNormalizeRoot(raw) {
@@ -2646,13 +3066,16 @@ class CameraGalleryCard extends LitElement {
     const cached = this._ms?.urlCache?.get(mediaId);
     if (cached) return cached;
 
+    const isReolink = String(mediaId || "").startsWith("media-source://reolink/");
+    const resolveTimeout = isReolink ? 60000 : 12000;
+
     const r = await this._wsWithTimeout(
       {
         type: "media_source/resolve_media",
         media_content_id: mediaId,
         expires: 60 * 60,
       },
-      12000
+      resolveTimeout
     );
 
     const url = r?.url ? String(r.url) : "";
@@ -2666,7 +3089,7 @@ class CameraGalleryCard extends LitElement {
   }
 
   async _msWalkIter(rootId, limit, depthLimit, onProgress = null) {
-    const BATCH = 3;
+    const BATCH = 20;
     const out = [];
     const stack = [{ depth: 0, id: rootId }];
 
@@ -2807,6 +3230,9 @@ class CameraGalleryCard extends LitElement {
       }
     }
 
+    const folderFile = this._parseFolderFileDatetime(src);
+    if (folderFile?.ms != null) return folderFile.ms;
+
     const custom = this._parseDateFromFilename(
       src,
       this.config?.filename_datetime_format
@@ -2860,10 +3286,16 @@ class CameraGalleryCard extends LitElement {
       if (Number.isFinite(ms)) return ms;
     }
 
+    const autoFolder = this._autoDetectFolderFileDate(src);
+    if (autoFolder?.ms != null) return autoFolder.ms;
+
     return NaN;
   }
 
   _extractDateTimeKey(src) {
+    const folderFile = this._parseFolderFileDatetime(src);
+    if (folderFile?.dtKey) return folderFile.dtKey;
+
     const custom = this._parseDateFromFilename(
       src,
       this.config?.filename_datetime_format
@@ -2872,6 +3304,9 @@ class CameraGalleryCard extends LitElement {
 
     const ymd = this._extractYmdHms(src);
     if (ymd?.dtKey) return ymd.dtKey;
+
+    const autoFolder = this._autoDetectFolderFileDate(src);
+    if (autoFolder?.dtKey) return autoFolder.dtKey;
 
     const ms = this._dtMsFromSrc(src);
     const dt = this._dtKeyFromMs(ms);
@@ -2887,6 +3322,9 @@ class CameraGalleryCard extends LitElement {
   }
 
   _extractDayKey(src) {
+    const folderFile = this._parseFolderFileDatetime(src);
+    if (folderFile?.dayKey) return folderFile.dayKey;
+
     const custom = this._parseDateFromFilename(
       src,
       this.config?.filename_datetime_format
@@ -2895,6 +3333,9 @@ class CameraGalleryCard extends LitElement {
 
     const ymd = this._extractYmdHms(src);
     if (ymd?.dayKey) return ymd.dayKey;
+
+    const autoFolder = this._autoDetectFolderFileDate(src);
+    if (autoFolder?.dayKey) return autoFolder.dayKey;
 
     const ms = this._dtMsFromSrc(src);
     const dk = this._dayKeyFromMs(ms);
@@ -3893,10 +4334,13 @@ class CameraGalleryCard extends LitElement {
       start_mode: config.start_mode === "live" ? "live" : "gallery",
       style_variables,
       object_fit,
+      persistent_controls: config.persistent_controls === true,
       pill_size,
       thumb_bar_position,
       thumb_layout,
       thumb_size,
+      live_go2rtc_stream: String(config.live_go2rtc_stream || "").trim() || null,
+      folder_datetime_format: String(config.folder_datetime_format || "").trim() || null,
     };
 
     this.config = nextConfig;
@@ -3930,6 +4374,11 @@ class CameraGalleryCard extends LitElement {
             ? live_camera_entity
             : liveOptions[0]) || "";
       }
+      if (prevConfig) {
+        const defaultRatio = this._parseAspectRatio(config.aspect_ratio);
+        const stored = (() => { try { return localStorage.getItem(this._aspectRatioStorageKey()); } catch (_) { return null; } })();
+        this._aspectRatio = ["16/9", "4/3", "1/1"].includes(stored) ? stored : defaultRatio;
+      }
     }
 
     if (!prevConfig) {
@@ -3937,8 +4386,7 @@ class CameraGalleryCard extends LitElement {
       this._showLivePicker = false;
       this._showLiveQuickSwitch = false;
       const defaultRatio = this._parseAspectRatio(config.aspect_ratio);
-      const id = config.live_camera_entity || (Array.isArray(config.entities) ? config.entities[0] : null) || (Array.isArray(config.media_sources) ? config.media_sources[0] : null) || "default";
-      const stored = (() => { try { return localStorage.getItem(`cgc_aspect_ratio_${id}`); } catch (_) { return null; } })();
+      const stored = (() => { try { return localStorage.getItem(this._aspectRatioStorageKey()); } catch (_) { return null; } })();
       this._aspectRatio = ["16/9", "4/3", "1/1"].includes(stored) ? stored : defaultRatio;
       const hasMedia = nextConfig.entities.length > 0 || nextConfig.media_sources.length > 0;
       const startMode = nextConfig.start_mode;
@@ -4093,6 +4541,7 @@ class CameraGalleryCard extends LitElement {
         : 0;
 
       const selected = filtered.length ? filtered[idx]?.src : "";
+      this._syncCurrentMedia(selected);
 
       this._scheduleVisibleMediaWork(selected, filtered, idx, usingMediaSource);
 
@@ -4134,12 +4583,17 @@ class CameraGalleryCard extends LitElement {
       this._thumbObserver = new IntersectionObserver(
         (entries) => {
           let changed = false;
+          const isSensor = this.config?.source_mode === "sensor";
           for (const entry of entries) {
             if (entry.isIntersecting) {
               const key = entry.target.dataset.lazySrc;
               if (key && !this._revealedThumbs.has(key)) {
                 this._revealedThumbs.add(key);
                 changed = true;
+              }
+              // Viewport-aware poster prioritization: enqueue only when visible
+              if (isSensor && key && this._isVideo(key)) {
+                this._enqueuePoster(key);
               }
             }
           }
@@ -4362,7 +4816,7 @@ class CameraGalleryCard extends LitElement {
             ` : html``}
 
             ${!isLive && tsPosClass !== "hidden" ? html`
-              <div class="gallery-pills ${tsPosClass} ${this._pillsVisible ? "visible" : ""}">
+              <div class="gallery-pills ${tsPosClass} ${this._pillsVisible || this.config?.persistent_controls ? "visible" : ""}">
                 ${previewGated && previewOpen ? html`
                   <button class="gallery-pill live-pill-btn" @pointerdown=${(e) => e.stopPropagation()} @click=${(e) => { e.stopPropagation(); this._setViewMode("media"); this._previewOpen = false; this.requestUpdate(); }}>
                     <ha-icon icon="mdi:arrow-left"></ha-icon>
@@ -4372,9 +4826,9 @@ class CameraGalleryCard extends LitElement {
                   const obj = this._objectForSrc(selected);
                   const icon = obj ? this._objectIcon(obj) : null;
                   if (!icon) return html``;
-                  return html`<div class="gallery-pill"><ha-icon icon="${icon}"></ha-icon></div>`;
+                  return html`<div class="gallery-pill live-pill-btn" style="flex-shrink:0;width:calc(var(--cgc-pill-size,14px)*1.6 + 2px);height:calc(var(--cgc-pill-size,14px)*1.6 + 2px);padding:0"><ha-icon icon="${icon}"></ha-icon></div>`;
                 })()}
-                <div class="gallery-pill"><span>${idx + 1}/${filtered.length}</span></div>
+                <div class="gallery-pill live-pill-btn" style="flex-shrink:0;width:calc(var(--cgc-pill-size,14px)*1.6 + 2px);height:calc(var(--cgc-pill-size,14px)*1.6 + 2px);padding:0;overflow:hidden"><span style="font-size:calc(var(--cgc-pill-size,14px) - 6px)">${idx + 1}/${filtered.length}</span></div>
                 ${!selectedIsVideo && selectedHasUrl && !noResultsForFilter ? html`
                   <button class="gallery-pill live-pill-btn" @pointerdown=${(e) => e.stopPropagation()} @click=${(e) => { e.stopPropagation(); this._openImageFullscreen(); }}>
                     <ha-icon icon="mdi:fullscreen"></ha-icon>
@@ -4382,7 +4836,7 @@ class CameraGalleryCard extends LitElement {
                 ` : html``}
               </div>
             ` : isLive ? html`
-              <div class="live-controls-bar ${this._pillsVisible || this._showLivePicker ? "visible" : ""}">
+              <div class="live-controls-bar ${this._pillsVisible || this._showLivePicker || this.config?.persistent_controls ? "visible" : ""}">
                 <div class="live-pills-left">
                   <div class="gallery-pill"><span>${this._friendlyCameraName(this._getEffectiveLiveCamera())}</span></div>
                 </div>
@@ -4390,6 +4844,11 @@ class CameraGalleryCard extends LitElement {
                   <button class="gallery-pill live-pill-btn" @pointerdown=${(e) => e.stopPropagation()} @click=${(e) => { e.stopPropagation(); this._toggleAspectRatio(); }}>
                     <span>${this._aspectRatioLabel()}</span>
                   </button>
+                  ${this.config?.live_go2rtc_stream ? html`
+                    <button class="gallery-pill live-pill-btn ${this._liveMicActive ? "active" : ""}" @pointerdown=${(e) => e.stopPropagation()} @click=${(e) => { e.stopPropagation(); this._toggleMic(); }}>
+                      <ha-icon icon=${this._liveMicActive ? "mdi:microphone" : "mdi:microphone-off"}></ha-icon>
+                    </button>
+                  ` : html``}
                   <button class="gallery-pill live-pill-btn" @pointerdown=${(e) => e.stopPropagation()} @click=${(e) => { e.stopPropagation(); this._toggleLiveMute(); }}>
                     <ha-icon icon=${this._liveMuted ? "mdi:volume-off" : "mdi:volume-high"}></ha-icon>
                   </button>
@@ -4401,6 +4860,18 @@ class CameraGalleryCard extends LitElement {
                   <button class="gallery-pill live-pill-btn" @pointerdown=${(e) => e.stopPropagation()} @click=${(e) => { e.stopPropagation(); this._toggleLiveFullscreen(); }}>
                     <ha-icon icon=${document.fullscreenElement || document.webkitFullscreenElement || this._liveFullscreen ? "mdi:fullscreen-exit" : "mdi:fullscreen"}></ha-icon>
                   </button>
+                  <div class="live-hamburger-wrap" @pointerdown=${(e) => e.stopPropagation()}>
+                    <button class="gallery-pill live-pill-btn" @click=${(e) => { e.stopPropagation(); this._hamburgerOpen = !this._hamburgerOpen; }}>
+                      <ha-icon icon="mdi:menu"></ha-icon>
+                    </button>
+                    ${this._hamburgerOpen ? html`
+                      <div class="live-hamburger-menu">
+                        <button class="gallery-pill live-pill-btn"><ha-icon icon="mdi:circle-outline"></ha-icon></button>
+                        <button class="gallery-pill live-pill-btn"><ha-icon icon="mdi:circle-outline"></ha-icon></button>
+                        <button class="gallery-pill live-pill-btn"><ha-icon icon="mdi:circle-outline"></ha-icon></button>
+                      </div>
+                    ` : html``}
+                  </div>
                 </div>
               </div>
             ` : html``}
@@ -4502,11 +4973,13 @@ class CameraGalleryCard extends LitElement {
                     let tMime = "";
                     let tCls = "";
                     let tTitle = "";
+                    let tThumb = "";
                     if (isMs) {
                       const meta = this._msMetaById(it.src);
                       tMime = meta.mime;
                       tCls = meta.cls;
                       tTitle = meta.title;
+                      tThumb = meta.thumb;
                     }
 
                     const isVid = this._isVideoSmart(
@@ -4535,6 +5008,9 @@ class CameraGalleryCard extends LitElement {
 
                         if (snapshotUrl) {
                           poster = snapshotUrl;
+                        } else if (tThumb) {
+                          poster = this._posterCache.get(tThumb) || "";
+                          if (!poster && tThumb !== selectedUrl) this._enqueuePoster(tThumb);
                         } else if (thumbUrl) {
                           poster = this._posterCache.get(thumbUrl) || "";
                           // Sla poster-capture over voor de geselecteerde video: die laadt
@@ -4550,7 +5026,7 @@ class CameraGalleryCard extends LitElement {
                     }
 
                     const needsResolve = isMs;
-                    const hasUrl = !needsResolve || !!thumbUrl;
+                    const hasUrl = !needsResolve || !!thumbUrl || !!tThumb;
                     const showImg = this._revealedThumbs.has(it.src) && hasUrl && !!poster;
 
                     const tMs = this._dtMsFromSrc(it.src);
@@ -4786,6 +5262,7 @@ class CameraGalleryCard extends LitElement {
             </button>
           </div>
         ` : html``}
+
       </div>
     `;
   }
@@ -5436,6 +5913,18 @@ class CameraGalleryCard extends LitElement {
         gap: 6px;
         align-items: center;
       }
+      .live-hamburger-wrap {
+        position: relative;
+      }
+      .live-hamburger-menu {
+        position: absolute;
+        top: calc(100% + 6px);
+        right: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        z-index: 20;
+      }
       .gallery-pills {
         position: absolute;
         left: 50%;
@@ -5515,6 +6004,11 @@ class CameraGalleryCard extends LitElement {
         cursor: pointer;
         padding: calc(var(--cgc-pill-size, 14px) * 0.3);
         margin: 0;
+      }
+
+      .live-pill-btn.active {
+        background: rgba(255,80,80,0.85);
+        border-radius: 50%;
       }
 
       .tsleft {
@@ -6357,6 +6851,8 @@ class CameraGalleryCardEditor extends HTMLElement {
     this._wizardFolder = "";
     this._wizardName = "";
     this._wizardStatus = null;
+
+    this._editorRendered = false;
   }
 
   _applyFieldValidation(id) {
@@ -7232,6 +7728,10 @@ class CameraGalleryCardEditor extends HTMLElement {
       c.filename_datetime_format || ""
     ).trim();
 
+    const folderDatetimeFormat = String(
+      c.folder_datetime_format || ""
+    ).trim();
+
     const objectFiltersArr = this._normalizeObjectFilters(
       c.object_filters || []
     );
@@ -7296,6 +7796,7 @@ class CameraGalleryCardEditor extends HTMLElement {
     const barDisabled = tsPos === "hidden";
     const pillSize = Math.max(10, Math.min(28, Number(c.pill_size) || 14));
     const clickToOpen = c.preview_click_to_open === true;
+    const persistentControls = c.persistent_controls === true;
 
     const liveEnabled = c.live_enabled === true;
     const liveCameraEntity = String(c.live_camera_entity || "").trim();
@@ -7629,6 +8130,516 @@ class CameraGalleryCardEditor extends HTMLElement {
       `
       : ``;
 
+    const buildPanelHtml = () => {
+      if (this._activeTab === "general") return `
+            <div class="tabpanel" data-panel="general">
+              <div class="row">
+                <div class="lbl">Default view</div>
+                <div class="segwrap">
+                  <button class="seg ${startMode !== "live" ? "on" : ""}" data-startmode="gallery">Gallery</button>
+                  <button class="seg ${startMode === "live" ? "on" : ""}" data-startmode="live">Live</button>
+                </div>
+              </div>
+
+              <div class="row">
+                <div class="lbl">Source mode</div>
+                <div class="segwrap">
+                  <button class="seg ${sensorModeOn ? "on" : ""}" data-src="sensor">File sensor</button>
+                  <button class="seg ${mediaModeOn ? "on" : ""}" data-src="media">Media folders</button>
+                </div>
+              </div>
+
+              <div class="row ${sensorModeOn ? "" : "muted"}">
+                <div class="lbl">File sensors</div>
+                <div class="desc">Enter <b>one</b> sensor per line</div>
+
+                <div class="field" id="entities-field">
+                  <textarea
+                    id="entities"
+                    rows="4"
+                    ${sensorModeOn ? "" : "disabled"}
+                    placeholder="sensor.gallery_auto&#10;sensor.gallery_muis"
+                  ></textarea>
+                  <div class="suggestions" id="entities-suggestions" hidden></div>
+                </div>
+
+                ${
+                  invalidEntities.length
+                    ? `<div class="desc">⚠️ Invalid / missing sensor(s): <code>${invalidEntities.join(
+                        "</code>, <code>"
+                      )}</code></div>`
+                    : ``
+                }
+
+                ${sensorModeOn ? this._renderFilesWizard() : ""}
+              </div>
+
+              <div class="row ${mediaModeOn ? "" : "muted"}">
+                <div class="lbl">Media folders</div>
+                <div class="desc">Enter <strong>one</strong> folder per line, or browse and select folders</div>
+
+                <div class="field" id="mediasources-field">
+                  <textarea
+                    id="mediasources"
+                    rows="4"
+                    placeholder="media-source://frigate/frigate/event-search/clips"
+                    ${mediaModeOn ? "" : "disabled"}
+                  ></textarea>
+                  <div class="suggestions" id="mediasources-suggestions" hidden></div>
+                </div>
+
+                <div class="row-actions">
+                  <button
+                    type="button"
+                    class="actionbtn"
+                    id="browse-media-folders"
+                    ${mediaModeOn ? "" : "disabled"}
+                  >
+                    <ha-icon icon="mdi:folder-search-outline"></ha-icon>
+                    <span>Browse</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    class="actionbtn"
+                    id="clear-media-folders"
+                    ${mediaModeOn ? "" : "disabled"}
+                  >
+                    <ha-icon icon="mdi:delete-outline"></ha-icon>
+                    <span>Clear</span>
+                  </button>
+                </div>
+
+                ${
+                  mediaHasFile
+                    ? `<div class="desc">⚠️ One of your entries looks like a file (extension). This field expects folders.</div>`
+                    : ``
+                }
+              </div>
+
+              <div class="row">
+                <div class="lbl">Folder datetime format</div>
+                <div class="desc">
+                  Parse date from the <strong>parent folder name</strong>. Combine with Filename datetime format for folder=date, file=time setups.
+                </div>
+
+                <input type="text" class="ed-input" id="folderfmt" placeholder="DDMM" />
+
+                <div class="hint">
+                  <ha-icon icon="mdi:information-outline"></ha-icon>
+                  Examples:
+                  <code>DDMM</code>,
+                  <code>YYYYMMDD</code>,
+                  <code>DD-MM-YYYY</code>.
+                  Year defaults to current year if omitted.
+                </div>
+              </div>
+
+              <div class="row">
+                <div class="lbl">Filename datetime format</div>
+                <div class="desc">
+                  Optional custom parser for date and time found in filenames.
+                </div>
+
+                <input type="text" class="ed-input" id="filenamefmt" placeholder="YYYYMMDDHHmmss" />
+
+                <div class="hint">
+                  <ha-icon icon="mdi:information-outline"></ha-icon>
+                  Examples:
+                  <code>YYYYMMDDHHmmss</code>,
+                  <code>DD-MM-YYYY_HH-mm-ss</code>,
+                  <code>YYYY-MM-DDTHH:mm:ss</code>
+                </div>
+              </div>
+
+              <div class="row">
+                <div class="lbl">Delete service</div>
+                <div class="hint">
+                  <ha-icon icon="mdi:help-circle-outline"></ha-icon>
+                  <a
+                    href="https://github.com/TheScubadiver/camera-gallery-card?tab=readme-ov-file#delete-setup"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    How to configure the shell command
+                  </a>
+                </div>
+
+                <div class="selectwrap">
+                  <select class="select ${deleteOk ? "" : "invalid"}" id="delservice">
+                    ${
+                      deleteChoices.length
+                        ? `<option value=""></option>` +
+                          deleteChoices
+                            .map(
+                              (id) =>
+                                `<option value="${id}" ${
+                                  id === deleteService ? "selected" : ""
+                                }>${id}</option>`
+                            )
+                            .join("")
+                        : `<option value="" selected>(no shell_command services found)</option>`
+                    }
+                  </select>
+                  <span class="selarrow"></span>
+                </div>
+              </div>
+            </div>
+          `;
+
+      if (this._activeTab === "viewer") return `
+            <div class="tabpanel" data-panel="viewer">
+              <div class="row">
+                <div class="lbl">Image fit</div>
+                <div class="segwrap">
+                  <button class="seg ${objectFit === "cover" ? "on" : ""}" data-objfit="cover">Cover</button>
+                  <button class="seg ${objectFit === "contain" ? "on" : ""}" data-objfit="contain">Contain</button>
+                </div>
+              </div>
+
+              <div class="row">
+                <div class="lbl">Position</div>
+                <div class="segwrap">
+                  <button class="seg ${previewPos === "top" ? "on" : ""}" data-ppos="top">Top</button>
+                  <button class="seg ${previewPos === "bottom" ? "on" : ""}" data-ppos="bottom">Bottom</button>
+                </div>
+              </div>
+
+              <div class="row">
+                <div class="row-head">
+                  <div>
+                    <div class="lbl">Open-on-click</div>
+                    <div class="desc">
+                      Only show the main viewer after selecting a thumbnail. Click on the preview to close
+                    </div>
+                  </div>
+
+                  <div class="togrow">
+                    <ha-switch id="clicktoopen" ${clickToOpen ? "checked" : ""}></ha-switch>
+                  </div>
+                </div>
+              </div>
+
+              <div class="row">
+                <div class="row-head">
+                  <div>
+                    <div class="lbl">Persistent controls</div>
+                    <div class="desc">
+                      Always show controls.
+                    </div>
+                  </div>
+
+                  <div class="togrow">
+                    <ha-switch id="persistentcontrols" ${persistentControls ? "checked" : ""}></ha-switch>
+                  </div>
+                </div>
+              </div>
+
+              <div class="row">
+                <div class="subrows">
+                  <div class="row-head">
+                    <div class="lbl">Autoplay</div>
+                    <div class="togrow">
+                      <ha-switch id="autoplay"></ha-switch>
+                    </div>
+                  </div>
+
+                  <div class="row-head">
+                    <div class="lbl">Auto muted</div>
+                    <div class="togrow">
+                      <ha-switch id="auto_muted"></ha-switch>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+            </div>
+          `;
+
+      if (this._activeTab === "live") return `
+            <div class="tabpanel" data-panel="live">
+              <div class="row ${liveControlsDisabled ? "muted" : ""}">
+                <div class="row-head">
+                  <div class="lbl">Live preview</div>
+
+                  <div class="togrow">
+                    <ha-switch
+                      id="liveenabled"
+                      ${liveEnabled ? "checked" : ""}
+                      ${liveControlsDisabled ? "disabled" : ""}
+                    ></ha-switch>
+                  </div>
+                </div>
+
+                <div class="desc">
+                  Enable live mode in the gallery preview. All available camera entities are detected automatically.
+                </div>
+              </div>
+
+              ${
+                liveEnabled
+                  ? `
+                ${cameraEntities.length > 1 ? `
+                <div class="row">
+                  <div class="lbl">Visible cameras in picker</div>
+                  <div class="desc">Select cameras for the picker. Leave empty to show all cameras.</div>
+                  ${liveCameraEntities.length > 0 ? `
+                  <div class="livecam-tags" id="livecam-tags-dnd">
+                    ${liveCameraEntities.map((id, i) => {
+                      const name = String(this._hass?.states?.[id]?.attributes?.friendly_name || id).trim();
+                      return `<div class="livecam-tag" draggable="true" data-dragcam="${id}"><span class="livecam-tag-grip">⠿</span><span class="livecam-tag-num">${i + 1}</span><span>${name}</span><span class="livecam-tag-entity">${id}</span><button type="button" class="livecam-tag-del" data-delcam="${id}">×</button></div>`;
+                    }).join("")}
+                  </div>
+                  ` : ``}
+                  <div class="field" style="margin-top:6px;">
+                    <input type="text" class="ed-input" id="livecam-input" placeholder="Search cameras..." autocomplete="off" />
+                    <div class="suggestions" id="livecam-suggestions" hidden></div>
+                  </div>
+                </div>
+                ` : ``}
+
+                <div class="row ${liveControlsDisabled ? "muted" : ""}">
+                  <div class="lbl">Default live camera</div>
+                  <div class="desc">Optional. This sets the default camera when live mode opens.</div>
+                  ${liveCameraEntity ? `
+                  <div class="livecam-tags">
+                    <div class="livecam-tag"><span>${String(this._hass?.states?.[liveCameraEntity]?.attributes?.friendly_name || liveCameraEntity).trim()}</span><span class="livecam-tag-entity">${liveCameraEntity}</span><button type="button" class="livecam-tag-del" data-deldefcam="${liveCameraEntity}">×</button></div>
+                  </div>
+                  ${liveCameraEntities.length > 0 && !liveCameraEntities.includes(liveCameraEntity) ? `
+                  <div class="cgc-inline-warn"><ha-icon icon="mdi:alert-outline"></ha-icon><span>This camera is not in the visible cameras list. It will not appear in the picker.</span></div>
+                  ` : ``}
+                  ` : ``}
+                  ${!liveControlsDisabled ? `
+                  <div class="field" style="margin-top:6px;">
+                    <input type="text" class="ed-input" id="livedefault-input" placeholder="Search cameras..." autocomplete="off" ${liveCameraEntity ? `style="display:none;"` : ``} />
+                    <div class="suggestions" id="livedefault-suggestions" hidden></div>
+                  </div>
+                  ` : ``}
+                </div>
+              `
+                  : ``
+              }
+
+              <div class="row">
+                <div class="row-head">
+                  <div class="lbl">Auto muted</div>
+                  <div class="togrow">
+                    <ha-switch id="live_auto_muted"></ha-switch>
+                  </div>
+                </div>
+              </div>
+
+            </div>
+          `;
+
+      if (this._activeTab === "thumbs") return `
+            <div class="tabpanel" data-panel="thumbs">
+              <div class="row">
+                <div class="lbl">Thumbnail layout</div>
+                <div class="desc">Choose how thumbnails are displayed inside the card</div>
+                <div class="segwrap">
+                  <button class="seg ${thumbLayout === "horizontal" ? "on" : ""}" data-tlayout="horizontal">Horizontal</button>
+                  <button class="seg ${thumbLayout === "vertical" ? "on" : ""}" data-tlayout="vertical">Vertical</button>
+                </div>
+              </div>
+
+              <div class="row ${thumbSizeMuted ? "muted" : ""}">
+                <div class="lbl">Thumbnail size</div>
+                <div class="desc">Set the size of each thumbnail in pixels</div>
+                <div class="ed-input-row"><input type="number" class="ed-input" id="thumb" /><span class="ed-suffix">px</span></div>
+              </div>
+
+              <div class="row">
+                <div class="lbl">Maximum thumbnails shown</div>
+                <div class="desc">Maximum number of media items loaded into the gallery</div>
+                <div class="ed-input-row"><input type="number" class="ed-input" id="maxmedia" /><span class="ed-suffix">items</span></div>
+              </div>
+
+              <div class="row">
+                <div class="lbl">Thumbnail bar position</div>
+                <div class="desc">Choose where the info bar on each thumbnail is shown</div>
+                <div class="segwrap">
+                  <button class="seg ${thumbBarPos === "top" ? "on" : ""}" data-tbpos="top">Top</button>
+                  <button class="seg ${thumbBarPos === "bottom" ? "on" : ""}" data-tbpos="bottom">Bottom</button>
+                  <button class="seg ${thumbBarPos === "hidden" ? "on" : ""}" data-tbpos="hidden">Hidden</button>
+                </div>
+              </div>
+
+              <div class="row">
+                <div class="lbl">Pill position</div>
+                <div class="segwrap">
+                  <button class="seg ${tsPos === "top" ? "on" : ""}" data-pos="top">Top</button>
+                  <button class="seg ${tsPos === "bottom" ? "on" : ""}" data-pos="bottom">Bottom</button>
+                  <button class="seg ${tsPos === "hidden" ? "on" : ""}" data-pos="hidden">Hidden</button>
+                </div>
+              </div>
+
+              <div class="row ${barDisabled ? "muted" : ""}">
+                <div class="lbl">Opacity pill</div>
+                <div class="barrow">
+                  <div class="barrow-top">
+                    <div class="pillval" id="barval">${barOpacity}%</div>
+                  </div>
+                  <ha-slider id="barop" min="0" max="100" step="1" ${barDisabled ? "disabled" : ""}></ha-slider>
+                </div>
+              </div>
+
+              <div class="row ${barDisabled ? "muted" : ""}">
+                <div class="lbl">Pill size</div>
+                <div class="barrow">
+                  <div class="barrow-top">
+                    <div class="pillval" id="pillsizeval">${pillSize}px</div>
+                  </div>
+                  <ha-slider id="pillsize" min="10" max="28" step="1" ${barDisabled ? "disabled" : ""}></ha-slider>
+                </div>
+              </div>
+
+              <div class="row">
+                <div class="lbl">Object filters</div>
+                <div class="objmeta">
+                  <div class="desc">Choose which filter chips are available on the card</div>
+                  <div class="countpill">Selected ${selectedCount}/${MAX_VISIBLE_OBJECT_FILTERS}</div>
+                </div>
+
+                <div class="chip-grid">
+                  ${AVAILABLE_OBJECT_FILTERS
+                    .map((obj) => {
+                      const isOn = objectFiltersArr.includes(obj);
+                      const currentColor = objectColors[obj] || "";
+                      const colorVal = currentColor && /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(currentColor) ? currentColor : "#ffffff";
+                      return `
+                      <button
+                        type="button"
+                        class="objchip ${isOn ? "on" : ""}"
+                        data-objchip="${obj}"
+                        title="${this._objectLabel(obj)}"
+                      >
+                        <span class="objchip-icon">
+                          <ha-icon icon="${this._objectIcon(obj)}" style="${currentColor ? "color:" + currentColor : ""}"></ha-icon>
+                        </span>
+                        <span class="objchip-color">
+                          <input type="color" class="cgc-color" value="${colorVal}" style="${!currentColor ? "opacity:0.35" : ""}" data-filtercolor="${obj}">
+                        </span>
+                        <ha-checkbox ${isOn ? "checked" : ""} tabindex="-1" style="pointer-events:none;"></ha-checkbox>
+                      </button>
+                    `;
+                    })
+                    .join("")}
+                </div>
+
+              <div class="row">
+                <div class="lbl">Custom Object Filters</div>
+                  <div class="desc">Add custom object filters and icons (e.g., parcel, woman, etc.)</div>
+
+                  <div class="custom-filter-add">
+                    <input type="text" class="ed-input" id="new-filter-name" placeholder="e.g. parcel" />
+                    <ha-icon-picker id="new-filter-icon" label="Icon"></ha-icon-picker>
+                    <button class="actionbtn" id="add-filter-btn">
+                      <ha-icon icon="mdi:plus"></ha-icon>
+                      Add filter
+                    </button>
+                  </div>
+
+                <div class="custom-filter-list">
+                  ${objectFiltersArr.filter(f => typeof f === 'object').map((f, index) => {
+                    const name = Object.keys(f)[0];
+                    const icon = f[name];
+                    const currentColor = objectColors[name] || "";
+                    const colorVal = currentColor && /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(currentColor) ? currentColor : "#ffffff";
+                    return `
+                      <div class="custom-item">
+                        <div class="custom-item-info">
+                          <ha-icon icon="${icon}" style="${currentColor ? "color:" + currentColor : ""}"></ha-icon>
+                          <span class="lbl">${this._objectLabel(name)}</span>
+                        </div>
+                        <div class="color-controls">
+                          <input type="color" class="cgc-color" value="${colorVal}" style="${!currentColor ? "opacity:0.35" : ""}" data-filtercolor="${name}">
+                          <button class="remove-btn" data-remove-index="${name}">
+                            <ha-icon icon="mdi:delete-outline"></ha-icon>
+                          </button>
+                        </div>
+                      </div>
+                    `;
+                  }).join('')}
+                </div>
+              </div>
+
+              </div>
+            </div>
+          `;
+
+      if (this._activeTab === "styling") return `
+              <div class="tabpanel" data-panel="styling">
+                <div class="style-sections">
+                  ${STYLE_SECTIONS.map((section) => `
+                    <details
+                      class="style-section"
+                      id="style-section-${section.id}"
+                      ${this._openStyleSections.has(section.id) ? "open" : ""}
+                    >
+                      <summary class="style-section-head">
+                        <ha-icon icon="${section.icon}"></ha-icon>
+                        <span>${section.label}</span>
+                        <ha-icon class="style-chevron" icon="mdi:chevron-down"></ha-icon>
+                      </summary>
+                      <div class="style-section-body">
+                        <div class="color-grid">
+                          ${section.controls.map((ctrl) => {
+                            if (ctrl.type === "color") {
+                              return `
+                                <div class="color-row">
+                                  <div class="lbl">${ctrl.label}</div>
+                                  <div class="color-controls">
+                                    <div id="${ctrl.hostId}"></div>
+                                    <label class="color-transparent">
+                                      <input type="checkbox" data-transparent="${ctrl.variable}">
+                                      Transparent
+                                    </label>
+                                    <button type="button" class="color-reset" data-reset="${ctrl.variable}" title="Reset to default">
+                                      <ha-icon icon="mdi:backup-restore"></ha-icon>
+                                    </button>
+                                  </div>
+                                </div>
+                              `;
+                            }
+                            if (ctrl.type === "radius") {
+                              const raw = this._getStyleVariableValue(ctrl.variable);
+                              const val = raw ? parseInt(raw) : ctrl.default;
+                              const safeId = ctrl.variable.replace(/[^a-z0-9]/gi, "-");
+                              return `
+                                <div class="color-row">
+                                  <div class="lbl">${ctrl.label}</div>
+                                  <div class="color-controls">
+                                    <input
+                                      type="range"
+                                      class="radius-range"
+                                      data-radius="${ctrl.variable}"
+                                      min="${ctrl.min}"
+                                      max="${ctrl.max}"
+                                      value="${val}"
+                                    >
+                                    <span class="radius-value" id="radius-val-${safeId}">${val}px</span>
+                                    <button type="button" class="color-reset" data-reset="${ctrl.variable}" title="Reset to default">
+                                      <ha-icon icon="mdi:backup-restore"></ha-icon>
+                                    </button>
+                                  </div>
+                                </div>
+                              `;
+                            }
+                            return "";
+                          }).join("")}
+                        </div>
+                      </div>
+                    </details>
+                  `).join("")}
+                </div>
+              </div>
+            `;
+
+      return "";
+    };
+
+    if (!this._editorRendered) {
     this.shadowRoot.innerHTML = `
       <style>
         :host {
@@ -9065,505 +10076,41 @@ class CameraGalleryCardEditor extends HTMLElement {
             ${tabBtn("styling", "Styling", "mdi:palette-outline")}
           </div>
 
-          ${
-            this._activeTab === "general"
-              ? `
-            <div class="tabpanel" data-panel="general">
-              <div class="row">
-                <div class="lbl">Default view</div>
-                <div class="segwrap">
-                  <button class="seg ${startMode !== "live" ? "on" : ""}" data-startmode="gallery">Gallery</button>
-                  <button class="seg ${startMode === "live" ? "on" : ""}" data-startmode="live">Live</button>
-                </div>
-              </div>
-
-              <div class="row">
-                <div class="lbl">Source mode</div>
-                <div class="segwrap">
-                  <button class="seg ${sensorModeOn ? "on" : ""}" data-src="sensor">File sensor</button>
-                  <button class="seg ${mediaModeOn ? "on" : ""}" data-src="media">Media folders</button>
-                </div>
-              </div>
-
-              <div class="row ${sensorModeOn ? "" : "muted"}">
-                <div class="lbl">File sensors</div>
-                <div class="desc">Enter <b>one</b> sensor per line</div>
-
-                <div class="field" id="entities-field">
-                  <textarea
-                    id="entities"
-                    rows="4"
-                    ${sensorModeOn ? "" : "disabled"}
-                    placeholder="sensor.gallery_auto&#10;sensor.gallery_muis"
-                  ></textarea>
-                  <div class="suggestions" id="entities-suggestions" hidden></div>
-                </div>
-
-                ${
-                  invalidEntities.length
-                    ? `<div class="desc">⚠️ Invalid / missing sensor(s): <code>${invalidEntities.join(
-                        "</code>, <code>"
-                      )}</code></div>`
-                    : ``
-                }
-
-                ${sensorModeOn ? this._renderFilesWizard() : ""}
-              </div>
-
-              ${sensorModeOn ? `
-              <div class="row">
-                <div class="lbl">Filename datetime format</div>
-                <div class="desc">
-                  Optional custom parser for date and time found in filenames.
-                </div>
-
-                <input type="text" class="ed-input" id="filenamefmt" placeholder="YYYYMMDDHHmmss" />
-
-                <div class="hint">
-                  <ha-icon icon="mdi:information-outline"></ha-icon>
-                  Examples:
-                  <code>YYYYMMDDHHmmss</code>,
-                  <code>DD-MM-YYYY_HH-mm-ss</code>,
-                  <code>YYYY-MM-DDTHH:mm:ss</code>
-                </div>
-              </div>
-              ` : ""}
-
-              <div class="row ${mediaModeOn ? "" : "muted"}">
-                <div class="lbl">Media folders</div>
-                <div class="desc">Enter <strong>one</strong> folder per line, or browse and select folders</div>
-
-                <div class="field" id="mediasources-field">
-                  <textarea
-                    id="mediasources"
-                    rows="4"
-                    placeholder="media-source://frigate/frigate/event-search/clips"
-                    ${mediaModeOn ? "" : "disabled"}
-                  ></textarea>
-                  <div class="suggestions" id="mediasources-suggestions" hidden></div>
-                </div>
-
-                <div class="row-actions">
-                  <button
-                    type="button"
-                    class="actionbtn"
-                    id="browse-media-folders"
-                    ${mediaModeOn ? "" : "disabled"}
-                  >
-                    <ha-icon icon="mdi:folder-search-outline"></ha-icon>
-                    <span>Browse</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    class="actionbtn"
-                    id="clear-media-folders"
-                    ${mediaModeOn ? "" : "disabled"}
-                  >
-                    <ha-icon icon="mdi:delete-outline"></ha-icon>
-                    <span>Clear</span>
-                  </button>
-                </div>
-
-                ${
-                  mediaHasFile
-                    ? `<div class="desc">⚠️ One of your entries looks like a file (extension). This field expects folders.</div>`
-                    : ``
-                }
-              </div>
-
-              <div class="row">
-                <div class="lbl">Delete service</div>
-                <div class="hint">
-                  <ha-icon icon="mdi:help-circle-outline"></ha-icon>
-                  <a
-                    href="https://github.com/TheScubadiver/camera-gallery-card?tab=readme-ov-file#delete-setup"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                  >
-                    How to configure the shell command
-                  </a>
-                </div>
-
-                <div class="selectwrap">
-                  <select class="select ${deleteOk ? "" : "invalid"}" id="delservice">
-                    ${
-                      deleteChoices.length
-                        ? `<option value=""></option>` +
-                          deleteChoices
-                            .map(
-                              (id) =>
-                                `<option value="${id}" ${
-                                  id === deleteService ? "selected" : ""
-                                }>${id}</option>`
-                            )
-                            .join("")
-                        : `<option value="" selected>(no shell_command services found)</option>`
-                    }
-                  </select>
-                  <span class="selarrow"></span>
-                </div>
-              </div>
-            </div>
-          `
-              : ``
-          }
-
-          ${
-            this._activeTab === "viewer"
-              ? `
-            <div class="tabpanel" data-panel="viewer">
-              <div class="row">
-                <div class="lbl">Image fit</div>
-                <div class="segwrap">
-                  <button class="seg ${objectFit === "cover" ? "on" : ""}" data-objfit="cover">Cover</button>
-                  <button class="seg ${objectFit === "contain" ? "on" : ""}" data-objfit="contain">Contain</button>
-                </div>
-              </div>
-
-              <div class="row">
-                <div class="lbl">Position</div>
-                <div class="segwrap">
-                  <button class="seg ${previewPos === "top" ? "on" : ""}" data-ppos="top">Top</button>
-                  <button class="seg ${previewPos === "bottom" ? "on" : ""}" data-ppos="bottom">Bottom</button>
-                </div>
-              </div>
-
-              <div class="row">
-                <div class="row-head">
-                  <div>
-                    <div class="lbl">Open-on-click</div>
-                    <div class="desc">
-                      Only show the main viewer after selecting a thumbnail. Click on the preview to close
-                    </div>
-                  </div>
-
-                  <div class="togrow">
-                    <ha-switch id="clicktoopen" ${clickToOpen ? "checked" : ""}></ha-switch>
-                  </div>
-                </div>
-              </div>
-
-              <div class="row">
-                <div class="subrows">
-                  <div class="row-head">
-                    <div class="lbl">Autoplay</div>
-                    <div class="togrow">
-                      <ha-switch id="autoplay"></ha-switch>
-                    </div>
-                  </div>
-
-                  <div class="row-head">
-                    <div class="lbl">Auto muted</div>
-                    <div class="togrow">
-                      <ha-switch id="auto_muted"></ha-switch>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-            </div>
-          `
-              : ``
-          }
-
-          ${
-            this._activeTab === "live"
-              ? `
-            <div class="tabpanel" data-panel="live">
-              <div class="row ${liveControlsDisabled ? "muted" : ""}">
-                <div class="row-head">
-                  <div class="lbl">Live preview</div>
-
-                  <div class="togrow">
-                    <ha-switch
-                      id="liveenabled"
-                      ${liveEnabled ? "checked" : ""}
-                      ${liveControlsDisabled ? "disabled" : ""}
-                    ></ha-switch>
-                  </div>
-                </div>
-
-                <div class="desc">
-                  Enable live mode in the gallery preview. All available camera entities are detected automatically.
-                </div>
-              </div>
-
-              ${
-                liveEnabled
-                  ? `
-                ${cameraEntities.length > 1 ? `
-                <div class="row">
-                  <div class="lbl">Visible cameras in picker</div>
-                  <div class="desc">Select cameras for the picker. Leave empty to show all cameras.</div>
-                  ${liveCameraEntities.length > 0 ? `
-                  <div class="livecam-tags" id="livecam-tags-dnd">
-                    ${liveCameraEntities.map((id, i) => {
-                      const name = String(this._hass?.states?.[id]?.attributes?.friendly_name || id).trim();
-                      return `<div class="livecam-tag" draggable="true" data-dragcam="${id}"><span class="livecam-tag-grip">⠿</span><span class="livecam-tag-num">${i + 1}</span><span>${name}</span><span class="livecam-tag-entity">${id}</span><button type="button" class="livecam-tag-del" data-delcam="${id}">×</button></div>`;
-                    }).join("")}
-                  </div>
-                  ` : ``}
-                  <div class="field" style="margin-top:6px;">
-                    <input type="text" class="ed-input" id="livecam-input" placeholder="Search cameras..." autocomplete="off" />
-                    <div class="suggestions" id="livecam-suggestions" hidden></div>
-                  </div>
-                </div>
-                ` : ``}
-
-                <div class="row ${liveControlsDisabled ? "muted" : ""}">
-                  <div class="lbl">Default live camera</div>
-                  <div class="desc">Optional. This sets the default camera when live mode opens.</div>
-                  ${liveCameraEntity ? `
-                  <div class="livecam-tags">
-                    <div class="livecam-tag"><span>${String(this._hass?.states?.[liveCameraEntity]?.attributes?.friendly_name || liveCameraEntity).trim()}</span><span class="livecam-tag-entity">${liveCameraEntity}</span><button type="button" class="livecam-tag-del" data-deldefcam="${liveCameraEntity}">×</button></div>
-                  </div>
-                  ${liveCameraEntities.length > 0 && !liveCameraEntities.includes(liveCameraEntity) ? `
-                  <div class="cgc-inline-warn"><ha-icon icon="mdi:alert-outline"></ha-icon><span>This camera is not in the visible cameras list. It will not appear in the picker.</span></div>
-                  ` : ``}
-                  ` : ``}
-                  ${!liveControlsDisabled ? `
-                  <div class="field" style="margin-top:6px;">
-                    <input type="text" class="ed-input" id="livedefault-input" placeholder="Search cameras..." autocomplete="off" ${liveCameraEntity ? `style="display:none;"` : ``} />
-                    <div class="suggestions" id="livedefault-suggestions" hidden></div>
-                  </div>
-                  ` : ``}
-                </div>
-              `
-                  : ``
-              }
-
-              <div class="row">
-                <div class="row-head">
-                  <div class="lbl">Auto muted</div>
-                  <div class="togrow">
-                    <ha-switch id="live_auto_muted"></ha-switch>
-                  </div>
-                </div>
-              </div>
-
-            </div>
-          `
-              : ``
-          }
-
-          ${
-            this._activeTab === "thumbs"
-              ? `
-            <div class="tabpanel" data-panel="thumbs">
-              <div class="row">
-                <div class="lbl">Thumbnail layout</div>
-                <div class="desc">Choose how thumbnails are displayed inside the card</div>
-                <div class="segwrap">
-                  <button class="seg ${thumbLayout === "horizontal" ? "on" : ""}" data-tlayout="horizontal">Horizontal</button>
-                  <button class="seg ${thumbLayout === "vertical" ? "on" : ""}" data-tlayout="vertical">Vertical</button>
-                </div>
-              </div>
-
-              <div class="row ${thumbSizeMuted ? "muted" : ""}">
-                <div class="lbl">Thumbnail size</div>
-                <div class="desc">Set the size of each thumbnail in pixels</div>
-                <div class="ed-input-row"><input type="number" class="ed-input" id="thumb" /><span class="ed-suffix">px</span></div>
-              </div>
-
-              <div class="row">
-                <div class="lbl">Maximum thumbnails shown</div>
-                <div class="desc">Maximum number of media items loaded into the gallery</div>
-                <div class="ed-input-row"><input type="number" class="ed-input" id="maxmedia" /><span class="ed-suffix">items</span></div>
-              </div>
-
-              <div class="row">
-                <div class="lbl">Thumbnail bar position</div>
-                <div class="desc">Choose where the info bar on each thumbnail is shown</div>
-                <div class="segwrap">
-                  <button class="seg ${thumbBarPos === "top" ? "on" : ""}" data-tbpos="top">Top</button>
-                  <button class="seg ${thumbBarPos === "bottom" ? "on" : ""}" data-tbpos="bottom">Bottom</button>
-                  <button class="seg ${thumbBarPos === "hidden" ? "on" : ""}" data-tbpos="hidden">Hidden</button>
-                </div>
-              </div>
-
-              <div class="row">
-                <div class="lbl">Pill position</div>
-                <div class="segwrap">
-                  <button class="seg ${tsPos === "top" ? "on" : ""}" data-pos="top">Top</button>
-                  <button class="seg ${tsPos === "bottom" ? "on" : ""}" data-pos="bottom">Bottom</button>
-                  <button class="seg ${tsPos === "hidden" ? "on" : ""}" data-pos="hidden">Hidden</button>
-                </div>
-              </div>
-
-              <div class="row ${barDisabled ? "muted" : ""}">
-                <div class="lbl">Opacity pill</div>
-                <div class="barrow">
-                  <div class="barrow-top">
-                    <div class="pillval" id="barval">${barOpacity}%</div>
-                  </div>
-                  <ha-slider id="barop" min="0" max="100" step="1" ${barDisabled ? "disabled" : ""}></ha-slider>
-                </div>
-              </div>
-
-              <div class="row ${barDisabled ? "muted" : ""}">
-                <div class="lbl">Pill size</div>
-                <div class="barrow">
-                  <div class="barrow-top">
-                    <div class="pillval" id="pillsizeval">${pillSize}px</div>
-                  </div>
-                  <ha-slider id="pillsize" min="10" max="28" step="1" ${barDisabled ? "disabled" : ""}></ha-slider>
-                </div>
-              </div>
-
-              <div class="row">
-                <div class="lbl">Object filters</div>
-                <div class="objmeta">
-                  <div class="desc">Choose which filter chips are available on the card</div>
-                  <div class="countpill">Selected ${selectedCount}/${MAX_VISIBLE_OBJECT_FILTERS}</div>
-                </div>
-
-                <div class="chip-grid">
-                  ${AVAILABLE_OBJECT_FILTERS
-                    .map((obj) => {
-                      const isOn = objectFiltersArr.includes(obj);
-                      const currentColor = objectColors[obj] || "";
-                      const colorVal = currentColor && /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(currentColor) ? currentColor : "#ffffff";
-                      return `
-                      <button
-                        type="button"
-                        class="objchip ${isOn ? "on" : ""}"
-                        data-objchip="${obj}"
-                        title="${this._objectLabel(obj)}"
-                      >
-                        <span class="objchip-icon">
-                          <ha-icon icon="${this._objectIcon(obj)}" style="${currentColor ? "color:" + currentColor : ""}"></ha-icon>
-                        </span>
-                        <span class="objchip-color">
-                          <input type="color" class="cgc-color" value="${colorVal}" style="${!currentColor ? "opacity:0.35" : ""}" data-filtercolor="${obj}">
-                        </span>
-                        <ha-checkbox ${isOn ? "checked" : ""} tabindex="-1" style="pointer-events:none;"></ha-checkbox>
-                      </button>
-                    `;
-                    })
-                    .join("")}
-                </div>
-
-              <div class="row">
-                <div class="lbl">Custom Object Filters</div>
-                  <div class="desc">Add custom object filters and icons (e.g., parcel, woman, etc.)</div>
-                  
-                  <div class="custom-filter-add">
-                    <input type="text" class="ed-input" id="new-filter-name" placeholder="e.g. parcel" />
-                    <ha-icon-picker id="new-filter-icon" label="Icon"></ha-icon-picker>
-                    <button class="actionbtn" id="add-filter-btn">
-                      <ha-icon icon="mdi:plus"></ha-icon>
-                      Add filter
-                    </button>
-                  </div>
-
-                <div class="custom-filter-list">
-                  ${objectFiltersArr.filter(f => typeof f === 'object').map((f, index) => {
-                    const name = Object.keys(f)[0];
-                    const icon = f[name];
-                    const currentColor = objectColors[name] || "";
-                    const colorVal = currentColor && /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(currentColor) ? currentColor : "#ffffff";
-                    return `
-                      <div class="custom-item">
-                        <div class="custom-item-info">
-                          <ha-icon icon="${icon}" style="${currentColor ? "color:" + currentColor : ""}"></ha-icon>
-                          <span class="lbl">${this._objectLabel(name)}</span>
-                        </div>
-                        <div class="color-controls">
-                          <input type="color" class="cgc-color" value="${colorVal}" style="${!currentColor ? "opacity:0.35" : ""}" data-filtercolor="${name}">
-                          <button class="remove-btn" data-remove-index="${name}">
-                            <ha-icon icon="mdi:delete-outline"></ha-icon>
-                          </button>
-                        </div>
-                      </div>
-                    `;
-                  }).join('')}
-                </div>
-              </div>
-
-              </div>
-            </div>
-          `
-              : ``
-          }
-
-          ${
-            this._activeTab === "styling"
-              ? `
-              <div class="tabpanel" data-panel="styling">
-                <div class="style-sections">
-                  ${STYLE_SECTIONS.map((section) => `
-                    <details
-                      class="style-section"
-                      id="style-section-${section.id}"
-                      ${this._openStyleSections.has(section.id) ? "open" : ""}
-                    >
-                      <summary class="style-section-head">
-                        <ha-icon icon="${section.icon}"></ha-icon>
-                        <span>${section.label}</span>
-                        <ha-icon class="style-chevron" icon="mdi:chevron-down"></ha-icon>
-                      </summary>
-                      <div class="style-section-body">
-                        <div class="color-grid">
-                          ${section.controls.map((ctrl) => {
-                            if (ctrl.type === "color") {
-                              return `
-                                <div class="color-row">
-                                  <div class="lbl">${ctrl.label}</div>
-                                  <div class="color-controls">
-                                    <div id="${ctrl.hostId}"></div>
-                                    <label class="color-transparent">
-                                      <input type="checkbox" data-transparent="${ctrl.variable}">
-                                      Transparent
-                                    </label>
-                                    <button type="button" class="color-reset" data-reset="${ctrl.variable}" title="Reset to default">
-                                      <ha-icon icon="mdi:backup-restore"></ha-icon>
-                                    </button>
-                                  </div>
-                                </div>
-                              `;
-                            }
-                            if (ctrl.type === "radius") {
-                              const raw = this._getStyleVariableValue(ctrl.variable);
-                              const val = raw ? parseInt(raw) : ctrl.default;
-                              const safeId = ctrl.variable.replace(/[^a-z0-9]/gi, "-");
-                              return `
-                                <div class="color-row">
-                                  <div class="lbl">${ctrl.label}</div>
-                                  <div class="color-controls">
-                                    <input
-                                      type="range"
-                                      class="radius-range"
-                                      data-radius="${ctrl.variable}"
-                                      min="${ctrl.min}"
-                                      max="${ctrl.max}"
-                                      value="${val}"
-                                    >
-                                    <span class="radius-value" id="radius-val-${safeId}">${val}px</span>
-                                    <button type="button" class="color-reset" data-reset="${ctrl.variable}" title="Reset to default">
-                                      <ha-icon icon="mdi:backup-restore"></ha-icon>
-                                    </button>
-                                  </div>
-                                </div>
-                              `;
-                            }
-                            return "";
-                          }).join("")}
-                        </div>
-                      </div>
-                    </details>
-                  `).join("")}
-                </div>
-              </div>
-            `
-              : ``
-          }
+          ${buildPanelHtml()}
 
         </div>
       </div>
 
-      ${mediaBrowserHtml}
+      <div id="cgc-browser-slot">${mediaBrowserHtml}</div>
     `;
+    this._editorRendered = true;
+    } else {
+      // Partial update — avoid rebuilding the full shadow DOM
+      const panelHtml = buildPanelHtml();
+
+      // Update CSS vars on wrap
+      const wrapEl = this.shadowRoot.querySelector(".wrap");
+      if (wrapEl) wrapEl.setAttribute("style", rootVars);
+
+      // Update tab button active states
+      this.shadowRoot.querySelectorAll("[data-tab]").forEach((btn) => {
+        btn.classList.toggle("on", btn.dataset.tab === this._activeTab);
+      });
+
+      // Swap tab panel
+      const oldPanel = this.shadowRoot.querySelector(".tabpanel");
+      const tmp = document.createElement("div");
+      tmp.innerHTML = panelHtml;
+      if (oldPanel && tmp.firstElementChild) {
+        oldPanel.replaceWith(tmp.firstElementChild);
+      } else if (!oldPanel && tmp.firstElementChild) {
+        this.shadowRoot.querySelector(".tabbar")?.insertAdjacentElement("afterend", tmp.firstElementChild);
+      }
+
+      // Update media browser slot
+      const browserSlot = this.shadowRoot.getElementById("cgc-browser-slot");
+      if (browserSlot) browserSlot.innerHTML = mediaBrowserHtml;
+    }
 
     const $ = (id) => this.shadowRoot.getElementById(id);
 
@@ -9628,6 +10175,7 @@ class CameraGalleryCardEditor extends HTMLElement {
     const entitiesEl = $("entities");
     const mediaEl = $("mediasources");
     const filenameFmtEl = $("filenamefmt");
+    const folderFmtEl = $("folderfmt");
     const delserviceEl = $("delservice");
 
     const thumbEl = $("thumb");
@@ -9644,6 +10192,7 @@ class CameraGalleryCardEditor extends HTMLElement {
     this._setControlValue(entitiesEl, entitiesText);
     this._setControlValue(mediaEl, mediaSourcesText);
     this._setControlValue(filenameFmtEl, filenameDatetimeFormat);
+    this._setControlValue(folderFmtEl, folderDatetimeFormat);
     this._setControlValue(thumbEl, String(thumbSize));
     this._setControlValue(maxmediaEl, String(maxMedia));
     this._setControlValue(baropEl, barOpacity);
@@ -9838,22 +10387,41 @@ class CameraGalleryCardEditor extends HTMLElement {
     filenameFmtEl?.addEventListener("change", () => commitFilenameFormat(true));
     filenameFmtEl?.addEventListener("blur", () => commitFilenameFormat(true));
 
+    const commitFolderFormat = (commit = false) => {
+      const raw = String(folderFmtEl?.value ?? "").trim();
+      const next = { ...this._config };
+      if (!raw) {
+        delete next.folder_datetime_format;
+      } else {
+        next.folder_datetime_format = raw;
+      }
+      this._config = this._stripAlwaysTrueKeys(next);
+      if (commit) { this._fire(); this._scheduleRender(); }
+    };
+
+    folderFmtEl?.addEventListener("input", () => commitFolderFormat(false));
+    folderFmtEl?.addEventListener("change", () => commitFolderFormat(true));
+    folderFmtEl?.addEventListener("blur", () => commitFolderFormat(true));
+
     this.shadowRoot.querySelectorAll(".seg[data-objfit]").forEach((btn) => {
-      btn.addEventListener("click", () =>
-        this._set("object_fit", btn.dataset.objfit)
-      );
+      btn.addEventListener("click", () => {
+        this._set("object_fit", btn.dataset.objfit);
+        btn.closest(".segwrap")?.querySelectorAll(".seg").forEach((s) => s.classList.toggle("on", s === btn));
+      });
     });
 
     this.shadowRoot.querySelectorAll(".seg[data-ppos]").forEach((btn) => {
-      btn.addEventListener("click", () =>
-        this._set("preview_position", btn.dataset.ppos)
-      );
+      btn.addEventListener("click", () => {
+        this._set("preview_position", btn.dataset.ppos);
+        btn.closest(".segwrap")?.querySelectorAll(".seg").forEach((s) => s.classList.toggle("on", s === btn));
+      });
     });
 
     this.shadowRoot.querySelectorAll(".seg[data-startmode]").forEach((btn) => {
-      btn.addEventListener("click", () =>
-        this._set("start_mode", btn.dataset.startmode)
-      );
+      btn.addEventListener("click", () => {
+        this._set("start_mode", btn.dataset.startmode);
+        btn.closest(".segwrap")?.querySelectorAll(".seg").forEach((s) => s.classList.toggle("on", s === btn));
+      });
     });
 
     thumbEl?.addEventListener("input", () =>
@@ -9899,19 +10467,25 @@ class CameraGalleryCardEditor extends HTMLElement {
     maxmediaEl?.addEventListener("blur", () => pushMaxMedia(true));
 
     this.shadowRoot.querySelectorAll(".seg[data-tbpos]").forEach((btn) => {
-      btn.addEventListener("click", () =>
-        this._set("thumb_bar_position", btn.dataset.tbpos)
-      );
+      btn.addEventListener("click", () => {
+        this._set("thumb_bar_position", btn.dataset.tbpos);
+        btn.closest(".segwrap")?.querySelectorAll(".seg").forEach((s) => s.classList.toggle("on", s === btn));
+      });
     });
 
     this.shadowRoot.querySelectorAll(".seg[data-tlayout]").forEach((btn) => {
-      btn.addEventListener("click", () =>
-        this._set("thumb_layout", btn.dataset.tlayout)
-      );
+      btn.addEventListener("click", () => {
+        this._set("thumb_layout", btn.dataset.tlayout);
+        btn.closest(".segwrap")?.querySelectorAll(".seg").forEach((s) => s.classList.toggle("on", s === btn));
+      });
     });
 
     $("clicktoopen")?.addEventListener("change", (e) => {
       this._set("preview_click_to_open", !!e.target.checked);
+    });
+
+    $("persistentcontrols")?.addEventListener("change", (e) => {
+      this._set("persistent_controls", !!e.target.checked);
     });
 
     autoplayEl?.addEventListener("change", (e) => {
@@ -10365,7 +10939,8 @@ class CameraGalleryCardEditor extends HTMLElement {
     }
 
     this._fire();
-    this._scheduleRender();
+    const RENDERS_REQUIRED = new Set(["source_mode", "live_enabled", "live_camera_entities", "object_filters", "delete_service", "live_camera_entity"]);
+    if (RENDERS_REQUIRED.has(key)) this._scheduleRender();
   }
 
   _setActiveTab(tab) {
