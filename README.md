@@ -42,6 +42,18 @@ FileTrack is a fork of the archived [files integration by TarheelGrad1998](https
 
 <img width="434" height="181" alt="Scherm­afbeelding 2026-03-28 om 13 51 00" src="https://github.com/user-attachments/assets/3d0bb033-7523-4204-bedf-2548cebbbec1" />
 
+### YAML sensor
+
+Add sensors directly to your `configuration.yaml` file:
+
+```yaml
+filetrack:
+  sensors:
+    - name: Recordings
+      folder: /media/frigate/clips
+```
+*Note: Restart Home Assistant after adding YAML entries.*
+
 ---
 
 ## Features
