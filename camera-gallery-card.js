@@ -118,6 +118,7 @@ class CameraGalleryCard extends LitElement {
       _selectedSet: { type: Object },
       _selectMode: { type: Boolean },
       _showBulkHint: { type: Boolean },
+      _showDatePicker: { type: Boolean },
       _showLivePicker: { type: Boolean },
       _showLiveQuickSwitch: { type: Boolean },
       _showNav: { type: Boolean },
@@ -136,6 +137,8 @@ class CameraGalleryCard extends LitElement {
       _aspectRatio: { type: String },
       _liveMicActive: { type: Boolean },
       _hamburgerOpen: { type: Boolean },
+      _filterVideo: { type: Boolean },
+      _filterImage: { type: Boolean },
     };
   }
 
@@ -173,6 +176,8 @@ class CameraGalleryCard extends LitElement {
     this._liveQuickSwitchTimer = null;
     this._navHideT = null;
     this._objectFilters = [];
+    this._filterVideo = false;
+    this._filterImage = false;
     this._pendingScrollToI = null;
     this._posterCache = new Map();
     this._msBrowseTtlCache = new Map();
@@ -185,6 +190,8 @@ class CameraGalleryCard extends LitElement {
     this._selectedSet = new Set();
     this._showBulkHint = false;
     this._bulkHintTimer = null;
+    this._showDatePicker = false;
+    this._datePickerDays = null;
     this._showLivePicker = false;
     this._showLiveQuickSwitch = false;
     this._showNav = false;
@@ -318,6 +325,8 @@ class CameraGalleryCard extends LitElement {
 
     this._msResolveInFlight = false;
     this._msResolveQueued = new Set();
+    this._msResolveFailed = new Set();
+    this._previewLoadTimer = null;
 
     this._posterQueue = [];
     this._posterQueued = new Set();
@@ -447,8 +456,8 @@ class CameraGalleryCard extends LitElement {
       ? allWithDay
       : allWithDay.filter((x) => x.dayKey === activeDay);
 
-    const filteredAll = dayFiltered.filter((x) =>
-      this._matchesObjectFilter(x.src)
+    const filteredAll = dayFiltered.filter(
+      (x) => this._matchesObjectFilter(x.src) && this._matchesTypeFilter(x.src)
     );
 
     const cap = this._normMaxMedia(this.config?.max_media);
@@ -598,6 +607,54 @@ class CameraGalleryCard extends LitElement {
       video.playsInline = true;
       video.preload = "metadata";
 
+      video.addEventListener("error", () => {
+        const err = video.error;
+        if (!err) return;
+        const codes = {
+          1: "Playback aborted (MEDIA_ERR_ABORTED)",
+          2: "Network error — browser cannot reach this URL (MEDIA_ERR_NETWORK)",
+          3: "Decoding failed — possibly corrupt file (MEDIA_ERR_DECODE)",
+          4: "Format/codec not supported (MEDIA_ERR_SRC_NOT_SUPPORTED)",
+        };
+        const hints = {
+          2: "If this URL starts with http://192.168.x.x or points directly to Frigate (not /api/...), the browser cannot reach it when accessing HA remotely.",
+          4: "The clip may be encoded in H.265/HEVC. Only Safari supports H.265; Chrome and Firefox do not.",
+        };
+        const msg = codes[err.code] || `Unknown error (code ${err.code})`;
+        const hint = hints[err.code] || "";
+        const src = video.src || "";
+        const urlDisplay = src.length > 90 ? src.slice(0, 87) + "\u2026" : src;
+
+        let overlay = host.querySelector(".cgc-video-error");
+        if (!overlay) {
+          overlay = document.createElement("div");
+          overlay.className = "cgc-video-error";
+          host.appendChild(overlay);
+        }
+        overlay.innerHTML =
+          `<div class="cgc-ve-icon">\u26a0\ufe0f</div>` +
+          `<div class="cgc-ve-msg">${msg}</div>` +
+          (hint ? `<div class="cgc-ve-hint">${hint}</div>` : "") +
+          (src ? `<div class="cgc-ve-url" title="${src}">${urlDisplay}</div>` : "");
+
+        if (err.code === 4 && src) {
+          const ctrl = new AbortController();
+          const t = setTimeout(() => ctrl.abort(), 6000);
+          fetch(src, { signal: ctrl.signal })
+            .then((res) => {
+              clearTimeout(t);
+              res.body?.cancel().catch(() => {});
+              const ct = res.headers.get("content-type") || "unknown";
+              const diag = document.createElement("div");
+              diag.className = "cgc-ve-hint";
+              diag.style.cssText = "margin-top:4px;color:#aaa;font-size:0.7rem;";
+              diag.textContent = `HTTP ${res.status} \u00b7 Content-Type: ${ct}`;
+              overlay.appendChild(diag);
+            })
+            .catch(() => { clearTimeout(t); });
+        }
+      });
+
       host.appendChild(video);
       this._previewVideoEl = video;
     }
@@ -612,7 +669,32 @@ class CameraGalleryCard extends LitElement {
     video.muted = shouldMute;
 
     if (video.src !== selectedUrl) {
+      // Clear any previous error overlay
+      const prevErr = host.querySelector(".cgc-video-error");
+      if (prevErr) prevErr.remove();
+
       video.src = selectedUrl;
+
+      // Start load timeout — als na 20s nog geen canplay of error, toon overlay
+      if (this._previewLoadTimer) clearTimeout(this._previewLoadTimer);
+      this._previewLoadTimer = setTimeout(() => {
+        this._previewLoadTimer = null;
+        if (video.readyState < 2 && !video.error) {
+          let overlay = host.querySelector(".cgc-video-error");
+          if (!overlay) {
+            overlay = document.createElement("div");
+            overlay.className = "cgc-video-error";
+            host.appendChild(overlay);
+          }
+          const src = video.src || "";
+          const urlDisplay = src.length > 90 ? src.slice(0, 87) + "\u2026" : src;
+          overlay.innerHTML =
+            `<div class="cgc-ve-icon">\u23f3</div>` +
+            `<div class="cgc-ve-msg">Video is taking too long to load</div>` +
+            `<div class="cgc-ve-hint">The server may be slow or the URL may be inaccessible.</div>` +
+            (src ? `<div class="cgc-ve-url" title="${src}">${urlDisplay}</div>` : "");
+        }
+      }, 20000);
 
       const poster = this._posterCache.get(selectedUrl) || "";
       if (poster) {
@@ -622,6 +704,8 @@ class CameraGalleryCard extends LitElement {
         // Enqueue poster pas na laden: voorkomt dat de capture de preview-verbinding blokkeert
         const urlForPoster = selectedUrl;
         video.addEventListener("canplay", () => {
+          clearTimeout(this._previewLoadTimer);
+          this._previewLoadTimer = null;
           if (!this._posterCache.has(urlForPoster)) this._enqueuePoster(urlForPoster);
         }, { once: true });
       }
@@ -632,6 +716,8 @@ class CameraGalleryCard extends LitElement {
         // niet afhankelijk is van een recente user-gesture (relevant in MS mode
         // waar de URL async wordt opgelost en de gesture al "oud" is).
         video.addEventListener("canplay", () => {
+          clearTimeout(this._previewLoadTimer);
+          this._previewLoadTimer = null;
           video.muted = shouldMute;
           video.play().catch(() => {});
         }, { once: true });
@@ -649,6 +735,11 @@ class CameraGalleryCard extends LitElement {
   }
 
   _clearPreviewVideoHostPlayback() {
+    if (this._previewLoadTimer) {
+      clearTimeout(this._previewLoadTimer);
+      this._previewLoadTimer = null;
+    }
+
     const host = this.renderRoot?.querySelector("#preview-video-host");
 
     if (this._previewVideoEl) {
@@ -1013,6 +1104,9 @@ class CameraGalleryCard extends LitElement {
     const states = this._hass?.states || {};
     const allowed = this.config?.live_camera_entities;
 
+    // Geen expliciete cameras geconfigureerd = geen live cameras
+    if (!allowed?.length) return [];
+
     return Object.keys(states)
       .filter((entityId) => entityId.startsWith("camera."))
       .filter((entityId) => {
@@ -1022,7 +1116,7 @@ class CameraGalleryCard extends LitElement {
         const state = String(st.state || "").toLowerCase();
         if (state === "unavailable" || state === "unknown") return false;
 
-        if (allowed?.length > 0 && !allowed.includes(entityId)) return false;
+        if (!allowed.includes(entityId)) return false;
 
         return true;
       })
@@ -1050,6 +1144,7 @@ class CameraGalleryCard extends LitElement {
   _friendlyCameraName(entityId) {
     const id = String(entityId || "").trim();
     if (!id) return "";
+    if (id === "__cgc_stream__") return String(this.config?.live_stream_name || "Stream").trim();
 
     const st = this._hass?.states?.[id];
     const friendly = String(st?.attributes?.friendly_name || "").trim();
@@ -1193,6 +1288,7 @@ class CameraGalleryCard extends LitElement {
 
   _hasLiveConfig() {
     if (!this.config?.live_enabled) return false;
+    if (this.config?.live_stream_url) return true;
     return this._getLiveCameraOptions().length > 0;
   }
 
@@ -1373,6 +1469,18 @@ class CameraGalleryCard extends LitElement {
 
   // ─── Live helpers ─────────────────────────────────────────────────
 
+  _openDatePicker(days) {
+    this._datePickerDays = days;
+    this._showDatePicker = true;
+    this.requestUpdate();
+  }
+
+  _closeDatePicker() {
+    this._showDatePicker = false;
+    this._datePickerDays = null;
+    this.requestUpdate();
+  }
+
   _closeLivePicker() {
     this._showLivePicker = false;
     this._liveCameraListCache = null;
@@ -1444,10 +1552,17 @@ class CameraGalleryCard extends LitElement {
         if (e.streams?.[0]) video.srcObject = e.streams[0];
       };
 
-      // Gebruik WebSocket naar go2rtc — vermijdt CORS problemen met HTTP fetch
+      // Gebruik HA ingebouwde go2rtc (auth/sign_path) of externe go2rtc instantie
       const go2rtcBase = this._getGo2rtcUrl();
-      const wsUrl = go2rtcBase.replace(/^http/, "ws") + "/api/webrtc?src=" + encodeURIComponent(url);
-      const ws = new WebSocket(wsUrl);
+      let ws;
+      if (go2rtcBase) {
+        const wsUrl = go2rtcBase.replace(/^http/, "ws") + "/api/webrtc?src=" + encodeURIComponent(url);
+        ws = new WebSocket(wsUrl);
+      } else {
+        const signed = await this._hass.callWS({ type: "auth/sign_path", path: "/api/webrtc/ws" });
+        const wsUrl = "ws" + this._hass.hassUrl(signed.path).substring(4) + "&url=" + encodeURIComponent(url);
+        ws = new WebSocket(wsUrl);
+      }
       this._rtcWebSocket = ws;
 
       await new Promise((resolve, reject) => {
@@ -1496,6 +1611,10 @@ class CameraGalleryCard extends LitElement {
     return video;
   }
 
+  _getGo2rtcUrl() {
+    return String(this.config?.live_go2rtc_url || "").trim();
+  }
+
   _getEffectiveLiveCamera() {
     const selected = String(this._liveSelectedCamera || "").trim();
     if (selected) return selected;
@@ -1507,7 +1626,8 @@ class CameraGalleryCard extends LitElement {
   }
 
   _getLiveCameraOptions() {
-    return this._getAllLiveCameraEntities();
+    const entities = this._getAllLiveCameraEntities();
+    return this.config?.live_stream_url ? ["__cgc_stream__", ...entities] : entities;
   }
 
   _hideLiveQuickSwitchButton() {
@@ -1779,7 +1899,12 @@ class CameraGalleryCard extends LitElement {
     const host = this.renderRoot?.querySelector("#live-card-host");
     if (!host) return;
 
-    const card = await this._ensureLiveCard();
+    const effectiveCam = this._getEffectiveLiveCamera();
+    const isStreamUrl = effectiveCam === "__cgc_stream__" ||
+      (this.config?.live_stream_url && !effectiveCam);
+    const card = isStreamUrl
+      ? await this._ensureLiveCardFromUrl(this.config.live_stream_url)
+      : await this._ensureLiveCard();
     if (!card) return;
 
     const isNewMount = card.parentElement !== host;
@@ -1789,11 +1914,13 @@ class CameraGalleryCard extends LitElement {
       host.appendChild(card);
     }
 
-    // hass wordt al direct doorgegeven in set hass() — hier alleen stateObj updaten
-    const entity = this._getEffectiveLiveCamera();
-    const newStateObj = this._hass?.states?.[entity];
-    if (newStateObj?.last_changed !== card.stateObj?.last_changed) {
-      card.stateObj = newStateObj;
+    // stateObj alleen updaten bij entity-modus
+    if (!isStreamUrl) {
+      const entity = this._getEffectiveLiveCamera();
+      const newStateObj = this._hass?.states?.[entity];
+      if (newStateObj?.last_changed !== card.stateObj?.last_changed) {
+        card.stateObj = newStateObj;
+      }
     }
 
     // Style-injectie alleen bij nieuwe mount (timers + MutationObserver doen de rest)
@@ -1872,23 +1999,78 @@ class CameraGalleryCard extends LitElement {
   }
 
   _renderLiveInner() {
-    const entity = this._getEffectiveLiveCamera();
-    if (!entity) {
-      return html`<div class="preview-empty">No live camera configured.</div>`;
+    const effectiveCam = this._getEffectiveLiveCamera();
+    const isStreamUrl = effectiveCam === "__cgc_stream__" ||
+      (this.config?.live_stream_url && !effectiveCam);
+    if (!isStreamUrl) {
+      const entity = effectiveCam;
+      if (!entity) {
+        return html`<div class="preview-empty">No live camera configured.</div>`;
+      }
+      const st = this._hass?.states?.[entity];
+      if (!st) {
+        return html`<div class="preview-empty">Camera entity not found: ${entity}</div>`;
+      }
     }
-
-    const st = this._hass?.states?.[entity];
-    if (!st) {
-      return html`<div class="preview-empty">Camera entity not found: ${entity}</div>`;
-    }
-
-    const hasMultipleLiveCameras = this._getLiveCameraOptions().length > 1;
 
     return html`
       <div class="live-stage">
         ${this._renderLiveCardHost()}
-
         ${this._renderLivePicker()}
+      </div>
+    `;
+  }
+
+  _renderDatePicker() {
+    if (!this._showDatePicker) return html``;
+    const days = this._datePickerDays || [];
+
+    const groups = new Map();
+    for (const day of days) {
+      const [y, m] = day.split("-");
+      const key = `${y}-${m}`;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(day);
+    }
+
+    const selected = this._selectedDay;
+
+    return html`
+      <div class="live-picker-backdrop" @click=${() => this._closeDatePicker()}></div>
+      <div class="live-picker date-picker" @click=${(e) => e.stopPropagation()}>
+        <div class="live-picker-head">
+          <div class="live-picker-title">Select date</div>
+          <button class="live-picker-close" @click=${() => this._closeDatePicker()} title="Close" aria-label="Close">
+            <ha-icon icon="mdi:close"></ha-icon>
+          </button>
+        </div>
+        <div class="live-picker-list">
+          ${[...groups.entries()].map(([monthKey, monthDays]) => html`
+            <div class="dp-month-header">
+              ${new Intl.DateTimeFormat(this._locale(), { month: "long", year: "numeric" }).format(new Date(`${monthKey}-01T00:00:00`))}
+            </div>
+            ${monthDays.map((day) => {
+              const isSel = day === selected;
+              return html`
+                <button
+                  class="live-picker-item ${isSel ? "on" : ""}"
+                  @click=${() => {
+                    this._selectedDay = day;
+                    this._selectedIndex = 0;
+                    this._pendingScrollToI = null;
+                    this._forceThumbReset = true;
+                    this._exitSelectMode();
+                    if (this.config?.preview_click_to_open) this._previewOpen = false;
+                    this._closeDatePicker();
+                  }}
+                >
+                  <span class="dp-day-label">${this._formatDay(day)}</span>
+                  ${isSel ? html`<ha-icon class="live-picker-check" icon="mdi:check"></ha-icon>` : html``}
+                </button>
+              `;
+            })}
+          `)}
+        </div>
       </div>
     `;
   }
@@ -2770,6 +2952,7 @@ class CameraGalleryCard extends LitElement {
       this._ms.list = [];
       this._ms.roots = roots.slice();
       this._ms.urlCache = new Map();
+      this._msResolveFailed = new Set();
     }
 
     // Serve from persistent walk cache instantly, then refresh in background
@@ -3069,17 +3252,27 @@ class CameraGalleryCard extends LitElement {
     const isReolink = String(mediaId || "").startsWith("media-source://reolink/");
     const resolveTimeout = isReolink ? 60000 : 12000;
 
-    const r = await this._wsWithTimeout(
-      {
-        type: "media_source/resolve_media",
-        media_content_id: mediaId,
-        expires: 60 * 60,
-      },
-      resolveTimeout
-    );
+    let r;
+    try {
+      r = await this._wsWithTimeout(
+        {
+          type: "media_source/resolve_media",
+          media_content_id: mediaId,
+          expires: 60 * 60,
+        },
+        resolveTimeout
+      );
+    } catch (_) {
+      this._msResolveFailed.add(mediaId);
+      return "";
+    }
 
     const url = r?.url ? String(r.url) : "";
-    if (url) this._ms.urlCache.set(mediaId, url);
+    if (url) {
+      this._ms.urlCache.set(mediaId, url);
+    } else {
+      this._msResolveFailed.add(mediaId);
+    }
     return url;
   }
 
@@ -3420,6 +3613,18 @@ class CameraGalleryCard extends LitElement {
     }
   }
 
+  _formatDayShort(dayKey) {
+    if (!dayKey) return "";
+    try {
+      return new Intl.DateTimeFormat(this._locale(), {
+        day: "numeric",
+        month: "short",
+      }).format(new Date(`${dayKey}T00:00:00`));
+    } catch (_) {
+      return dayKey;
+    }
+  }
+
   _formatTimeFromMs(ms) {
     if (!Number.isFinite(ms)) return "";
     try {
@@ -3727,6 +3932,21 @@ class CameraGalleryCard extends LitElement {
     return this._matchesObjectFilterValue(src, this._objectFilters);
   }
 
+  _isVideoForSrc(src) {
+    if (this._isMediaSourceId(src)) {
+      const meta = this._msMetaById(src);
+      return this._isVideoSmart(meta.title || src, meta.mime, meta.cls);
+    }
+    return this._isVideo(src);
+  }
+
+  _matchesTypeFilter(src) {
+    // both on or both off = show all
+    if (this._filterVideo === this._filterImage) return true;
+    const isVid = this._isVideoForSrc(src);
+    return isVid ? this._filterVideo : this._filterImage;
+  }
+
   _matchesObjectFilterValue(src, filterValues) {
     const active = Array.isArray(filterValues)
       ? filterValues
@@ -3895,6 +4115,22 @@ class CameraGalleryCard extends LitElement {
       this._setViewMode("media");
     }
 
+    this.requestUpdate();
+  }
+
+  _toggleFilterVideo() {
+    this._filterVideo = !this._filterVideo;
+    this._selectedIndex = 0;
+    this._pendingScrollToI = null;
+    this._forceThumbReset = true;
+    this.requestUpdate();
+  }
+
+  _toggleFilterImage() {
+    this._filterImage = !this._filterImage;
+    this._selectedIndex = 0;
+    this._pendingScrollToI = null;
+    this._forceThumbReset = true;
     this.requestUpdate();
   }
 
@@ -4293,6 +4529,9 @@ class CameraGalleryCard extends LitElement {
         : DEFAULT_LIVE_ENABLED;
 
     const live_camera_entity = String(config.live_camera_entity || "").trim();
+    const live_stream_url = String(config.live_stream_url || "").trim();
+    const live_stream_name = String(config.live_stream_name || "").trim();
+    const live_go2rtc_url = String(config.live_go2rtc_url || "").trim();
 
     const live_camera_entities = Array.isArray(config.live_camera_entities)
       ? config.live_camera_entities.map(String).map((s) => s.trim()).filter(Boolean)
@@ -4321,6 +4560,9 @@ class CameraGalleryCard extends LitElement {
       live_camera_entities,
       live_camera_entity,
       live_enabled,
+      live_stream_url: live_stream_url || null,
+      live_stream_name: live_stream_name || null,
+      live_go2rtc_url: live_go2rtc_url || null,
       max_media,
       media_source: source_mode === "media" ? mediaRaw : "",
       media_sources: source_mode === "media" ? normalizedMediaRoots : [],
@@ -4342,6 +4584,18 @@ class CameraGalleryCard extends LitElement {
       live_go2rtc_stream: String(config.live_go2rtc_stream || "").trim() || null,
       folder_datetime_format: String(config.folder_datetime_format || "").trim() || null,
       sync_entity: String(config.sync_entity || "").trim() || null,
+      menu_buttons: Array.isArray(config.menu_buttons)
+        ? config.menu_buttons
+            .filter(b => b && typeof b === "object" && b.entity && b.icon)
+            .map(b => ({
+              entity: String(b.entity).trim(),
+              icon: String(b.icon).trim(),
+              icon_on: b.icon_on ? String(b.icon_on).trim() : undefined,
+              color_on: b.color_on ? String(b.color_on).trim() : undefined,
+              color_off: b.color_off ? String(b.color_off).trim() : undefined,
+              title: b.title ? String(b.title).trim() : undefined,
+            }))
+        : [],
     };
 
     this.config = nextConfig;
@@ -4359,13 +4613,15 @@ class CameraGalleryCard extends LitElement {
     if (this._selectedIndex === undefined) this._selectedIndex = 0;
     if (this._selectedSet == null) this._selectedSet = new Set();
     if (!Array.isArray(this._objectFilters)) this._objectFilters = [];
+    if (this._filterVideo == null) this._filterVideo = false;
+    if (this._filterImage == null) this._filterImage = false;
 
     const visibleSet = new Set(this._getVisibleObjectFilters());
     this._objectFilters = this._objectFilters.filter((x) => visibleSet.has(x));
 
-    const liveEntityChanged = !prevConfig || prevConfig.live_camera_entity !== live_camera_entity;
+    const liveEntityChanged = !prevConfig || prevConfig.live_camera_entity !== live_camera_entity || prevConfig.live_stream_url !== config.live_stream_url;
     if (liveEntityChanged) {
-      const liveOptions = this._getAllLiveCameraEntities();
+      const liveOptions = this._getLiveCameraOptions();
       const validSelected =
         this._liveSelectedCamera &&
         liveOptions.some((x) => x === this._liveSelectedCamera);
@@ -4461,6 +4717,7 @@ class CameraGalleryCard extends LitElement {
         this._ms.loading = false;
         this._ms.roots = [];
         this._ms.urlCache = new Map();
+        this._msResolveFailed = new Set();
         this._frigateSnapshots = [];
         this._snapshotCache = new Map();
         this._objectCache.clear();
@@ -4657,9 +4914,13 @@ class CameraGalleryCard extends LitElement {
       ? allWithDay
       : allWithDay.filter((x) => x.dayKey === activeDay);
 
-    const filteredAll = dayFiltered.filter((x) =>
-      this._matchesObjectFilter(x.src)
-    );
+    const objFiltered = dayFiltered.filter((x) => this._matchesObjectFilter(x.src));
+    const videoCount = objFiltered.filter((x) => this._isVideoForSrc(x.src)).length;
+    const imageCount = objFiltered.filter((x) => !this._isVideoForSrc(x.src)).length;
+    const showTypeFilter = videoCount > 0 && imageCount > 0;
+    if (!showTypeFilter) { this._filterVideo = false; this._filterImage = false; }
+
+    const filteredAll = objFiltered.filter((x) => this._matchesTypeFilter(x.src));
 
     const noResultsForFilter = !filteredAll.length;
 
@@ -4745,6 +5006,7 @@ class CameraGalleryCard extends LitElement {
 
     const showLiveToggle = this._hasLiveConfig();
     const isLive = this._isLiveActive();
+    const useDatePicker = showTypeFilter;
     const isVerticalThumbs = this._isThumbLayoutVertical();
 
     // DIT IS DE BELANGRIJKE LOGICA: 
@@ -4804,7 +5066,13 @@ class CameraGalleryCard extends LitElement {
               : noResultsForFilter
                 ? html`<div class="preview-empty">No media for this day.</div>`
                 : !selectedHasUrl
-                  ? html`<div class="empty inpreview">Loading...</div>`
+                  ? (usingMediaSource && this._isMediaSourceId(selected) && this._msResolveFailed?.has(selected)
+                      ? html`<div class="cgc-video-error" style="position:absolute;inset:0">
+                            <div class="cgc-ve-icon">\u26a0\ufe0f</div>
+                            <div class="cgc-ve-msg">Could not load video URL</div>
+                            <div class="cgc-ve-hint">HA failed to resolve this media item. Check HA logs for media_source errors.</div>
+                          </div>`
+                      : html`<div class="empty inpreview">Loading...</div>`)
                   : selectedIsVideo
                     ? html`<div id="preview-video-host" class="preview-video-host"></div>`
                     : html`<img class="pimg" src=${selectedUrl} alt="" />`}
@@ -4843,7 +5111,7 @@ class CameraGalleryCard extends LitElement {
             ` : isLive ? html`
               <div class="live-controls-bar ${this._pillsVisible || this._showLivePicker || this.config?.persistent_controls ? "visible" : ""}">
                 <div class="live-pills-left">
-                  <div class="gallery-pill"><span>${this._friendlyCameraName(this._getEffectiveLiveCamera())}</span></div>
+                  <div class="gallery-pill"><span>${this.config?.live_stream_url ? (this.config?.live_stream_name || "Live") : this._friendlyCameraName(this._getEffectiveLiveCamera())}</span></div>
                 </div>
                 <div class="live-pills-right">
                   <button class="gallery-pill live-pill-btn" @pointerdown=${(e) => e.stopPropagation()} @click=${(e) => { e.stopPropagation(); this._toggleAspectRatio(); }}>
@@ -4871,9 +5139,23 @@ class CameraGalleryCard extends LitElement {
                     </button>
                     ${this._hamburgerOpen ? html`
                       <div class="live-hamburger-menu">
-                        <button class="gallery-pill live-pill-btn"><ha-icon icon="mdi:circle-outline"></ha-icon></button>
-                        <button class="gallery-pill live-pill-btn"><ha-icon icon="mdi:circle-outline"></ha-icon></button>
-                        <button class="gallery-pill live-pill-btn"><ha-icon icon="mdi:circle-outline"></ha-icon></button>
+                        ${(this.config.menu_buttons ?? []).map(btn => {
+                          const state = this._hass?.states[btn.entity];
+                          const isOn = state?.state === "on";
+                          const domain = btn.entity.split(".")[0];
+                          const service = domain === "automation" ? "trigger" : domain === "script" ? "turn_on" : "toggle";
+                          const icon = (isOn && btn.icon_on) ? btn.icon_on : btn.icon;
+                          const bg = isOn ? (btn.color_on || "") : (btn.color_off || "");
+                          const label = btn.title || state?.attributes?.friendly_name || btn.entity;
+                          return html`
+                            <button
+                              class="gallery-pill live-pill-btn ${isOn ? "active" : ""}"
+                              style="${bg ? `background:${bg}` : ""}"
+                              @click=${() => this._hass?.callService(domain, service, { entity_id: btn.entity })}
+                              title="${label}"
+                            ><ha-icon icon="${icon}"></ha-icon></button>
+                          `;
+                        })}
                       </div>
                     ` : html``}
                   </div>
@@ -5189,31 +5471,36 @@ class CameraGalleryCard extends LitElement {
                 </button>
               </div>
 
-              <div class="datepill" role="group" aria-label="Day navigation">
-                <button
-                  class="iconbtn"
-                  ?disabled=${!canPrev}
-                  @click=${() => this._stepDay(+1, days, currentForNav)}
-                  aria-label="Previous day"
-                  title="Previous day"
-                >
-                  <ha-icon icon="mdi:chevron-left"></ha-icon>
-                </button>
-                <div class="dateinfo" title="Selected day">
-                  <span class="txt"
-                    >${currentForNav ? this._formatDay(currentForNav) : "—"}</span
-                  >
+              ${useDatePicker ? html`
+                <div class="datepill has-filters" role="group" aria-label="Day navigation">
+                  <div class="dateinfo datepick" @click=${() => this._openDatePicker(days)} title="Select date">
+                    <span class="txt">${currentForNav ? this._formatDay(currentForNav) : "—"}</span>
+                  </div>
                 </div>
-                <button
-                  class="iconbtn"
-                  ?disabled=${!canNext}
-                  @click=${() => this._stepDay(-1, days, currentForNav)}
-                  aria-label="Next day"
-                  title="Next day"
-                >
-                  <ha-icon icon="mdi:chevron-right"></ha-icon>
-                </button>
-              </div>
+              ` : html`
+                <div class="datepill" role="group" aria-label="Day navigation">
+                  <button class="iconbtn" ?disabled=${!canPrev} @click=${() => this._stepDay(+1, days, currentForNav)} aria-label="Previous day" title="Previous day">
+                    <ha-icon icon="mdi:chevron-left"></ha-icon>
+                  </button>
+                  <div class="dateinfo" title="Selected day">
+                    <span class="txt">${currentForNav ? this._formatDay(currentForNav) : "—"}</span>
+                  </div>
+                  <button class="iconbtn" ?disabled=${!canNext} @click=${() => this._stepDay(-1, days, currentForNav)} aria-label="Next day" title="Next day">
+                    <ha-icon icon="mdi:chevron-right"></ha-icon>
+                  </button>
+                </div>
+              `}
+
+              ${showTypeFilter ? html`
+                <div class="seg" style="${isLive ? "opacity:0.35;pointer-events:none" : ""}">
+                  <button class="segbtn ${this._filterVideo ? "on" : ""}" @click=${() => this._toggleFilterVideo()} title="Videos" style="border-radius:10px 0 0 10px">
+                    <ha-icon icon="mdi:video" style="--mdc-icon-size:16px"></ha-icon>
+                  </button>
+                  <button class="segbtn ${this._filterImage ? "on" : ""}" @click=${() => this._toggleFilterImage()} title="Photos" style="border-radius:0 10px 10px 0">
+                    <ha-icon icon="mdi:image" style="--mdc-icon-size:16px"></ha-icon>
+                  </button>
+                </div>
+              ` : html``}
 
               ${showLiveToggle
                 ? html`
@@ -5256,6 +5543,8 @@ class CameraGalleryCard extends LitElement {
               </div>
             `
           : html``}
+
+        ${this._renderDatePicker()}
 
         ${this._renderThumbActionSheet()}
 
@@ -5496,6 +5785,7 @@ class CameraGalleryCard extends LitElement {
       }
 
       .preview-video-host {
+        position: relative;
         width: 100%;
         height: 100%;
       }
@@ -5506,6 +5796,43 @@ class CameraGalleryCard extends LitElement {
         display: block;
         object-fit: var(--cgc-object-fit, cover);
         pointer-events: auto;
+      }
+
+      .cgc-video-error {
+        position: absolute;
+        inset: 0;
+        background: rgba(0,0,0,0.78);
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 6px;
+        padding: 16px;
+        z-index: 10;
+        pointer-events: none;
+      }
+      .cgc-ve-icon { font-size: 1.8rem; line-height: 1; }
+      .cgc-ve-msg {
+        color: #fff;
+        font-weight: 600;
+        font-size: 0.82rem;
+        text-align: center;
+      }
+      .cgc-ve-hint {
+        color: #ffcc02;
+        font-size: 0.74rem;
+        text-align: center;
+        max-width: 320px;
+        line-height: 1.35;
+      }
+      .cgc-ve-url {
+        color: #888;
+        font-size: 0.65rem;
+        text-align: center;
+        word-break: break-all;
+        max-width: 340px;
+        line-height: 1.3;
+        margin-top: 4px;
       }
 
 
@@ -6016,6 +6343,7 @@ class CameraGalleryCard extends LitElement {
         border-radius: 50%;
       }
 
+
       .tsleft {
         position: absolute;
         left: 50%;
@@ -6115,6 +6443,28 @@ class CameraGalleryCard extends LitElement {
         min-width: 0;
       }
 
+      .dp-month-header {
+        padding: 8px 18px 4px;
+        font-size: 11px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        opacity: 0.45;
+        color: var(--primary-text-color);
+        border-top: 1px solid var(--divider-color, rgba(255,255,255,0.08));
+      }
+
+      .dp-month-header:first-child {
+        border-top: 0;
+      }
+
+      .dp-day-label {
+        flex: 1 1 auto;
+        text-align: left;
+        font-size: 15px;
+        font-weight: 600;
+      }
+
       .iconbtn {
         width: 44px;
         height: 44px;
@@ -6143,6 +6493,11 @@ class CameraGalleryCard extends LitElement {
         color: var(--cgc-ctrl-txt, var(--cgc-txt));
         font-size: 13px;
         font-weight: 800;
+      }
+
+      .datepick {
+        cursor: pointer;
+        -webkit-tap-highlight-color: transparent;
       }
 
       .dateinfo .txt {
@@ -6687,6 +7042,16 @@ class CameraGalleryCard extends LitElement {
       }
 
       @media (max-width: 420px) {
+        .topbar {
+          gap: 6px;
+        }
+
+
+        .datepill.has-filters .dateinfo {
+          font-size: 11px;
+          padding: 0 10px;
+        }
+
         .segbtn {
           padding: 9px 12px;
         }
@@ -8387,7 +8752,12 @@ class CameraGalleryCardEditor extends HTMLElement {
                 ${cameraEntities.length > 1 ? `
                 <div class="row">
                   <div class="lbl">Visible cameras in picker</div>
-                  <div class="desc">Select cameras for the picker. Leave empty to show all cameras.</div>
+                  <div class="desc">Select cameras for the picker. At least one camera must be added to enable live mode.</div>
+                  ${this._config.live_stream_url ? `
+                  <div class="livecam-tags">
+                    <div class="livecam-tag"><span style="opacity:0.5;font-size:10px;text-transform:uppercase;letter-spacing:0.05em;">stream</span><span style="margin-left:4px;">${this._config.live_stream_name || "Stream"}</span></div>
+                  </div>
+                  ` : ``}
                   ${liveCameraEntities.length > 0 ? `
                   <div class="livecam-tags" id="livecam-tags-dnd">
                     ${liveCameraEntities.map((id, i) => {
@@ -8408,9 +8778,9 @@ class CameraGalleryCardEditor extends HTMLElement {
                   <div class="desc">Optional. This sets the default camera when live mode opens.</div>
                   ${liveCameraEntity ? `
                   <div class="livecam-tags">
-                    <div class="livecam-tag"><span>${String(this._hass?.states?.[liveCameraEntity]?.attributes?.friendly_name || liveCameraEntity).trim()}</span><span class="livecam-tag-entity">${liveCameraEntity}</span><button type="button" class="livecam-tag-del" data-deldefcam="${liveCameraEntity}">×</button></div>
+                    <div class="livecam-tag"><span>${liveCameraEntity === "__cgc_stream__" ? (this._config.live_stream_name || "Stream") : String(this._hass?.states?.[liveCameraEntity]?.attributes?.friendly_name || liveCameraEntity).trim()}</span><span class="livecam-tag-entity">${liveCameraEntity === "__cgc_stream__" ? "stream url" : liveCameraEntity}</span><button type="button" class="livecam-tag-del" data-deldefcam="${liveCameraEntity}">×</button></div>
                   </div>
-                  ${liveCameraEntities.length > 0 && !liveCameraEntities.includes(liveCameraEntity) ? `
+                  ${liveCameraEntity !== "__cgc_stream__" && liveCameraEntities.length > 0 && !liveCameraEntities.includes(liveCameraEntity) ? `
                   <div class="cgc-inline-warn"><ha-icon icon="mdi:alert-outline"></ha-icon><span>This camera is not in the visible cameras list. It will not appear in the picker.</span></div>
                   ` : ``}
                   ` : ``}
@@ -8426,12 +8796,69 @@ class CameraGalleryCardEditor extends HTMLElement {
               }
 
               <div class="row">
+                <div class="lbl">Stream URL</div>
+                <div class="desc">Optional. RTSP, HLS, RTMP or any URL supported by go2rtc. Use this instead of a camera entity when no HA entity is available.</div>
+                <div class="field">
+                  <input type="text" class="ed-input" id="live_stream_url" placeholder="rtsp://192.168.1.x:554/stream" autocomplete="off" value="${this._config.live_stream_url || ""}" />
+                </div>
+                <div class="lbl" style="margin-top:10px;">Stream name</div>
+                <div class="field">
+                  <input type="text" class="ed-input" id="live_stream_name" placeholder="e.g. Front door" autocomplete="off" value="${this._config.live_stream_name || ""}" />
+                </div>
+              </div>
+
+              <div class="row">
+                <div class="lbl">go2rtc URL (optional)</div>
+                <div class="desc">External go2rtc base URL (e.g. http://192.168.1.x:8555). Leave empty to use HA's built-in go2rtc.</div>
+                <div class="field">
+                  <input type="text" class="ed-input" id="live_go2rtc_url" placeholder="http://192.168.1.x:8555" autocomplete="off" value="${this._config.live_go2rtc_url || ""}" />
+                </div>
+              </div>
+
+              <div class="row">
                 <div class="row-head">
                   <div class="lbl">Auto muted</div>
                   <div class="togrow">
                     <ha-switch id="live_auto_muted"></ha-switch>
                   </div>
                 </div>
+              </div>
+
+              <div class="row">
+                <div class="lbl">Menu buttons</div>
+                <div class="desc">Buttons in the hamburger menu during live view. Switches/lights toggle, automations trigger, scripts start.</div>
+                ${(() => {
+                  const menuBtns = Array.isArray(this._config.menu_buttons) ? this._config.menu_buttons : [];
+                  return `
+                    <div class="menubtn-list">
+                      ${menuBtns.map((btn, i) => `
+                        <div class="menubtn-card">
+                          <div class="menubtn-card-header">
+                            <ha-icon icon="${btn.icon}"></ha-icon>
+                            <span class="lbl" style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${btn.entity}</span>
+                            <button type="button" class="livecam-tag-del" data-delmenubutton="${i}">×</button>
+                          </div>
+                          <div class="menubtn-fields">
+                            <div><div class="desc">Icon</div><input class="ed-input" type="text" value="${btn.icon}" data-menubtn="${i}" data-mbfield="icon" placeholder="mdi:doorbell"></div>
+                            <div><div class="desc">Icon on</div><input class="ed-input" type="text" value="${btn.icon_on || ""}" data-menubtn="${i}" data-mbfield="icon_on" placeholder="(optional)"></div>
+                            <div><div class="desc">Color on</div><input class="ed-input" type="text" value="${btn.color_on || ""}" data-menubtn="${i}" data-mbfield="color_on" placeholder="#ff0000"></div>
+                            <div><div class="desc">Color off</div><input class="ed-input" type="text" value="${btn.color_off || ""}" data-menubtn="${i}" data-mbfield="color_off" placeholder="(optional)"></div>
+                          </div>
+                        </div>
+                      `).join("")}
+                    </div>
+                    <div class="field" style="margin-top:8px;">
+                      <input class="ed-input" id="menubtn-entity-input" placeholder="Entity (e.g. switch.deurbel_detect)" autocomplete="off">
+                      <div class="suggestions" id="menubtn-suggestions" hidden></div>
+                    </div>
+                    <div class="field" style="margin-top:6px;">
+                      <input class="ed-input" id="menubtn-icon-input" placeholder="Icon (e.g. mdi:motion-sensor-off)">
+                    </div>
+                    <div style="margin-top:6px;">
+                      <button type="button" id="menubtn-add-btn" class="actionbtn"><ha-icon icon="mdi:plus"></ha-icon><span>Add button</span></button>
+                    </div>
+                  `;
+                })()}
               </div>
 
             </div>
@@ -9362,6 +9789,25 @@ class CameraGalleryCardEditor extends HTMLElement {
           font-size: 15px;
           line-height: 1;
         }
+
+        .menubtn-list { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
+        .menubtn-card {
+          border: 1px solid var(--ed-input-border);
+          border-radius: var(--ed-radius-input, 8px);
+          padding: 8px 10px;
+        }
+        .menubtn-card-header {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          margin-bottom: 8px;
+        }
+        .menubtn-fields {
+          display: grid;
+          grid-template-columns: 1fr 1fr;
+          gap: 6px;
+        }
+        .menubtn-fields > div { display: flex; flex-direction: column; gap: 3px; }
 
         .chip-grid {
           display: grid;
@@ -10505,6 +10951,24 @@ class CameraGalleryCardEditor extends HTMLElement {
       this._set("live_auto_muted", !!e.target.checked);
     });
 
+    $("live_stream_url")?.addEventListener("change", (e) => {
+      const val = String(e.target.value || "").trim();
+      if (val) this._set("live_stream_url", val);
+      else { const n = { ...this._config }; delete n.live_stream_url; this._config = this._stripAlwaysTrueKeys(n); this._fire(); }
+    });
+
+    $("live_stream_name")?.addEventListener("change", (e) => {
+      const val = String(e.target.value || "").trim();
+      if (val) this._set("live_stream_name", val);
+      else { const n = { ...this._config }; delete n.live_stream_name; this._config = this._stripAlwaysTrueKeys(n); this._fire(); }
+    });
+
+    $("live_go2rtc_url")?.addEventListener("change", (e) => {
+      const val = String(e.target.value || "").trim();
+      if (val) this._set("live_go2rtc_url", val);
+      else { const n = { ...this._config }; delete n.live_go2rtc_url; this._config = this._stripAlwaysTrueKeys(n); this._fire(); }
+    });
+
     $("liveenabled")?.addEventListener("change", (e) => {
       const enabled = !!e.target.checked;
 
@@ -10534,9 +10998,8 @@ class CameraGalleryCardEditor extends HTMLElement {
         livedefaultSugg.hidden = false;
         livedefaultSugg.innerHTML = `
           <div class="sugg-label">Cameras</div>
-          ${items.map((id) => {
-            const name = String(this._hass?.states?.[id]?.attributes?.friendly_name || id).trim();
-            return `<button type="button" class="sugg-item" data-setdefcam="${id}">${name}<span style="opacity:0.45;font-weight:500;margin-left:6px;">${id}</span></button>`;
+          ${items.map(({ id, label, sub }) => {
+            return `<button type="button" class="sugg-item" data-setdefcam="${id}">${label}<span style="opacity:0.45;font-weight:500;margin-left:6px;">${sub}</span></button>`;
           }).join("")}
         `;
         livedefaultSugg.querySelectorAll("[data-setdefcam]").forEach((btn) => {
@@ -10558,10 +11021,18 @@ class CameraGalleryCardEditor extends HTMLElement {
 
       const getDefSuggestions = () => {
         const q = livedefaultInput.value.trim().toLowerCase();
-        return cameraEntities.filter((id) => {
+        const streamName = this._config.live_stream_name || "Stream";
+        const streamEntries = this._config.live_stream_url
+          ? [{ id: "__cgc_stream__", label: streamName, sub: "stream url" }]
+          : [];
+        const entityEntries = cameraEntities.map((id) => ({
+          id,
+          label: String(this._hass?.states?.[id]?.attributes?.friendly_name || id).trim(),
+          sub: id,
+        }));
+        return [...streamEntries, ...entityEntries].filter(({ label, sub }) => {
           if (!q) return true;
-          const name = String(this._hass?.states?.[id]?.attributes?.friendly_name || id).toLowerCase();
-          return name.includes(q) || id.includes(q);
+          return label.toLowerCase().includes(q) || sub.toLowerCase().includes(q);
         });
       };
 
@@ -10675,6 +11146,85 @@ class CameraGalleryCardEditor extends HTMLElement {
         this._scheduleRender();
       });
     });
+
+    // Menu button verwijderen
+    this.shadowRoot.querySelectorAll("[data-delmenubutton]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const i = Number(btn.dataset.delmenubutton);
+        const current = Array.isArray(this._config.menu_buttons) ? [...this._config.menu_buttons] : [];
+        current.splice(i, 1);
+        this._set("menu_buttons", current);
+        this._scheduleRender();
+      });
+    });
+
+    // Menu button veld inline bewerken
+    this.shadowRoot.querySelectorAll("input[data-menubtn][data-mbfield]").forEach((input) => {
+      input.addEventListener("change", () => {
+        const i = Number(input.dataset.menubtn);
+        const field = input.dataset.mbfield;
+        const current = Array.isArray(this._config.menu_buttons) ? [...this._config.menu_buttons] : [];
+        if (!current[i]) return;
+        const updated = { ...current[i] };
+        const val = input.value.trim();
+        if (val) updated[field] = val;
+        else delete updated[field];
+        current[i] = updated;
+        this._set("menu_buttons", current);
+      });
+    });
+
+    // Menu button toevoegen
+    const menubtnEntityInput = $("menubtn-entity-input");
+    const menubtnIconInput = $("menubtn-icon-input");
+    const menubtnSugg = $("menubtn-suggestions");
+    const menubtnAddBtn = $("menubtn-add-btn");
+
+    if (menubtnEntityInput && menubtnSugg) {
+      const renderMbSuggestions = (items) => {
+        if (!items.length) { menubtnSugg.hidden = true; menubtnSugg.innerHTML = ""; return; }
+        menubtnSugg.hidden = false;
+        menubtnSugg.innerHTML = items.map((id) => {
+          const name = String(this._hass?.states?.[id]?.attributes?.friendly_name || id).trim();
+          return `<button type="button" class="sugg-item" data-addmbentity="${id}">${name}<span style="opacity:0.45;font-weight:500;margin-left:6px;">${id}</span></button>`;
+        }).join("");
+        menubtnSugg.querySelectorAll("[data-addmbentity]").forEach((s) => {
+          s.addEventListener("mousedown", (e) => {
+            e.preventDefault();
+            menubtnEntityInput.value = s.dataset.addmbentity;
+            menubtnSugg.hidden = true;
+            menubtnSugg.innerHTML = "";
+            if (menubtnIconInput) menubtnIconInput.focus();
+          });
+        });
+      };
+
+      const getMbSuggestions = () => {
+        const q = menubtnEntityInput.value.trim().toLowerCase();
+        if (!q) return [];
+        return Object.keys(this._hass?.states || {}).filter((id) => {
+          const name = String(this._hass?.states?.[id]?.attributes?.friendly_name || id).toLowerCase();
+          return name.includes(q) || id.includes(q);
+        }).slice(0, 8);
+      };
+
+      menubtnEntityInput.addEventListener("input", () => renderMbSuggestions(getMbSuggestions()));
+      menubtnEntityInput.addEventListener("blur", () => setTimeout(() => { menubtnSugg.hidden = true; }, 150));
+    }
+
+    if (menubtnAddBtn) {
+      menubtnAddBtn.addEventListener("click", () => {
+        const entity = menubtnEntityInput?.value.trim();
+        const icon = menubtnIconInput?.value.trim();
+        if (!entity || !icon) return;
+        const current = Array.isArray(this._config.menu_buttons) ? [...this._config.menu_buttons] : [];
+        current.push({ entity, icon });
+        this._set("menu_buttons", current);
+        if (menubtnEntityInput) menubtnEntityInput.value = "";
+        if (menubtnIconInput) menubtnIconInput.value = "";
+        this._scheduleRender();
+      });
+    }
 
     // Drag-and-drop reorder voor live_camera_entities chips (mouse + touch)
     const dndContainer = this.shadowRoot.getElementById("livecam-tags-dnd");
@@ -10944,7 +11494,7 @@ class CameraGalleryCardEditor extends HTMLElement {
     }
 
     this._fire();
-    const RENDERS_REQUIRED = new Set(["source_mode", "live_enabled", "live_camera_entities", "object_filters", "delete_service", "live_camera_entity"]);
+    const RENDERS_REQUIRED = new Set(["source_mode", "live_enabled", "live_camera_entities", "object_filters", "delete_service", "live_camera_entity", "menu_buttons"]);
     if (RENDERS_REQUIRED.has(key)) this._scheduleRender();
   }
 
