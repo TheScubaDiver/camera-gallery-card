@@ -1200,6 +1200,21 @@ class CameraGalleryCard extends LitElement {
     return undefined;
   }
 
+  // Mirrors HA's useAmPm: respects hass.locale.time_format ("12" | "24" |
+  // "language" | "system"), falling back to a probe of the resolved locale.
+  _useAmPm() {
+    const tf = this._hass?.locale?.time_format;
+    if (tf === "24") return false;
+    if (tf === "12") return true;
+    try {
+      const probeLocale = tf === "language" ? this._locale() : undefined;
+      const sample = new Date().toLocaleString(probeLocale);
+      return /AM|PM/i.test(sample);
+    } catch (_) {
+      return false;
+    }
+  }
+
   _pathHasClass(path = [], cls = "") {
     return path.some((el) => el?.classList?.contains(cls));
   }
@@ -3610,6 +3625,7 @@ class CameraGalleryCard extends LitElement {
       const time = new Intl.DateTimeFormat(locale, {
         hour: "2-digit",
         minute: "2-digit",
+        hour12: this._useAmPm(),
       }).format(dt);
 
       return `${date} • ${time}`;
@@ -3648,6 +3664,7 @@ class CameraGalleryCard extends LitElement {
       return new Intl.DateTimeFormat(this._locale(), {
         hour: "2-digit",
         minute: "2-digit",
+        hour12: this._useAmPm(),
       }).format(new Date(ms));
     } catch (_) {
       return "";
