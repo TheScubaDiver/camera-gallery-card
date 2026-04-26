@@ -35,6 +35,7 @@ const DEFAULT_RESOLVE_BATCH = 32;
 const DEFAULT_SOURCE_MODE = "sensor"; // "sensor" | "media"
 const DEFAULT_THUMB_BAR_POSITION = "bottom"; // "bottom" | "top" | "hidden"
 const DEFAULT_THUMB_LAYOUT = "horizontal"; // "horizontal" | "vertical"
+const DEFAULT_THUMBNAIL_FRAME_PCT = 0; // 0% = first frame, 100% = last frame
 const DEFAULT_VISIBLE_OBJECT_FILTERS = [];
 const DEFAULT_WALK_DEPTH = 6;
 const DEFAULT_FRIGATE_API_LIMIT = 500;
@@ -628,12 +629,6 @@ class CameraGalleryCard extends LitElement {
     this._posterPending.clear();
   }
 
-  _closePreview() {
-      this._resetZoom();
-      this._previewOpen = false;
-      this.requestUpdate();
-    }
-
   _queueSensorPosterWork(items) {
     if (!Array.isArray(items) || !items.length) return;
     if (this.config?.source_mode !== "sensor" && this.config?.source_mode !== "combined") return;
@@ -1142,18 +1137,6 @@ class CameraGalleryCard extends LitElement {
     return label ? label.charAt(0).toUpperCase() + label.slice(1) : id;
   }
 
-  _isDarkMode() {
-    const dm = this._hass?.themes?.darkMode;
-    if (typeof dm === "boolean") return dm;
-    try {
-      return (
-        window.matchMedia?.("(prefers-color-scheme: dark)")?.matches ?? false
-      );
-    } catch (_) {
-      return false;
-    }
-  }
-
   _isThumbLayoutVertical() {
     return this.config?.thumb_layout === "vertical";
   }
@@ -1307,6 +1290,7 @@ class CameraGalleryCard extends LitElement {
       "media_source",
       "media_sources",
       "source_mode",
+      "thumbnail_frame_pct",
     ]);
 
     return keys.some((k) => sourceKeys.has(k));
@@ -1371,30 +1355,6 @@ class CameraGalleryCard extends LitElement {
   _normThumbLayout(v) {
     const s = String(v || "").toLowerCase().trim();
     return s === "vertical" ? "vertical" : "horizontal";
-  }
-
-  _normalizeLiveCameras(listOrSingle, fallbackSingle = "") {
-    const arr = Array.isArray(listOrSingle)
-      ? listOrSingle
-      : listOrSingle
-        ? [listOrSingle]
-        : fallbackSingle
-          ? [fallbackSingle]
-          : [];
-
-    const out = [];
-    const seen = new Set();
-
-    for (const raw of arr) {
-      const v = String(raw || "").trim();
-      if (!v) continue;
-      const k = v.toLowerCase();
-      if (seen.has(k)) continue;
-      seen.add(k);
-      out.push(v);
-    }
-
-    return out;
   }
 
   _normalizeVisibleObjectFilters(listOrSingle) {
@@ -2718,7 +2678,8 @@ class CameraGalleryCard extends LitElement {
   }
 
   _isVideo(src) {
-    return /\.(mp4|webm|mov|m4v)$/i.test(String(src || ""));
+    const path = String(src || "").split("?")[0].split("#")[0];
+    return /\.(mp4|webm|mov|m4v)$/i.test(path);
   }
 
   _toFsPath(src) {
@@ -2880,20 +2841,6 @@ class CameraGalleryCard extends LitElement {
     return result;
   }
 
-  async _getSnapshotUrlForVideo(videoId) {
-    const snapshotId = this._findMatchingSnapshotMediaId(videoId);
-    if (!snapshotId) return "";
-
-    const cached = this._ms?.urlCache?.get(snapshotId);
-    if (cached) return cached;
-
-    try {
-      return await this._msResolve(snapshotId);
-    } catch (_) {
-      return "";
-    }
-  }
-
   _queueSnapshotResolveForVisibleThumbs(items) {
     if (!Array.isArray(items) || !items.length) return;
     if (!this._hasFrigateSource()) return;
@@ -2925,47 +2872,56 @@ class CameraGalleryCard extends LitElement {
 
   // ─── Poster helpers ───────────────────────────────────────────────
 
-  _captureFirstFrame(src) {
+  // Resolve the poster URL to render for a video thumb.
+  // Side effects: enqueues poster capture / snapshot resolution when needed.
+  _resolveVideoPoster(it, isMs, thumbUrl, tThumb, selectedUrl) {
+    if (!isMs) return this._posterCache.get(it.src) || "";
+
+    if (this._hasFrigateSource()) {
+      const snapshotId = this._findMatchingSnapshotMediaId(it.src);
+      if (snapshotId) {
+        const snapshotUrl = this._ms?.urlCache?.get(snapshotId) || "";
+        if (snapshotUrl) return snapshotUrl;
+        this._msQueueResolve([snapshotId]);
+      }
+    }
+
+    // Skip poster-capture for the selected video — it's already loading as preview;
+    // double-loading the same MS URL blocks autoplay.
+    for (const url of [tThumb, thumbUrl]) {
+      if (!url) continue;
+      const cached = this._posterCache.get(url);
+      if (cached) return cached;
+      if (url !== selectedUrl) this._enqueuePoster(url);
+      return "";
+    }
+    return "";
+  }
+
+  _captureFrame(src, pct = 0) {
     return new Promise((resolve, reject) => {
       const v = document.createElement("video");
       v.muted = true;
-      v.setAttribute('muted', '');
+      v.setAttribute("muted", "");
       v.playsInline = true;
       v.preload = "metadata";
-      v.controls = false;
 
+      let timeout;
       const cleanup = () => {
-        try {
-          v.pause();
-        } catch (_) {}
-        v.removeAttribute("src");
-        try {
-          v.load();
-        } catch (_) {}
+        clearTimeout(timeout);
+        try { v.pause(); v.removeAttribute("src"); v.load(); } catch (_) {}
       };
-
-      const fail = (err) => {
-        cleanup();
-        reject(err ?? new Error("poster fail"));
-      };
+      const fail = (err) => { cleanup(); reject(err ?? new Error("poster fail")); };
 
       const draw = () => {
         try {
-          const w = v.videoWidth || 0;
-          const h = v.videoHeight || 0;
+          const w = v.videoWidth, h = v.videoHeight;
           if (!w || !h) return fail(new Error("no video dimensions"));
-          const maxW = 320;
-          const scale = Math.min(1, maxW / w);
-          const tw = Math.max(1, Math.round(w * scale));
-          const th = Math.max(1, Math.round(h * scale));
-
+          const scale = Math.min(1, 320 / w);
           const c = document.createElement("canvas");
-          c.width = tw;
-          c.height = th;
-
-          const ctx = c.getContext("2d");
-          ctx.drawImage(v, 0, 0, tw, th);
-
+          c.width = Math.max(1, Math.round(w * scale));
+          c.height = Math.max(1, Math.round(h * scale));
+          c.getContext("2d").drawImage(v, 0, 0, c.width, c.height);
           cleanup();
           resolve(c.toDataURL("image/jpeg", 0.6));
         } catch (e) {
@@ -2973,31 +2929,20 @@ class CameraGalleryCard extends LitElement {
         }
       };
 
-      const timeout = setTimeout(() => fail(new Error("poster timeout")), 3000);
-      const origFail = fail;
-      const origDraw = draw;
-      // Override fail/draw to also clear the timeout
-      const failOnce = (err) => { clearTimeout(timeout); origFail(err); };
-      const drawOnce = () => { clearTimeout(timeout); origDraw(); };
-
-      v.addEventListener("error", () => failOnce(new Error("video load error")), { once: true });
-      v.addEventListener(
-        "loadedmetadata",
-        () => {
-          try {
-            v.currentTime = 0.01;
-          } catch (_) {
-            drawOnce();
-          }
-        },
-        { once: true }
-      );
-      v.addEventListener("seeked", () => drawOnce(), { once: true });
+      timeout = setTimeout(() => fail(new Error("poster timeout")), 3000);
+      v.addEventListener("error", () => fail(new Error("video load error")), { once: true });
+      v.addEventListener("loadedmetadata", () => {
+        const dur = Number.isFinite(v.duration) && v.duration > 0 ? v.duration : 0;
+        const p = Math.max(0, Math.min(100, Number(pct) || 0));
+        // Seek slightly off the boundaries — exact 0 or duration often yields no frame.
+        let t = 0.01;
+        if (dur && p > 0) t = p === 100 ? Math.max(0.01, dur - 0.05) : dur * (p / 100);
+        try { v.currentTime = t; } catch (_) { draw(); }
+      }, { once: true });
+      v.addEventListener("seeked", () => draw(), { once: true });
 
       v.src = src;
-      try {
-        v.load();
-      } catch (_) {}
+      try { v.load(); } catch (_) {}
     });
   }
 
@@ -3010,15 +2955,22 @@ class CameraGalleryCard extends LitElement {
     return "cgc_p_" + h.toString(36);
   }
 
+  // Salt the localStorage key with the current frame %, so changing the % invalidates
+  // cached frames without needing to wipe storage.
+  _lsKey(url) {
+    const pct = this.config?.thumbnail_frame_pct ?? DEFAULT_THUMBNAIL_FRAME_PCT;
+    return this._thumbHash(url + "|" + pct);
+  }
+
   _lsThumbGet(url) {
     try {
-      return localStorage.getItem(this._thumbHash(url)) || null;
+      return localStorage.getItem(this._lsKey(url)) || null;
     } catch (_) { return null; }
   }
 
   _lsThumbSet(url, dataUrl) {
     try {
-      const key = this._thumbHash(url);
+      const key = this._lsKey(url);
       const indexKey = "cgc_poster_index";
       const index = JSON.parse(localStorage.getItem(indexKey) || "[]");
       // Evict oldest entries if over limit (max 150)
@@ -3032,41 +2984,42 @@ class CameraGalleryCard extends LitElement {
     } catch (_) {}
   }
 
+  async _fetchProtectedAsDataUrl(src) {
+    const token = this._hass?.auth?.data?.access_token;
+    if (!token) return null;
+    const res = await fetch(window.location.origin + src, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) return null;
+    const blob = await res.blob();
+    return new Promise((resolve, reject) => {
+      const r = new FileReader();
+      r.onload = () => resolve(r.result);
+      r.onerror = reject;
+      r.readAsDataURL(blob);
+    });
+  }
+
   async _ensurePoster(src) {
-    if (!src || this._posterCache.has(src) || this._posterPending.has(src)) {
-      return;
-    }
-    // Check persistent localStorage cache first
+    if (!src || this._posterCache.has(src) || this._posterPending.has(src)) return;
+
     const cached = this._lsThumbGet(src);
     if (cached) {
       this._posterCache.set(src, cached);
       this.requestUpdate();
       return;
     }
+
     this._posterPending.add(src);
     try {
-      let dataUrl = null;
-      // HA relative image URLs (thumbnails from browse_media) need auth — fetch directly.
-      // Video files (sensor mode) must use _captureFirstFrame regardless of path format.
-      if (src.startsWith("/") && !this._isVideo(src)) {
-        const token = this._hass?.auth?.data?.access_token;
-        if (token) {
-          const res = await fetch(window.location.origin + src, {
-            headers: { Authorization: `Bearer ${token}` },
-          });
-          if (res.ok) {
-            const blob = await res.blob();
-            dataUrl = await new Promise((resolve, reject) => {
-              const reader = new FileReader();
-              reader.onload = () => resolve(reader.result);
-              reader.onerror = reject;
-              reader.readAsDataURL(blob);
-            });
-          }
-        }
-      } else {
-        dataUrl = await this._captureFirstFrame(src);
-      }
+      // Auth-protected HA image thumbnails (browse_media) need a Bearer fetch.
+      // Videos always go through _captureFrame to extract a still — never base64 the file.
+      const dataUrl = src.startsWith("/") && !this._isVideo(src)
+        ? await this._fetchProtectedAsDataUrl(src)
+        : await this._captureFrame(
+            src,
+            this.config?.thumbnail_frame_pct ?? DEFAULT_THUMBNAIL_FRAME_PCT
+          );
       if (dataUrl) {
         this._posterCache.set(src, dataUrl);
         this._lsThumbSet(src, dataUrl);
@@ -3844,18 +3797,6 @@ class CameraGalleryCard extends LitElement {
     }
   }
 
-  _formatDayShort(dayKey) {
-    if (!dayKey) return "";
-    try {
-      return new Intl.DateTimeFormat(this._locale(), {
-        day: "numeric",
-        month: "short",
-      }).format(new Date(`${dayKey}T00:00:00`));
-    } catch (_) {
-      return dayKey;
-    }
-  }
-
   _formatTimeFromMs(ms) {
     if (!Number.isFinite(ms)) return "";
     try {
@@ -4121,42 +4062,6 @@ class CameraGalleryCard extends LitElement {
           .map((x) => String(x || "").toLowerCase().trim())
           .filter(Boolean)
       : [];
-  }
-
-  _detectObjectFromText(text) {
-    const raw = String(text || "").toLowerCase().trim();
-    if (!raw) return null;
-
-    const s = raw.replace(/[_./\\-]+/g, " ");
-
-    const hasWord = (word) =>
-      new RegExp(`(^|\\s)${word}(?=\\s|$)`, "i").test(s);
-
-    if (hasWord("person") || hasWord("persoon") || hasWord("personen")) {
-      return "person";
-    }
-
-    if (hasWord("visitor") || hasWord("bezoeker") || hasWord("bezoek")) {
-      return "visitor";
-    }
-
-    if (hasWord("cat") || hasWord("kat")) return "cat";
-    if (hasWord("dog") || hasWord("hond")) return "dog";
-    if (hasWord("car") || hasWord("auto")) return "car";
-    if (hasWord("truck")) return "truck";
-    if (hasWord("bus")) return "bus";
-
-    if (hasWord("bicycle") || hasWord("bike") || hasWord("fiets")) {
-      return "bicycle";
-    }
-
-    if (hasWord("motorcycle") || hasWord("motorbike") || hasWord("motor")) {
-      return "motorcycle";
-    }
-
-    if (hasWord("bird") || hasWord("vogel")) return "bird";
-
-    return null;
   }
 
   _filterLabel(v) {
@@ -4449,25 +4354,6 @@ class CameraGalleryCard extends LitElement {
 
   // ─── Preview interactions ─────────────────────────────────────────
 
-  _closePreviewIfEnabled(e) {
-    if (!this.config?.clean_mode) return;
-    if (!this.config?.preview_close_on_tap) return;
-    if (!this._previewOpen) return;
-    if (this._isInsideTsbar(e)) return;
-
-    const path = e.composedPath?.() || [];
-    if (this._pathHasClass(path, "pnavbtn")) return;
-    if (this._pathHasClass(path, "viewtoggle")) return;
-    if (this._pathHasClass(path, "live-picker")) return;
-    if (this._pathHasClass(path, "live-picker-backdrop")) return;
-    if (this._pathHasClass(path, "live-quick-switch")) return;
-
-    this._resetZoom();
-    this._previewOpen = false;
-    this._showNav = false;
-    this.requestUpdate();
-  }
-
   _isInsideTsbar(e) {
     const path = e.composedPath?.() || [];
     return path.some(
@@ -4682,6 +4568,10 @@ class CameraGalleryCard extends LitElement {
       100
     );
 
+    const thumbnail_frame_pct = Math.round(
+      clamp(num(config.thumbnail_frame_pct, DEFAULT_THUMBNAIL_FRAME_PCT), 0, 100)
+    );
+
     const max_media = this._normMaxMedia(config.max_media ?? DEFAULT_MAX_MEDIA);
 
     let source_mode = this._normSourceMode(
@@ -4872,6 +4762,7 @@ class CameraGalleryCard extends LitElement {
       thumb_bar_position,
       thumb_layout,
       thumb_size,
+      thumbnail_frame_pct,
       live_go2rtc_stream: String(config.live_go2rtc_stream || "").trim() || null,
       folder_datetime_format: String(config.folder_datetime_format || "").trim() || null,
       sync_entity: String(config.sync_entity || "").trim() || null,
@@ -5633,47 +5524,14 @@ class CameraGalleryCard extends LitElement {
                       tCls
                     );
 
-                    let poster = "";
-
-                    if (isVid) {
-                      if (isMs) {
-                        let snapshotUrl = "";
-
-                        if (this._hasFrigateSource()) {
-                          const snapshotId = this._findMatchingSnapshotMediaId(it.src);
-
-                          if (snapshotId) {
-                            snapshotUrl = this._ms?.urlCache?.get(snapshotId) || "";
-
-                            if (!snapshotUrl) {
-                              this._msQueueResolve([snapshotId]);
-                            }
-                          }
-                        }
-
-                        if (snapshotUrl) {
-                          poster = snapshotUrl;
-                        } else if (tThumb) {
-                          poster = this._posterCache.get(tThumb) || "";
-                          if (!poster && tThumb !== selectedUrl) this._enqueuePoster(tThumb);
-                        } else if (thumbUrl) {
-                          poster = this._posterCache.get(thumbUrl) || "";
-                          // Sla poster-capture over voor de geselecteerde video: die laadt
-                          // al als preview. Gelijktijdig laden van dezelfde MS-URL blokkeert
-                          // de preview video en verhindert autoplay.
-                          if (!poster && thumbUrl !== selectedUrl) this._enqueuePoster(thumbUrl);
-                        }
-                      } else {
-                        poster = this._posterCache.get(it.src) || "";
-                      }
-                    } else {
-                      poster = thumbUrl;
-                      // For unresolved MS images, use the browse_media thumbnail as fallback
-                      // so the thumbnail appears immediately while the full URL is still resolving
-                      if (!poster && isMs && tThumb) {
-                        poster = this._posterCache.get(tThumb) || "";
-                        if (!poster) this._enqueuePoster(tThumb);
-                      }
+                    let poster = isVid
+                      ? this._resolveVideoPoster(it, isMs, thumbUrl, tThumb, selectedUrl)
+                      : thumbUrl;
+                    // For unresolved MS images, use the browse_media thumbnail as fallback
+                    // so the thumbnail appears immediately while the full URL is still resolving
+                    if (!isVid && !poster && isMs && tThumb) {
+                      poster = this._posterCache.get(tThumb) || "";
+                      if (!poster) this._enqueuePoster(tThumb);
                     }
 
                     const needsResolve = isMs;
@@ -8715,6 +8573,12 @@ class CameraGalleryCardEditor extends HTMLElement {
       return Math.min(100, Math.max(0, n));
     })();
 
+    const thumbFramePct = (() => {
+      const n = Number(c.thumbnail_frame_pct);
+      if (!Number.isFinite(n)) return DEFAULT_THUMBNAIL_FRAME_PCT;
+      return Math.min(100, Math.max(0, Math.round(n)));
+    })();
+
     const autoplay = c.autoplay === true;
     const autoMuted =
       c.auto_muted !== undefined ? c.auto_muted === true : DEFAULT_AUTOMUTED;
@@ -9501,6 +9365,17 @@ class CameraGalleryCardEditor extends HTMLElement {
               <div class="row">
                 <div class="lbl">Maximum thumbnails shown</div>
                 <div class="ed-input-row"><input type="number" class="ed-input" id="maxmedia" /><span class="ed-suffix">items</span></div>
+              </div>
+
+              <div class="row">
+                <div class="lbl">Video thumbnail frame</div>
+                <div class="desc">% of the video to capture as thumbnail (0 = first frame, 100 = last)</div>
+                <div class="barrow">
+                  <div class="barrow-top">
+                    <div class="pillval" id="thumbpctval">${thumbFramePct}%</div>
+                  </div>
+                  <input type="range" class="cgc-range" id="thumbpct" min="0" max="100" step="1">
+                </div>
               </div>
 
               <div class="row">
@@ -11261,6 +11136,8 @@ if (oldPanel && tmp.firstElementChild) {
     const barvalEl = $("barval");
     const pillsizeEl = $("pillsize");
     const pillsizevalEl = $("pillsizeval");
+    const thumbpctEl = $("thumbpct");
+    const thumbpctvalEl = $("thumbpctval");
 
     const autoplayEl = $("autoplay");
     const autoMutedEl = $("auto_muted");
@@ -11274,6 +11151,7 @@ if (oldPanel && tmp.firstElementChild) {
     this._setControlValue(maxmediaEl, String(maxMedia));
     this._setControlValue(baropEl, barOpacity);
     this._setControlValue(pillsizeEl, pillSize);
+    this._setControlValue(thumbpctEl, thumbFramePct);
     if (autoplayEl) autoplayEl.checked = autoplay;
     if (autoMutedEl) autoMutedEl.checked = autoMuted;
     if (liveAutoMutedEl) liveAutoMutedEl.checked = liveAutoMuted;
@@ -12132,6 +12010,23 @@ if (oldPanel && tmp.firstElementChild) {
       const v = Number(e.target.value);
       updatePillSizeVal(v);
       this._set("pill_size", Number.isFinite(v) ? v : 14);
+    });
+
+    const updateThumbPctVal = (v) => {
+      if (thumbpctvalEl) thumbpctvalEl.textContent = `${v}%`;
+    };
+
+    thumbpctEl?.addEventListener("input", (e) => {
+      updateThumbPctVal(Number(e.target.value));
+    });
+
+    thumbpctEl?.addEventListener("change", (e) => {
+      const v = Number(e.target.value);
+      updateThumbPctVal(v);
+      this._set(
+        "thumbnail_frame_pct",
+        Number.isFinite(v) ? Math.round(v) : DEFAULT_THUMBNAIL_FRAME_PCT
+      );
     });
 
     $("browser-backdrop")?.addEventListener("click", () => {
