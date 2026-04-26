@@ -177,6 +177,8 @@ class CameraGalleryCard extends LitElement {
     this._liveWarmedUp = false;
     this._signedWsPath = null;
     this._signedWsPathTs = 0;
+    this._autoAspectVideo = null;
+    this._autoAspectObs = null;
     this._liveQuickSwitchTimer = null;
     this._navHideT = null;
     this._objectFilters = [];
@@ -1201,7 +1203,6 @@ class CameraGalleryCard extends LitElement {
   }
 
   _showPills(duration = 2500) {
-    if (this.config?.controls_mode === "fixed") return;
     this._pillsVisible = true;
     if (this.config?.persistent_controls || this._pillsHovered) {
       clearTimeout(this._pillsTimer);
@@ -1227,7 +1228,6 @@ class CameraGalleryCard extends LitElement {
   }
 
   _showPillsHover() {
-    if (this.config?.controls_mode === "fixed") return;
     this._pillsHovered = true;
     this._pillsHideActive = false;
     clearTimeout(this._pillsTimer);
@@ -1237,7 +1237,6 @@ class CameraGalleryCard extends LitElement {
   }
 
   _hidePillsHover() {
-    if (this.config?.controls_mode === "fixed") return;
     this._pillsHovered = false;
     if (this._showLivePicker || this.config?.persistent_controls) return;
     clearTimeout(this._pillsTimer);
@@ -1685,27 +1684,58 @@ class CameraGalleryCard extends LitElement {
     return search(host);
   }
 
+  _setupAutoAspectRatio() {
+    if (this._autoAspectObs) {
+      this._autoAspectObs.disconnect();
+      this._autoAspectObs = null;
+    }
+    this._autoAspectVideo = null;
+
+    const applyRatio = (video) => {
+      const w = video.videoWidth;
+      const h = video.videoHeight;
+      if (!w || !h) return;
+      const next = `${w}/${h}`;
+      if (next === this._aspectRatio) return;
+      this._aspectRatio = next;
+      this.requestUpdate();
+    };
+
+    const tryBind = () => {
+      const video = this._findLiveVideo();
+      if (!video || video === this._autoAspectVideo) return !!video;
+      this._autoAspectVideo = video;
+      if (video.videoWidth && video.videoHeight) {
+        applyRatio(video);
+      } else {
+        video.addEventListener('loadedmetadata', () => applyRatio(video), { once: true });
+      }
+      return true;
+    };
+
+    if (!tryBind()) {
+      const host = this.renderRoot?.querySelector("#live-card-host");
+      if (!host) return;
+      this._autoAspectObs = new MutationObserver(() => {
+        if (tryBind()) {
+          this._autoAspectObs.disconnect();
+          this._autoAspectObs = null;
+        }
+      });
+      this._autoAspectObs.observe(host, { childList: true, subtree: true });
+      setTimeout(() => { if (this._autoAspectObs) { this._autoAspectObs.disconnect(); this._autoAspectObs = null; } }, 10000);
+    }
+  }
+
   _parseAspectRatio(val) {
     const map = { "16:9": "16/9", "4:3": "4/3", "1:1": "1/1" };
     return map[val] || "16/9";
-  }
-
-  _aspectRatioStorageKey() {
-    const streams = this._getStreamEntries();
-    const id = streams[0]?.id
-      || this.config?.live_camera_entity
-      || (Array.isArray(this.config?.live_camera_entities) ? this.config.live_camera_entities[0] : null)
-      || this.config?.entities?.[0]
-      || this.config?.media_sources?.[0]
-      || "default";
-    return `cgc_aspect_ratio_${id}`;
   }
 
   _toggleAspectRatio() {
     const cycle = ["16/9", "4/3", "1/1"];
     const next = cycle[(cycle.indexOf(this._aspectRatio) + 1) % cycle.length];
     this._aspectRatio = next;
-    try { localStorage.setItem(this._aspectRatioStorageKey(), next); } catch (_) {}
     this.requestUpdate();
   }
 
@@ -2012,6 +2042,8 @@ class CameraGalleryCard extends LitElement {
       this._liveMuted = this.config?.live_auto_muted !== false;
       this._syncLiveMuted();
     }
+
+    this._setupAutoAspectRatio();
   }
 
   async _warmupLiveCard() {
@@ -2034,6 +2066,7 @@ class CameraGalleryCard extends LitElement {
       this._liveMuted = this.config?.live_auto_muted !== false;
       this._syncLiveMuted();
     }
+    this._setupAutoAspectRatio();
   }
 
   _injectLiveFillStyle(card) {
@@ -2258,9 +2291,7 @@ class CameraGalleryCard extends LitElement {
     this._signedWsPath = null;
     this._liveSelectedCamera = next;
 
-    const defaultRatio = this._parseAspectRatio(this.config?.aspect_ratio);
-    const stored = (() => { try { return localStorage.getItem(`cgc_aspect_ratio_${next}`); } catch (_) { return null; } })();
-    this._aspectRatio = ["16/9", "4/3", "1/1"].includes(stored) ? stored : defaultRatio;
+    this._aspectRatio = this._parseAspectRatio(this.config?.aspect_ratio);
 
     this._showLivePicker = false;
     this.requestUpdate();
@@ -4900,9 +4931,7 @@ class CameraGalleryCard extends LitElement {
             : liveOptions[0]) || "";
       }
       if (prevConfig) {
-        const defaultRatio = this._parseAspectRatio(config.aspect_ratio);
-        const stored = (() => { try { return localStorage.getItem(this._aspectRatioStorageKey()); } catch (_) { return null; } })();
-        this._aspectRatio = ["16/9", "4/3", "1/1"].includes(stored) ? stored : defaultRatio;
+        this._aspectRatio = this._parseAspectRatio(config.aspect_ratio);
       }
     }
 
@@ -4910,9 +4939,7 @@ class CameraGalleryCard extends LitElement {
       this._previewOpen = this.config.clean_mode ? false : true;
       this._showLivePicker = false;
       this._showLiveQuickSwitch = false;
-      const defaultRatio = this._parseAspectRatio(config.aspect_ratio);
-      const stored = (() => { try { return localStorage.getItem(this._aspectRatioStorageKey()); } catch (_) { return null; } })();
-      this._aspectRatio = ["16/9", "4/3", "1/1"].includes(stored) ? stored : defaultRatio;
+      this._aspectRatio = this._parseAspectRatio(config.aspect_ratio);
       const hasMedia = nextConfig.entities.length > 0 || nextConfig.media_sources.length > 0;
       const startMode = nextConfig.start_mode;
       if (startMode === "live" && nextConfig.live_enabled && nextConfig.live_camera_entity) {
@@ -5337,7 +5364,7 @@ class CameraGalleryCard extends LitElement {
             <ha-icon icon="mdi:arrow-left"></ha-icon>
           </button>
         ` : html``}
-        ${this.config.show_camera_title !== false ? html`<div class="gallery-pill"><span>${this._friendlyCameraName(this._getEffectiveLiveCamera())}</span></div>` : html``}
+        ${this.config.show_camera_title !== false && this.config.controls_mode !== "fixed" ? html`<div class="gallery-pill"><span>${this._friendlyCameraName(this._getEffectiveLiveCamera())}</span></div>` : html``}
       </div>
     `;
     const livePillsRight = html`
@@ -9215,7 +9242,7 @@ class CameraGalleryCardEditor extends HTMLElement {
                     <div class="desc">Naam van de camera in de controls bar.</div>
                   </div>
                   <div class="togrow">
-                    <label class="cgc-switch"><input type="checkbox" id="showcameratitle" ${c.show_camera_title !== false ? "checked" : ""}><span class="cgc-track"></span></label>
+                    <label class="cgc-switch"><input type="checkbox" id="showcameratitle" ${c.show_camera_title !== false ? "checked" : ""} ${c.controls_mode === "fixed" ? "disabled" : ""}><span class="cgc-track"></span></label>
                   </div>
                 </div>
               </div>
