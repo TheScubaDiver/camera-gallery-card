@@ -2,7 +2,7 @@
 
 Custom **Home Assistant Lovelace card** for browsing camera media in a clean **timeline-style gallery** with preview player, object filters, optional live view, and a built-in visual editor.
 
-**Current version:** `v2.2.0`
+**Current version:** `v2.6.0`
 
 <p align="center">
   <img src="https://github.com/user-attachments/assets/1c71ada8-98bb-435e-bbc6-b6974186c2e0" width="30%" />
@@ -66,25 +66,42 @@ FileTrack is a fork of the archived [files integration by TarheelGrad1998](https
 
 - Sensor entities with `fileList`
 - Home Assistant `media_source`
+- **Combined mode** — use a sensor entity and a media source simultaneously, merged into a single timeline
 - Multiple sensors or media folders
 
 ### Live view
 
 - Native Home Assistant **WebRTC live preview**
 - Redesigned live view layout: camera name on the left, controls on the right
+- **Controls mode** — choose between `overlay` (controls fade out after inactivity) or `fixed` (always visible)
 - Native fullscreen button (iOS + Android/desktop)
-- **Pinch to zoom in fullscreen** — touch, trackpad, and Ctrl + scroll wheel
+- **Pinch to zoom in fullscreen** — touch, trackpad, and Ctrl + scroll wheel; pan with the mouse after zooming in
 - **Aspect ratio toggle** — quickly switch between 16:9, 4:3 and 1:1, remembered per camera
 - Live badge
-- Camera switching with configurable picker
+- **Multiple live cameras** — configure several cameras and switch between them using chevron arrows
+- **Multiple RTSP streams** — configure multiple named RTSP streams via `live_stream_urls`
 - Default live camera
 - Camera friendly names and entity IDs in selector
+- **Live pre-warming** — the stream starts loading in the background before you open live view
+
+### Actions
+
+- **Menu buttons** — configure custom action buttons (toggle, navigate, perform action, etc.) accessible via a hamburger menu during live view
+- Delete
+- Multiple delete
+- Download
+- Long-press action menu
+
+### Frigate
+
+- **Direct Frigate HTTP API** (`frigate_url`) — load clips directly from Frigate's REST API instead of walking the media browser, resulting in significantly faster load times
+- Automatic Frigate snapshot thumbnails
 
 ### Thumbnails
 
 - Automatic frame capture for **all** video sources in media source mode
   - Frigate cameras: Frigate snapshot
-  - All other sources (NAS, Reolink, Blue Iris, etc.): first-frame capture
+  - All other sources (NAS, Blue Iris, etc.): first-frame capture
 - Sensor mode: first-frame capture
 
 ### Video controls
@@ -92,13 +109,6 @@ FileTrack is a fork of the archived [files integration by TarheelGrad1998](https
 - Video autoplay toggle (gallery)
 - Separate auto-mute toggle for gallery and live view
 - Per-object filter color customization
-
-### Actions
-
-- Delete
-- Multiple delete
-- Download
-- Long-press action menu
 
 <img width="441" height="307" alt="Scherm­afbeelding 2026-03-29 om 20 49 53" src="https://github.com/user-attachments/assets/bdcde10e-b882-444f-a99d-0ae0073e68a7" />
 
@@ -118,6 +128,9 @@ Features:
 - Media folder browser (starts at root)
 - Field validation
 - Object filter picker
+- Controls mode dropdown (Overlay / Fixed)
+- Menu buttons tab — configure action buttons with entity, icon, label and on/off icon
+- Frigate URL field — set the direct Frigate API URL (shown in media and combined mode)
 - Cleanup of legacy config keys
 - Live preview in the HA card picker
 - Create new FileTrack sensor from the General tab
@@ -149,13 +162,15 @@ The **Styling** tab provides a visual editor for colors and border radius.
 > [!TIP]
 > To enable delete actions, configure a shell command in Home Assistant and provide the service name in the card editor under **General → Delete service**.
 
+> [!IMPORTANT]
+> Delete is only supported in **sensor mode**. Media source and combined mode do not support delete actions.
 Optional delete options (YAML only — not currently exposed in the editor):
 
 - `delete_confirm: false` — skip the confirmation dialog
 - `allow_bulk_delete: true` — enable multi-select bulk delete
 
-> [!NOTE]
-> Delete is intended for files inside `/config/www/`. Frigate media sources do not support delete actions.
+- `delete_confirm` — confirm before deleting
+- `allow_bulk_delete` — enable bulk delete
 
 ---
 
@@ -166,26 +181,29 @@ Optional delete options (YAML only — not currently exposed in the editor):
 
 | Option | Description |
 |------|------|
-| `source_mode` | `sensor` or `media` |
+| `source_mode` | `sensor`, `media`, or `combined` |
 | `entity / entities` | Sensor source |
 | `media_source / media_sources` | Media browser source |
 | `start_mode` | Default view: `gallery` or `live` |
+| `controls_mode` | Live controls display: `overlay` or `fixed` |
 | `aspect_ratio` | Preview aspect ratio: `16:9`, `4:3`, or `1:1` |
 | `preview_position` | `top` or `bottom` |
-| `preview_click_to_open` | Click to open preview |
 | `bar_position` | Timestamp bar position |
 | `bar_opacity` | Timestamp bar opacity |
 | `thumb_layout` | `horizontal` or `vertical` |
 | `thumb_size` | Thumbnail size |
 | `thumb_bar_position` | Thumb timestamp bar |
-| `max_media` | Max media items |
+| `max_media` | Max media items (default: 50) |
 | `object_filters` | Filter buttons (built-in and custom) |
 | `object_colors` | Color per object filter |
 | `entity_filter_map` | Map entity to object type |
 | `live_enabled` | Enable live mode |
 | `live_camera_entity` | Default camera entity for live view |
 | `live_camera_entities` | Camera entities visible in the live picker |
+| `live_stream_urls` | Array of named RTSP streams: `[{url, name}]` |
 | `live_auto_muted` | Auto-mute audio in live view |
+| `frigate_url` | Direct Frigate REST API URL (e.g. `http://192.168.1.x:5000`) |
+| `menu_buttons` | Configurable action buttons in the hamburger menu |
 | `autoplay` | Auto-play videos in gallery |
 | `auto_muted` | Auto-mute videos in gallery |
 | `object_fit` | Media display mode: `cover` or `contain` |
@@ -263,7 +281,7 @@ clip-1741512345-person.mp4
 
 ### Folder-based date format
 
-Some NVR systems (Reolink, Blue Iris, NAS) store recordings in day-based folders:
+Some NVR systems (Blue Iris, NAS) store recordings in day-based folders:
 
 ```
 /media/recordings/20260314/173154.mp4
