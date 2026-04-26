@@ -4893,8 +4893,6 @@ class CameraGalleryCard extends LitElement {
               state_on: b.state_on ? String(b.state_on).trim() : undefined,
             }))
         : [],
-      menu_button_style: ["row","panel","radial","bar"].includes(config.menu_button_style)
-        ? config.menu_button_style : "row",
       show_camera_title: config.show_camera_title !== false,
       controls_mode: ["overlay","fixed"].includes(config.controls_mode)
         ? config.controls_mode : "overlay",
@@ -4930,7 +4928,7 @@ class CameraGalleryCard extends LitElement {
         liveOptions.some((x) => x === this._liveSelectedCamera);
       if (!validSelected && liveOptions.length > 0) {
         this._liveSelectedCamera =
-          (live_camera_entity && liveOptions.includes(live_camera_entity)
+          (live_camera_entity
             ? live_camera_entity
             : liveOptions[0]) || "";
       }
@@ -5373,11 +5371,6 @@ class CameraGalleryCard extends LitElement {
     `;
     const livePillsRight = html`
       <div class="live-pills-right">
-        ${this.config?.live_go2rtc_stream ? html`
-          <button class="gallery-pill live-pill-btn ${this._liveMicActive ? "active" : ""} ${this._micErrorMsg ? "mic-error" : ""}" @pointerdown=${(e) => e.stopPropagation()} @click=${(e) => { e.stopPropagation(); this._toggleMic(); }} title=${this._micErrorMsg || ""}>
-            <ha-icon icon=${this._micErrorMsg ? "mdi:microphone-message-off" : this._liveMicActive ? "mdi:microphone" : "mdi:microphone-off"}></ha-icon>
-          </button>
-        ` : html``}
         <button class="gallery-pill live-pill-btn" @pointerdown=${(e) => e.stopPropagation()} @click=${(e) => { e.stopPropagation(); this._toggleLiveMute(); }}>
           <ha-icon icon=${this._liveMuted ? "mdi:volume-off" : "mdi:volume-high"}></ha-icon>
         </button>
@@ -8733,7 +8726,7 @@ class CameraGalleryCardEditor extends HTMLElement {
     const liveCameraEntity = String(c.live_camera_entity || "").trim();
     const liveCameraEntities = Array.isArray(c.live_camera_entities) ? c.live_camera_entities : [];
     const liveControlsDisabled = false;
-    const menuBtnStyle = c.menu_button_style ?? "row";
+
 
     const cameraEntities = Object.keys(this._hass?.states || {})
       .filter((id) => {
@@ -9136,8 +9129,8 @@ class CameraGalleryCardEditor extends HTMLElement {
               <div class="row">
                 <details ${c.folder_datetime_format || c.filename_datetime_format ? "open" : ""}>
                   <summary style="cursor:pointer;list-style:none;display:flex;align-items:center;gap:6px;">
+                    <span class="lbl" style="margin:0;flex:1;">Datetime formats</span>
                     <span class="details-chevron" style="transition:transform 0.15s;">${svgIcon('mdi:chevron-right', 16)}</span>
-                    <span class="lbl" style="margin:0;">Datetime formats</span>
                   </summary>
                   <div style="padding-top:10px;display:flex;flex-direction:column;gap:14px;">
                     <div>
@@ -9236,8 +9229,7 @@ class CameraGalleryCardEditor extends HTMLElement {
               <div class="row">
                 <div class="row-head">
                   <div>
-                    <div class="lbl">Show camera title</div>
-                    <div class="desc">Camera name shown in the controls bar.</div>
+                    <div class="lbl">Show camera name</div>
                   </div>
                   <div class="togrow">
                     <label class="cgc-switch"><input type="checkbox" id="showcameratitle" ${c.show_camera_title !== false ? "checked" : ""} ${c.controls_mode === "fixed" ? "disabled" : ""}><span class="cgc-track"></span></label>
@@ -9292,9 +9284,6 @@ class CameraGalleryCardEditor extends HTMLElement {
                   </div>
                 </div>
 
-                <div class="desc">
-                  Enable live mode in the gallery preview.
-                </div>
               </div>
 
               ${
@@ -9330,7 +9319,6 @@ class CameraGalleryCardEditor extends HTMLElement {
 
                 <div class="row ${liveControlsDisabled ? "muted" : ""}">
                   <div class="lbl">Default live camera</div>
-                  <div class="desc">Optional. This sets the default camera when live mode opens.</div>
                   ${liveCameraEntity ? `
                   <div class="livecam-tags">
                     <div class="livecam-tag"><span>${liveCameraEntity.startsWith("__cgc_stream") ? (this._getStreamEntryById(liveCameraEntity)?.name || "Stream") : String(this._hass?.states?.[liveCameraEntity]?.attributes?.friendly_name || liveCameraEntity).trim()}</span><span class="livecam-tag-entity">${liveCameraEntity.startsWith("__cgc_stream") ? "stream url" : liveCameraEntity}</span><button type="button" class="livecam-tag-del" data-deldefcam="${liveCameraEntity}">×</button></div>
@@ -9373,21 +9361,6 @@ class CameraGalleryCardEditor extends HTMLElement {
                   <button type="button" id="stream-url-add" class="cgc-ed-btn" style="margin-top:8px;">+ Add stream URL</button>
                 </div>
 
-                <div class="row">
-                  <div class="lbl">Two-way audio (go2rtc stream)</div>
-                  <div class="desc">Stream name as configured in go2rtc (e.g. <em>reolink_doorbell</em>). Enables the microphone button for push-to-talk.</div>
-                  <div class="field">
-                    <input type="text" class="ed-input" id="live_go2rtc_stream" placeholder="e.g. reolink_doorbell" autocomplete="off" value="${this._config.live_go2rtc_stream || ""}" />
-                  </div>
-                </div>
-
-                <div class="row">
-                  <div class="lbl">go2rtc URL (optional)</div>
-                  <div class="desc">External go2rtc base URL (e.g. http://192.168.1.x:8555). Leave empty to use HA's built-in go2rtc.</div>
-                  <div class="field">
-                    <input type="text" class="ed-input" id="live_go2rtc_url" placeholder="http://192.168.1.x:8555" autocomplete="off" value="${this._config.live_go2rtc_url || ""}" />
-                  </div>
-                </div>
 
                 <div class="row">
                   <div class="row-head">
@@ -9691,7 +9664,9 @@ class CameraGalleryCardEditor extends HTMLElement {
           color: var(--ed-text);
           box-sizing: border-box;
           min-width: 0;
+          scrollbar-width: none;
         }
+        :host::-webkit-scrollbar { display: none; }
 
         .wrap {
           display: grid;
@@ -9773,10 +9748,12 @@ class CameraGalleryCardEditor extends HTMLElement {
           gap: 14px;
           align-content: start;
           box-shadow: var(--ed-section-glow);
-          min-height: 420px;
           box-sizing: border-box;
-          scrollbar-gutter: stable;
+          scrollbar-width: none;
         }
+        .tabpanel::-webkit-scrollbar { display: none; }
+        .wrap { scrollbar-width: none; }
+        .wrap::-webkit-scrollbar { display: none; }
 
         .panelhead {
           display: flex;
@@ -12373,7 +12350,7 @@ if (oldPanel && tmp.firstElementChild) {
     }
 
     this._fire();
-    const RENDERS_REQUIRED = new Set(["source_mode", "live_enabled", "live_camera_entities", "object_filters", "delete_service", "live_camera_entity", "menu_buttons", "menu_button_style", "frigate_url"]);
+    const RENDERS_REQUIRED = new Set(["source_mode", "live_enabled", "live_camera_entities", "object_filters", "delete_service", "live_camera_entity", "menu_buttons", "frigate_url"]);
     if (RENDERS_REQUIRED.has(key)) this._scheduleRender();
   }
 
