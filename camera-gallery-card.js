@@ -418,10 +418,12 @@ class CameraGalleryCard extends LitElement {
     if (this._liveQuickSwitchTimer) clearTimeout(this._liveQuickSwitchTimer);
     if (this._navHideT) clearTimeout(this._navHideT);
     if (this._bulkHintTimer) clearTimeout(this._bulkHintTimer);
+    if (this._micErrorTimer) clearTimeout(this._micErrorTimer);
 
     this._liveQuickSwitchTimer = null;
     this._navHideT = null;
     this._bulkHintTimer = null;
+    this._micErrorTimer = null;
 
     this._clearPreviewVideoHostPlayback();
 
