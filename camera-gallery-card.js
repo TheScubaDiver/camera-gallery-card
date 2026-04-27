@@ -1486,8 +1486,7 @@ class CameraGalleryCard extends LitElement {
     player.hass = this._hass;
     player.muted = true; // start muted zodat autoplay werkt; _syncLiveMuted unmute daarna
     player.controls = false;
-    const _liveObjFit1 = this.config?.object_fit || "cover";
-    player.style.cssText = `display:block;width:100%;height:100%;margin:0;object-fit:${_liveObjFit1};`;
+    player.style.cssText = `display:block;width:100%;height:100%;margin:0;object-fit:cover;`;
 
     this._liveCard = player;
     this._liveCardConfigKey = key;
@@ -1516,8 +1515,7 @@ class CameraGalleryCard extends LitElement {
     video.setAttribute('muted', '');
     video.playsInline = true;
     video.controls = false;
-    const _liveObjFit2 = this.config?.object_fit || "cover";
-    video.style.cssText = `display:block;width:100%;height:100%;margin:0;object-fit:${_liveObjFit2};`;
+    video.style.cssText = `display:block;width:100%;height:100%;margin:0;object-fit:cover;`;
 
     try {
       const pc = new RTCPeerConnection({ iceServers: [{ urls: "stun:stun.l.google.com:19302" }] });
@@ -2005,8 +2003,11 @@ class CameraGalleryCard extends LitElement {
       this._injectLiveFillStyle(card);
       this._liveMuted = this.config?.live_auto_muted !== false;
       this._syncLiveMuted();
-      this._setupAutoAspectRatio();
     }
+
+    // Altijd opnieuw uitvoeren: _setViewMode reset _aspectRatio naar config-waarde,
+    // ook als de stream al pre-warmed was en de video al dimensies heeft.
+    this._setupAutoAspectRatio();
   }
 
   async _warmupLiveCard() {
@@ -2033,12 +2034,11 @@ class CameraGalleryCard extends LitElement {
   }
 
   _injectLiveFillStyle(card) {
-    const objFit = this.config?.object_fit || "cover";
     const cssFill = `
       :host { display:block!important; width:100%!important; height:100%!important; }
       .image-container { width:100%!important; height:100%!important; }
       .ratio { padding-bottom:0!important; padding-top:0!important; width:100%!important; height:100%!important; position:relative!important; }
-      img, video, ha-hls-player, ha-web-rtc-player, ha-camera-stream { width:100%!important; height:100%!important; object-fit:${objFit}!important; display:block!important; position:static!important; }
+      img, video, ha-hls-player, ha-web-rtc-player, ha-camera-stream { width:100%!important; height:100%!important; object-fit:cover!important; display:block!important; position:static!important; }
     `;
 
     const injectInto = (el) => {
