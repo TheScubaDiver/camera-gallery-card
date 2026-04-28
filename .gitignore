@@ -31,3 +31,4 @@ dist/*
 
 # Local-only contributor docs (not part of upstream)
 CLAUDE.md
+plans/

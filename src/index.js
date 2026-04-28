@@ -4,78 +4,50 @@
 
 import { LitElement, html, css } from "lit";
 
+import {
+  ATTR_NAME,
+  AVAILABLE_OBJECT_FILTERS,
+  DEFAULT_ALLOW_BULK_DELETE,
+  DEFAULT_ALLOW_DELETE,
+  DEFAULT_AUTOMUTED,
+  DEFAULT_AUTOPLAY,
+  DEFAULT_BAR_OPACITY,
+  DEFAULT_BROWSE_TIMEOUT_MS,
+  DEFAULT_CLEAN_MODE,
+  DEFAULT_DELETE_CONFIRM,
+  DEFAULT_DELETE_PREFIX,
+  DEFAULT_DELETE_SERVICE,
+  DEFAULT_FILENAME_DATETIME_FORMAT,
+  DEFAULT_FRIGATE_API_LIMIT,
+  DEFAULT_LIVE_AUTO_MUTED,
+  DEFAULT_LIVE_ENABLED,
+  DEFAULT_MAX_MEDIA,
+  DEFAULT_PER_ROOT_MIN_LIMIT,
+  DEFAULT_PREVIEW_CLOSE_ON_TAP_WHEN_GATED,
+  DEFAULT_PREVIEW_POSITION,
+  DEFAULT_RESOLVE_BATCH,
+  DEFAULT_SOURCE_MODE,
+  DEFAULT_THUMB_BAR_POSITION,
+  DEFAULT_THUMB_LAYOUT,
+  DEFAULT_THUMBNAIL_FRAME_PCT,
+  DEFAULT_VISIBLE_OBJECT_FILTERS,
+  DEFAULT_WALK_DEPTH,
+  MAX_VISIBLE_OBJECT_FILTERS,
+  PREVIEW_WIDTH,
+  SENSOR_POSTER_CONCURRENCY,
+  SENSOR_POSTER_QUEUE_LIMIT,
+  STYLE,
+  THUMB_GAP,
+  THUMB_LONG_PRESS_MOVE_PX,
+  THUMB_LONG_PRESS_MS,
+  THUMB_RADIUS,
+  THUMB_SIZE,
+  THUMBS_ENABLED,
+} from "./const";
+
 // Replaced at build time by @rollup/plugin-replace from package.json `version`.
 /* global __VERSION__ */
 const CARD_VERSION = __VERSION__;
-
-// -------- HARD CODED SETTINGS --------
-const ATTR_NAME = "fileList";
-const PREVIEW_WIDTH = "100%";
-
-const SENSOR_POSTER_CONCURRENCY = 8;
-const SENSOR_POSTER_QUEUE_LIMIT = 100;
-
-const THUMBS_ENABLED = true;
-
-const THUMB_GAP = 2;
-const THUMB_RADIUS = 10;
-const THUMB_SIZE = 86;
-
-const DEFAULT_ALLOW_BULK_DELETE = true;
-const DEFAULT_ALLOW_DELETE = true;
-const DEFAULT_BAR_OPACITY = 30;
-const DEFAULT_BROWSE_TIMEOUT_MS = 10000;
-const DEFAULT_DELETE_CONFIRM = true;
-const DEFAULT_DELETE_PREFIX = "/config/www/";
-const DEFAULT_DELETE_SERVICE = "";
-const DEFAULT_FILENAME_DATETIME_FORMAT = "";
-const DEFAULT_LIVE_ENABLED = false;
-const DEFAULT_MAX_MEDIA = 50;
-const DEFAULT_PER_ROOT_MIN_LIMIT = 40;
-const DEFAULT_CLEAN_MODE = false;
-const DEFAULT_PREVIEW_CLOSE_ON_TAP_WHEN_GATED = true;
-const DEFAULT_PREVIEW_POSITION = "top"; // "top" | "bottom"
-const DEFAULT_RESOLVE_BATCH = 32;
-const DEFAULT_SOURCE_MODE = "sensor"; // "sensor" | "media"
-const DEFAULT_THUMB_BAR_POSITION = "bottom"; // "bottom" | "top" | "hidden"
-const DEFAULT_THUMB_LAYOUT = "horizontal"; // "horizontal" | "vertical"
-const DEFAULT_THUMBNAIL_FRAME_PCT = 0; // 0% = first frame, 100% = last frame
-const DEFAULT_VISIBLE_OBJECT_FILTERS = [];
-const DEFAULT_WALK_DEPTH = 6;
-const DEFAULT_FRIGATE_API_LIMIT = 500;
-
-const DEFAULT_AUTOPLAY = false;
-const DEFAULT_AUTOMUTED = true;
-const DEFAULT_LIVE_AUTO_MUTED = true;
-
-const MAX_VISIBLE_OBJECT_FILTERS = 9;
-
-const THUMB_LONG_PRESS_MOVE_PX = 12;
-const THUMB_LONG_PRESS_MS = 520;
-
-const AVAILABLE_OBJECT_FILTERS = [
-  "bicycle",
-  "bird",
-  "bus",
-  "car",
-  "cat",
-  "dog",
-  "motorcycle",
-  "person",
-  "truck",
-  "visitor",
-];
-
-const STYLE = {
-  card_background:
-    "rgba(var(--rgb-card-background-color, 255,255,255), 0.50)",
-  card_padding: "4px 4px",
-  preview_background:
-    "rgba(var(--rgb-card-background-color, 255,255,255), 0.50)",
-  topbar_margin: "0px",
-  topbar_padding: "0px",
-};
-// ------------------------------------
 
 class CameraGalleryCard extends LitElement {
   static get properties() {
