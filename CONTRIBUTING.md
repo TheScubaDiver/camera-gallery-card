@@ -277,4 +277,4 @@ When merging the release PR, double-check:
 1. The proposed version number matches what you'd expect from the commits since the last release.
 2. The CHANGELOG.md diff in the release PR lists every PR you intended to ship.
 3. CI is green on the release PR.
-4. The version in the README's "Current version" line was bumped (release-please updates it via `extra-files` in `release-please-config.json`, using the `<!-- x-release-please-start-version -->` markers around the version literal).
+4. The version in the README's "Current version" line was bumped, and **only** that line — release-please's `generic` updater can be greedy about matching `(\d+)\.(\d+)\.(\d+)` patterns when block markers span multiple lines. We use the **inline marker** form (`<!-- x-release-please-version -->` on the same line as the version literal) so only that one line is touched. If you ever add `extra-files` for another file, prefer the inline marker pattern and double-check the next release PR's diff for collateral damage.
