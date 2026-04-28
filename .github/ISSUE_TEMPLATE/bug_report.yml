@@ -1,0 +1,106 @@
+name: Bug Report
+description: Something isn't working as expected
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## Bug Report
+        Before submitting, please check if this issue already exists. If not, try reinstalling the card via HACS and clearing your browser cache first.
+
+  - type: input
+    id: card-version
+    attributes:
+      label: Camera Gallery Card version
+      placeholder: "e.g. 1.9.2"
+    validations:
+      required: true
+
+  - type: input
+    id: ha-version
+    attributes:
+      label: Home Assistant version
+      placeholder: "e.g. 2024.3.1"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install-method
+    attributes:
+      label: Installation method
+      options:
+        - HACS
+        - Manual
+    validations:
+      required: true
+
+  - type: dropdown
+    id: ha-type
+    attributes:
+      label: Home Assistant installation type
+      options:
+        - Home Assistant OS
+        - Home Assistant Supervised
+        - Home Assistant Container (Docker)
+        - Home Assistant Core
+    validations:
+      required: true
+
+  - type: input
+    id: browser
+    attributes:
+      label: Browser
+      placeholder: "e.g. Chrome 123, Firefox 124, Safari 17"
+
+  - type: dropdown
+    id: source-mode
+    attributes:
+      label: Source mode
+      description: Which source mode are you using?
+      options:
+        - Sensor (file sensor)
+        - Media source
+        - Both
+        - Not applicable
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      placeholder: "What is going wrong? What did you expect to happen?"
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      placeholder: "1. Go to...\n2. Click on...\n3. See error"
+    validations:
+      required: true
+
+  - type: textarea
+    id: screenshot
+    attributes:
+      label: Screenshots
+      description: "Drag and drop a screenshot here, or click to upload"
+      placeholder: "Optional but strongly recommended"
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Error message / logs
+      description: "Browser console (F12 → Console) and/or HA logs via Settings → System → Logs"
+      render: shell
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist
+      options:
+        - label: I have searched for existing issues and this is not a duplicate
+          required: true
+        - label: I am using the latest version of the card
+          required: true
+        - label: I have reinstalled the card and restarted Home Assistant
+          required: true

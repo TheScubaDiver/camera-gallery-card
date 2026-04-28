@@ -1,0 +1,66 @@
+{
+  "name": "camera-gallery-card",
+  "version": "2.6.0",
+  "description": "Timeline based media gallery card for Home Assistant",
+  "author": "TheScubaDiver",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/TheScubaDiver/camera-gallery-card.git"
+  },
+  "bugs": {
+    "url": "https://github.com/TheScubaDiver/camera-gallery-card/issues"
+  },
+  "homepage": "https://github.com/TheScubaDiver/camera-gallery-card#readme",
+  "scripts": {
+    "build": "rollup -c",
+    "build:watch": "rollup -c -w",
+    "dev": "concurrently -k -n build,sync 'npm:build:watch' 'npm:push:watch'",
+    "push": "node scripts/dev/push.mjs",
+    "push:watch": "node scripts/dev/push.mjs --watch",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "typecheck": "tsc --noEmit",
+    "check": "npm run typecheck && npm run lint && npm run format:check && npm run build",
+    "clean": "rm -rf dist/",
+    "prepare": "husky"
+  },
+  "lint-staged": {
+    "*.{js,mjs,cjs,ts}": [
+      "eslint --fix",
+      "prettier --write --ignore-unknown"
+    ],
+    "*.{json,yml,yaml,md,html,css}": [
+      "prettier --write --ignore-unknown"
+    ]
+  },
+  "dependencies": {
+    "lit": "^3.2.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.13.0",
+    "@rollup/plugin-commonjs": "^28.0.1",
+    "@rollup/plugin-node-resolve": "^15.3.0",
+    "@rollup/plugin-replace": "^6.0.1",
+    "@rollup/plugin-terser": "^0.4.4",
+    "@rollup/plugin-typescript": "^12.1.1",
+    "chokidar": "^4.0.1",
+    "concurrently": "^9.0.1",
+    "dotenv": "^16.4.5",
+    "eslint": "^9.13.0",
+    "eslint-plugin-lit": "^1.15.0",
+    "eslint-plugin-wc": "^2.1.1",
+    "globals": "^15.11.0",
+    "husky": "^9.1.6",
+    "lint-staged": "^15.2.10",
+    "prettier": "^3.3.3",
+    "rollup": "^4.24.0",
+    "tslib": "^2.8.0",
+    "typescript": "^5.6.3",
+    "typescript-eslint": "^8.11.0"
+  }
+}

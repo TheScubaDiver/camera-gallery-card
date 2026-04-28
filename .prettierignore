@@ -1,0 +1,12 @@
+dist/
+src/index.js
+node_modules/
+package-lock.json
+
+# Pre-existing docs/resources — leave formatting untouched
+CHANGELOG.md
+README.md
+CODE_OF_CONDUCT.md
+CONTRIBUTING.md
+info.md
+dev/

@@ -1,0 +1,133 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+# Serialize releases — never run two of these in parallel against the same
+# release PR. Don't cancel an in-flight release; let it finish.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      # release-please-action's `pr` output is the JSON of the release PR it
+      # opened or updated *this run*, OR an empty string if no PR work was
+      # done (typical when the previous release was just merged and a tag was
+      # cut — see `release_created` below). The empty-string check downstream
+      # depends on this; if release-please ever changes that contract and
+      # emits `pr` on tag creation too, sync-bundle-in-release-pr would try
+      # to check out a deleted branch and fail.
+      pr_branch: ${{ steps.release.outputs.pr && fromJSON(steps.release.outputs.pr).headBranchName || '' }}
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+    steps:
+      # Mint a short-lived installation token for the release-bot GitHub App.
+      # Using the app token (instead of the default GITHUB_TOKEN) means
+      # release-please's PR opens/syncs trigger downstream workflows like
+      # CI — GitHub suppresses workflow triggers from GITHUB_TOKEN events
+      # but not from app-installation-token events.
+      #
+      # Setup: see "Maintainer setup → release-bot GitHub App" in
+      # CONTRIBUTING.md. Requires repo variable RELEASE_BOT_APP_ID and
+      # repo secret RELEASE_BOT_PRIVATE_KEY.
+      - name: Generate app token
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ vars.RELEASE_BOT_APP_ID }}
+          private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
+
+      - uses: googleapis/release-please-action@v5
+        id: release
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+  # When release-please opens or updates a release PR, rebuild the bundle on
+  # that PR's branch so the release commit ships a bundle whose CARD_VERSION
+  # matches the bumped package.json. Has to live in the same workflow as
+  # release-please-action: a separate `pull_request`-triggered workflow would
+  # never fire, because the release PR is opened by the bot — its `opened`
+  # and `synchronize` events use a token that doesn't trigger downstream
+  # workflows from cross-workflow events.
+  sync-bundle-in-release-pr:
+    name: Sync bundle in release PR
+    needs: release-please
+    if: ${{ needs.release-please.outputs.pr_branch != '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Generate app token
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ vars.RELEASE_BOT_APP_ID }}
+          private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
+
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.release-please.outputs.pr_branch }}
+          token: ${{ steps.app-token.outputs.token }}
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: ".nvmrc"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build bundle
+        run: npm run build
+
+      - name: Commit rebuilt bundle if changed
+        run: |
+          if git diff --exit-code -- dist/camera-gallery-card.js; then
+            echo "Bundle already in sync with release PR — nothing to do."
+            exit 0
+          fi
+          git config user.name '${{ steps.app-token.outputs.app-slug }}[bot]'
+          git config user.email '${{ steps.app-token.outputs.app-slug }}[bot]@users.noreply.github.com'
+          git add dist/camera-gallery-card.js
+          git commit -m "chore: rebuild bundle for release PR"
+          # --force-with-lease: if release-please pushed another update to the
+          # PR branch between our checkout and this push, fail loudly instead
+          # of overwriting it. The next release.yml run will catch up.
+          git push --force-with-lease
+
+  # When the release PR merges and release-please creates the GitHub Release,
+  # attach the committed bundle from the tagged commit. We don't rebuild here:
+  # the bundle on the tagged commit was already rebuilt inside the release PR
+  # by sync-bundle-in-release-pr, so reuse it verbatim — that way the release
+  # asset and the committed bundle are byte-identical.
+  upload-bundle:
+    name: Upload bundle to GitHub Release
+    needs: release-please
+    if: ${{ needs.release-please.outputs.release_created == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.release-please.outputs.tag_name }}
+
+      - name: Upload bundle to GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ needs.release-please.outputs.tag_name }}
+          files: dist/camera-gallery-card.js

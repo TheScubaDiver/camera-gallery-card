@@ -1,0 +1,30 @@
+name: HACS
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hacs-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+      - name: HACS validation
+        # hacs/action only ships from `main` (their last semver tag is from
+        # 2022). Pinning by SHA gives us reproducibility and lets dependabot
+        # bump us safely. dependabot.yml has the github-actions ecosystem
+        # configured to track this.
+        uses: hacs/action@dcb30e72781db3f207d5236b861172774ab0b485 # main as of 2026-01-26
+        with:
+          category: plugin

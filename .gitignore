@@ -14,3 +14,20 @@ apple-music-search-card.js
 
 # macOS
 .DS_Store
+
+# Node / build
+node_modules/
+.env
+
+# Build artifacts. dist/camera-gallery-card.js stays tracked — HACS serves
+# it from there (hacs.json: content_in_root: false). Source maps and any
+# other dist artifacts are not tracked.
+dist/*
+!dist/camera-gallery-card.js
+
+# Tooling caches
+*.tsbuildinfo
+.eslintcache
+
+# Local-only contributor docs (not part of upstream)
+CLAUDE.md

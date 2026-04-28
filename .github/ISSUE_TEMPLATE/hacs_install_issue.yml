@@ -1,0 +1,95 @@
+name: HACS Install Issue
+description: Problems installing or updating the card via HACS
+labels: ["installation"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## HACS Installation Issue
+        Use this template if you're having trouble installing or updating Camera Gallery Card via HACS.
+
+        **Quick checklist before submitting:**
+        - Clear your browser cache after installing
+        - Reload your dashboard (three-dot menu → Reload resources)
+        - Restart Home Assistant after a fresh install
+
+  - type: dropdown
+    id: issue-type
+    attributes:
+      label: Type of issue
+      options:
+        - Card not showing up in card picker
+        - Editor not opening
+        - Card shows error after update
+        - HACS not finding the repository
+        - Update stuck or not completing
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: card-version
+    attributes:
+      label: Camera Gallery Card version (installed)
+      placeholder: "e.g. 1.9.2"
+    validations:
+      required: true
+
+  - type: input
+    id: ha-version
+    attributes:
+      label: Home Assistant version
+      placeholder: "e.g. 2024.3.1"
+    validations:
+      required: true
+
+  - type: input
+    id: hacs-version
+    attributes:
+      label: HACS version
+      placeholder: "e.g. 2.0.1"
+
+  - type: dropdown
+    id: ha-type
+    attributes:
+      label: Home Assistant installation type
+      options:
+        - Home Assistant OS
+        - Home Assistant Supervised
+        - Home Assistant Container (Docker)
+        - Home Assistant Core
+    validations:
+      required: true
+
+  - type: input
+    id: browser
+    attributes:
+      label: Browser
+      placeholder: "e.g. Chrome 123, Firefox 124, Safari 17"
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      placeholder: "What exactly is going wrong?"
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Error message / logs
+      description: "Browser console (F12 → Console) and/or HA logs via Settings → System → Logs"
+      render: shell
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist
+      options:
+        - label: I have cleared my browser cache
+          required: true
+        - label: I have restarted Home Assistant
+          required: true
+        - label: I have checked the browser console for errors
+          required: true

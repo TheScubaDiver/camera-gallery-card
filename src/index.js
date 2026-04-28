@@ -2,7 +2,11 @@
  * Camera Gallery Card
  */
 
-const CARD_VERSION = "2.5.0";
+import { LitElement, html, css } from "lit";
+
+// Replaced at build time by @rollup/plugin-replace from package.json `version`.
+/* global __VERSION__ */
+const CARD_VERSION = __VERSION__;
 
 // -------- HARD CODED SETTINGS --------
 const ATTR_NAME = "fileList";
@@ -72,38 +76,6 @@ const STYLE = {
   topbar_padding: "0px",
 };
 // ------------------------------------
-
-// ─── Resolve Lit from HA ─────────────────────────────────────────────
-let LitElement, html, css;
-
-(() => {
-  const candidates = [
-    "hui-masonry-view",
-    "hui-view",
-    "ha-panel-lovelace",
-    "hc-lovelace",
-    "hui-entities-card",
-    "ha-card",
-  ];
-  for (const tag of candidates) {
-    const klass = customElements.get(tag);
-    if (!klass) continue;
-    let proto = klass;
-    while (proto && proto !== HTMLElement && proto !== Object) {
-      if (proto.prototype?.html && proto.prototype?.css) {
-        LitElement = proto;
-        html = proto.prototype.html;
-        css = proto.prototype.css;
-        return;
-      }
-      proto = Object.getPrototypeOf(proto);
-    }
-  }
-})();
-
-if (!LitElement) {
-  console.error("CAMERA-GALLERY-CARD: Could not resolve LitElement from HA");
-}
 
 class CameraGalleryCard extends LitElement {
   static get properties() {

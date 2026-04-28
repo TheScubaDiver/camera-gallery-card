@@ -1,0 +1,54 @@
+name: Feature Request
+description: Suggest a new feature or improvement
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## Feature Request
+        Have an idea to make Camera Gallery Card better? Describe it below.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Is your feature request related to a problem?
+      placeholder: "e.g. I always have to do X manually, which is frustrating because..."
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Describe the solution you'd like
+      placeholder: "A clear description of what you want to happen"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      description: Which part of the card does this relate to?
+      options:
+        - Gallery / thumbnails
+        - Preview player
+        - Live view
+        - Object filters
+        - Styling / CSS
+        - Editor
+        - Sensor / media source
+        - Delete / actions
+        - Performance
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you've considered
+      placeholder: "Any other approaches or workarounds you've tried?"
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: "Screenshots, mockups, or examples are welcome"

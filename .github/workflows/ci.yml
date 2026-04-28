@@ -1,0 +1,85 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Cancel an in-flight CI run when a new commit lands on the same ref.
+# `github.ref` covers both branches (push) and pull request refs.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pr-title:
+    name: Check PR title is conventional
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      # The PR title is in the event payload — no API call needed. Doing this
+      # inline avoids depending on a third-party action whose v6 upgrade
+      # broke under cross-repo PRs (404s) and whose v5 path is unmaintained.
+      - name: Check PR title
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          if [[ ! "$PR_TITLE" =~ ^(feat|fix|perf|refactor|docs|style|test|build|ci|chore|revert)(\(.+\))?\!?:\ [a-z].+[^.]$ ]]; then
+            cat <<EOF
+          ::error::PR title "$PR_TITLE" is not a valid conventional commit.
+
+          Format: <type>(<optional scope>)!?: <subject>
+            type:    feat | fix | perf | refactor | docs | style | test | build | ci | chore | revert
+            subject: starts with a lowercase letter, no trailing period
+
+          Examples:
+            feat: add multi-camera live view
+            fix(editor): align thumbnail strip side padding
+            feat!: drop support for source_mode "files" alias
+          EOF
+            exit 1
+          fi
+          echo "PR title OK: $PR_TITLE"
+
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: ".nvmrc"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type check
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Format check
+        run: npm run format:check
+
+      - name: Build
+        run: npm run build
+
+      - name: Verify committed bundle is up to date
+        # release-please's release PRs bump package.json (which changes
+        # CARD_VERSION via __VERSION__), so a fresh build will differ from
+        # the committed bundle until release.yml's sync-bundle-in-release-pr
+        # job rebuilds and commits it. Skip the drift check on those PRs.
+        if: ${{ !startsWith(github.head_ref, 'release-please--') }}
+        run: |
+          if ! git diff --exit-code -- dist/camera-gallery-card.js; then
+            echo "::error::dist/camera-gallery-card.js is out of sync with src/. Run 'npm run build' and commit the result."
+            exit 1
+          fi
