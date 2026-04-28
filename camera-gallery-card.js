@@ -65,7 +65,7 @@ const AVAILABLE_OBJECT_FILTERS = [
 const STYLE = {
   card_background:
     "rgba(var(--rgb-card-background-color, 255,255,255), 0.50)",
-  card_padding: "10px 12px",
+  card_padding: "4px 4px",
   preview_background:
     "rgba(var(--rgb-card-background-color, 255,255,255), 0.50)",
   topbar_margin: "0px",
@@ -5913,7 +5913,7 @@ class CameraGalleryCard extends LitElement {
           var(--cgc-card-border-color, var(--divider-color, rgba(0,0,0,0.12)));
         border-radius: var(--r);
         box-sizing: border-box;
-        padding: var(--cardPad, 10px 12px);
+        padding: var(--cardPad, 4px 4px);
         display: flex;
         flex-direction: column;
         gap: 8px;
@@ -6147,9 +6147,11 @@ class CameraGalleryCard extends LitElement {
       }
 
       .tthumbs-wrap {
-        width: 100%;
+        width: calc(100% + 8px);
         box-sizing: border-box;
         margin-top: 0;
+        margin-left: -4px;
+        margin-right: -4px;
       }
 
       .tthumbs-wrap.horizontal {
@@ -8396,7 +8398,7 @@ class CameraGalleryCardEditor extends HTMLElement {
     });
   }
 
-  _bindColorControls() {
+  _bindColorControls(sig = {}) {
     STYLE_SECTIONS.forEach((section) => {
       section.controls.forEach((ctrl) => {
         if (ctrl.type === "color") {
@@ -8415,7 +8417,7 @@ class CameraGalleryCardEditor extends HTMLElement {
         this._removeStyleVariable(variable);
         this._fire();
         this._scheduleRender();
-      });
+      }, sig);
     });
 
     this.shadowRoot.querySelectorAll("[data-transparent]").forEach((el) => {
@@ -8433,7 +8435,7 @@ class CameraGalleryCardEditor extends HTMLElement {
 
         this._fire();
         this._scheduleRender();
-      });
+      }, sig);
     });
 
     this.shadowRoot.querySelectorAll("[data-radius]").forEach((slider) => {
@@ -8443,13 +8445,13 @@ class CameraGalleryCardEditor extends HTMLElement {
 
       slider.addEventListener("input", (e) => {
         if (display) display.textContent = e.target.value + "px";
-      });
+      }, sig);
 
       slider.addEventListener("change", (e) => {
         this._setStyleVariable(variable, e.target.value + "px");
         this._fire();
         this._scheduleRender();
-      });
+      }, sig);
     });
 
     this.shadowRoot.querySelectorAll("details.style-section").forEach((det) => {
@@ -8460,7 +8462,7 @@ class CameraGalleryCardEditor extends HTMLElement {
         } else {
           this._openStyleSections.delete(id);
         }
-      });
+      }, sig);
     });
   }
 
@@ -10250,7 +10252,7 @@ class CameraGalleryCardEditor extends HTMLElement {
           display: flex;
           align-items: center;
           gap: 4px;
-          padding: 4px 6px 4px 6px;
+          padding: 4px 4px 4px 4px;
           background: var(--ed-chip-bg);
           border: 1px solid var(--ed-chip-border);
           border-radius: 999px;
@@ -10264,7 +10266,7 @@ class CameraGalleryCardEditor extends HTMLElement {
         .livecam-tag-grip {
           font-size: 18px; opacity: 0.4; line-height: 1;
           cursor: grab; user-select: none;
-          padding: 4px 6px 4px 2px; margin: -4px 0;
+          padding: 4px 4px 4px 2px; margin: -4px 0;
           touch-action: none;
         }
         .livecam-tag-num {
@@ -11034,6 +11036,9 @@ details summary { user-select: none; }
 
       <div id="cgc-browser-slot">${mediaBrowserHtml}</div>
     `;
+    this.shadowRoot.querySelectorAll("[data-tab]").forEach((btn) => {
+      btn.addEventListener("click", () => this._setActiveTab(btn.dataset.tab));
+    });
     this._editorRendered = true;
     } else {
       // Partial update — avoid rebuilding the full shadow DOM
@@ -11063,7 +11068,11 @@ if (oldPanel && tmp.firstElementChild) {
       if (browserSlot) browserSlot.innerHTML = mediaBrowserHtml;
     }
 
-    this._initCollapsibleRows();
+    if (this._evtCtrl) this._evtCtrl.abort();
+    this._evtCtrl = new AbortController();
+    const _sig = { signal: this._evtCtrl.signal };
+
+    this._initCollapsibleRows(_sig);
 
     const $ = (id) => this.shadowRoot.getElementById(id);
 
@@ -11093,7 +11102,7 @@ if (oldPanel && tmp.firstElementChild) {
         };
 
         // 3. Koppel de Click listener aan de knop
-        addBtn?.addEventListener("click", handleAddFilter);
+        addBtn?.addEventListener("click", handleAddFilter, _sig);
 
         // 4. Enter op naam-veld voegt toe
         nameInput?.addEventListener("keydown", (e) => {
@@ -11116,7 +11125,7 @@ if (oldPanel && tmp.firstElementChild) {
     });
 
     this.shadowRoot.querySelectorAll("[data-filtercolor]").forEach(input => {
-      input.addEventListener("click", (e) => e.stopPropagation());
+      input.addEventListener("click", (e) => e.stopPropagation(), _sig);
       input.addEventListener("change", (e) => {
         e.stopPropagation();
         const name = input.dataset.filtercolor;
@@ -11162,12 +11171,8 @@ if (oldPanel && tmp.firstElementChild) {
     this._applyFieldValidation("entities");
     this._applyFieldValidation("mediasources");
 
-    this._bindColorControls();
-    this._bindWizardEvents();
-
-    this.shadowRoot.querySelectorAll("[data-tab]").forEach((btn) => {
-      btn.addEventListener("click", () => this._setActiveTab(btn.dataset.tab));
-    });
+    this._bindColorControls(_sig);
+    this._bindWizardEvents(_sig);
 
     this.shadowRoot.querySelectorAll("[data-src]").forEach((btn) => {
       btn.addEventListener("click", () => {
@@ -11293,7 +11298,7 @@ if (oldPanel && tmp.firstElementChild) {
       this._set("delete_service", v);
     };
 
-    delserviceEl?.addEventListener("change", commitDeleteService);
+    delserviceEl?.addEventListener("change", commitDeleteService, _sig);
 
     const commitNumberField = (key, el, fallback, commit = false) => {
       const raw = String(el?.value ?? "").trim();
@@ -11349,9 +11354,9 @@ if (oldPanel && tmp.firstElementChild) {
       }
     };
 
-    filenameFmtEl?.addEventListener("input", () => commitFilenameFormat(false));
-    filenameFmtEl?.addEventListener("change", () => commitFilenameFormat(true));
-    filenameFmtEl?.addEventListener("blur", () => commitFilenameFormat(true));
+    filenameFmtEl?.addEventListener("input", () => commitFilenameFormat(false), _sig);
+    filenameFmtEl?.addEventListener("change", () => commitFilenameFormat(true), _sig);
+    filenameFmtEl?.addEventListener("blur", () => commitFilenameFormat(true), _sig);
 
     const commitFolderFormat = (commit = false) => {
       const raw = String(folderFmtEl?.value ?? "").trim();
@@ -11365,9 +11370,9 @@ if (oldPanel && tmp.firstElementChild) {
       if (commit) { this._fire(); this._scheduleRender(); }
     };
 
-    folderFmtEl?.addEventListener("input", () => commitFolderFormat(false));
-    folderFmtEl?.addEventListener("change", () => commitFolderFormat(true));
-    folderFmtEl?.addEventListener("blur", () => commitFolderFormat(true));
+    folderFmtEl?.addEventListener("input", () => commitFolderFormat(false), _sig);
+    folderFmtEl?.addEventListener("change", () => commitFolderFormat(true), _sig);
+    folderFmtEl?.addEventListener("blur", () => commitFolderFormat(true), _sig);
 
     this.shadowRoot.querySelectorAll(".seg[data-objfit]").forEach((btn) => {
       btn.addEventListener("click", () => {
@@ -11428,9 +11433,9 @@ if (oldPanel && tmp.firstElementChild) {
       }
     };
 
-    maxmediaEl?.addEventListener("input", () => pushMaxMedia(false));
-    maxmediaEl?.addEventListener("change", () => pushMaxMedia(true));
-    maxmediaEl?.addEventListener("blur", () => pushMaxMedia(true));
+    maxmediaEl?.addEventListener("input", () => pushMaxMedia(false), _sig);
+    maxmediaEl?.addEventListener("change", () => pushMaxMedia(true), _sig);
+    maxmediaEl?.addEventListener("blur", () => pushMaxMedia(true), _sig);
 
     this.shadowRoot.querySelectorAll(".seg[data-tbpos]").forEach((btn) => {
       btn.addEventListener("click", () => {
@@ -11530,8 +11535,8 @@ if (oldPanel && tmp.firstElementChild) {
         _saveStreamEntries();
         this._scheduleRender();
       });
-      div.querySelector(".stream-url-input").addEventListener("change", _saveStreamEntries);
-      div.querySelector(".stream-name-input").addEventListener("change", _saveStreamEntries);
+      div.querySelector(".stream-url-input").addEventListener("change", _saveStreamEntries, _sig);
+      div.querySelector(".stream-name-input").addEventListener("change", _saveStreamEntries, _sig);
       streamList.appendChild(div);
     };
 
@@ -11545,7 +11550,7 @@ if (oldPanel && tmp.firstElementChild) {
         });
       });
       streamList.querySelectorAll(".stream-url-input, .stream-name-input").forEach(inp => {
-        inp.addEventListener("change", _saveStreamEntries);
+        inp.addEventListener("change", _saveStreamEntries, _sig);
       });
     }
 
@@ -11642,8 +11647,8 @@ if (oldPanel && tmp.firstElementChild) {
         });
       };
 
-      livedefaultInput.addEventListener("focus", () => renderDefSuggestions(getDefSuggestions()));
-      livedefaultInput.addEventListener("input", () => renderDefSuggestions(getDefSuggestions()));
+      livedefaultInput.addEventListener("focus", () => renderDefSuggestions(getDefSuggestions()), _sig);
+      livedefaultInput.addEventListener("input", () => renderDefSuggestions(getDefSuggestions()), _sig);
       livedefaultInput.addEventListener("keydown", (e) => {
         if (e.key === "Enter") {
           e.preventDefault();
@@ -11706,8 +11711,8 @@ if (oldPanel && tmp.firstElementChild) {
         });
       };
 
-      livecamInput.addEventListener("focus", () => renderCamSuggestions(getCamSuggestions()));
-      livecamInput.addEventListener("input", () => renderCamSuggestions(getCamSuggestions()));
+      livecamInput.addEventListener("focus", () => renderCamSuggestions(getCamSuggestions()), _sig);
+      livecamInput.addEventListener("input", () => renderCamSuggestions(getCamSuggestions()), _sig);
       livecamInput.addEventListener("keydown", (e) => {
         if (e.key === "Enter") {
           e.preventDefault();
@@ -11771,16 +11776,16 @@ if (oldPanel && tmp.firstElementChild) {
           `<button type="button" class="sugg-item" data-pick-icon="${ic}" style="display:flex;align-items:center;gap:8px;"><ha-icon icon="${ic}" style="--mdc-icon-size:18px;flex-shrink:0;"></ha-icon><span>${ic.replace("mdi:","")}</span></button>`
         ).join("");
         sugg.querySelectorAll("[data-pick-icon]").forEach(btn => {
-          btn.addEventListener("mousedown", (e) => { e.preventDefault(); onSelect(btn.dataset.pickIcon); });
+          btn.addEventListener("mousedown", (e) => { e.preventDefault(); onSelect(btn.dataset.pickIcon); }, _sig);
         });
       };
-      input.addEventListener("focus", () => renderIconSugg(getSuggestions(input.value)));
-      input.addEventListener("input", () => renderIconSugg(getSuggestions(input.value)));
+      input.addEventListener("focus", () => renderIconSugg(getSuggestions(input.value)), _sig);
+      input.addEventListener("input", () => renderIconSugg(getSuggestions(input.value)), _sig);
       input.addEventListener("keydown", (e) => {
         if (e.key === "Enter") { e.preventDefault(); const first = sugg.querySelector("[data-pick-icon]"); if (first) onSelect(first.dataset.pickIcon); }
         else if (e.key === "Escape") { sugg.hidden = true; }
       });
-      input.addEventListener("blur", () => { setTimeout(() => { sugg.hidden = true; }, 150); });
+      input.addEventListener("blur", () => { setTimeout(() => { sugg.hidden = true; }, 150); }, _sig);
     };
 
     // Menu button verwijderen
@@ -11814,16 +11819,16 @@ if (oldPanel && tmp.firstElementChild) {
           return `<button type="button" class="sugg-item" data-pick-entity="${id}">${name}<span style="opacity:0.45;font-weight:500;margin-left:6px;">${id}</span></button>`;
         }).join("");
         sugg.querySelectorAll("[data-pick-entity]").forEach((btn) => {
-          btn.addEventListener("mousedown", (e) => { e.preventDefault(); onSelect(btn.dataset.pickEntity); });
+          btn.addEventListener("mousedown", (e) => { e.preventDefault(); onSelect(btn.dataset.pickEntity); }, _sig);
         });
       };
-      input.addEventListener("focus", () => render(entitySuggestions(input.value)));
-      input.addEventListener("input", () => render(entitySuggestions(input.value)));
+      input.addEventListener("focus", () => render(entitySuggestions(input.value)), _sig);
+      input.addEventListener("input", () => render(entitySuggestions(input.value)), _sig);
       input.addEventListener("keydown", (e) => {
         if (e.key === "Enter") { e.preventDefault(); const first = sugg.querySelector("[data-pick-entity]"); if (first) onSelect(first.dataset.pickEntity); }
         else if (e.key === "Escape") { sugg.hidden = true; }
       });
-      input.addEventListener("blur", () => { setTimeout(() => { sugg.hidden = true; }, 150); });
+      input.addEventListener("blur", () => { setTimeout(() => { sugg.hidden = true; }, 150); }, _sig);
     };
 
     // Per-button entity autocomplete
@@ -11951,7 +11956,7 @@ if (oldPanel && tmp.firstElementChild) {
           e.dataTransfer.dropEffect = "move";
           if (chip.dataset.dragcam !== dragSrcId) { clearOver(); chip.classList.add("dnd-over"); }
         });
-        chip.addEventListener("dragleave", () => chip.classList.remove("dnd-over"));
+        chip.addEventListener("dragleave", () => chip.classList.remove("dnd-over"), _sig);
         chip.addEventListener("drop", (e) => {
           e.preventDefault();
           clearOver();
@@ -12175,7 +12180,7 @@ if (oldPanel && tmp.firstElementChild) {
     } catch (_) {}
   }
 
-  _initCollapsibleRows() {
+  _initCollapsibleRows(sig = {}) {
     const sr = this.shadowRoot;
     if (!sr) return;
     const tab = this._activeTab || 'general';
@@ -12236,7 +12241,7 @@ if (oldPanel && tmp.firstElementChild) {
       details.appendChild(body);
       row.appendChild(details);
 
-      details.addEventListener('toggle', () => saveState(key, details.open));
+      details.addEventListener('toggle', () => saveState(key, details.open), sig);
     });
 
     // Add localStorage persistence to pre-existing <details> (Datetime formats, Styling sections)
@@ -12252,7 +12257,7 @@ if (oldPanel && tmp.firstElementChild) {
         if (stored === 'false') details.removeAttribute('open');
         else if (stored === 'true') details.setAttribute('open', '');
       } catch (_) {}
-      details.addEventListener('toggle', () => saveState(key, details.open));
+      details.addEventListener('toggle', () => saveState(key, details.open), sig);
     });
   }
 
@@ -12658,7 +12663,7 @@ if (oldPanel && tmp.firstElementChild) {
     `;
   }
 
-  _bindWizardEvents() {
+  _bindWizardEvents(sig = {}) {
     const root = this.shadowRoot;
     const toggle = root?.getElementById("cgc-wizard-toggle");
     const folderInput = root?.getElementById("cgc-wizard-folder");
