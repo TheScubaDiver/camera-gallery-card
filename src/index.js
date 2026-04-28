@@ -133,6 +133,10 @@ class CameraGalleryCard extends LitElement {
     this._posterCache = new Map();
     this._msBrowseTtlCache = new Map();
     this._posterPending = new Set();
+    // URLs that returned 404 / failed to decode / timed out. Skipped by
+    // _enqueuePoster, _drainPosterQueue, and _ensurePoster so a single bad
+    // file doesn't spam the network and console on every render.
+    this._posterFailed = new Set();
     this._snapshotCache = new Map();
     this._frigateSnapshots = [];
     this._objectCache = new Map();
@@ -533,6 +537,7 @@ class CameraGalleryCard extends LitElement {
     if (this._posterPending.has(key)) return;
     if (this._posterQueued.has(key)) return;
     if (this._posterInFlight.has(key)) return;
+    if (this._posterFailed.has(key)) return;
 
     this._posterQueued.add(key);
     this._posterQueue.push(key);
@@ -556,6 +561,7 @@ class CameraGalleryCard extends LitElement {
       if (this._posterCache.has(src)) continue;
       if (this._posterPending.has(src)) continue;
       if (this._posterInFlight.has(src)) continue;
+      if (this._posterFailed.has(src)) continue;
 
       this._posterInFlight.add(src);
 
@@ -573,6 +579,7 @@ class CameraGalleryCard extends LitElement {
     this._posterQueued.clear();
     this._posterInFlight.clear();
     this._posterPending.clear();
+    this._posterFailed.clear();
   }
 
   _queueSensorPosterWork(items) {
@@ -2878,7 +2885,19 @@ class CameraGalleryCard extends LitElement {
       };
 
       timeout = setTimeout(() => fail(new Error("poster timeout")), 3000);
-      v.addEventListener("error", () => fail(new Error("video load error")), { once: true });
+      v.addEventListener(
+        "error",
+        () => {
+          const err = new Error("video load error");
+          // MediaError.code: 2 = NETWORK (often 404), 4 = SRC_NOT_SUPPORTED
+          // (usually codec but browsers also report 4 for missing files).
+          // _ensurePoster uses this to decide whether to drop a stale
+          // localStorage thumb.
+          err.mediaErrorCode = v.error?.code;
+          fail(err);
+        },
+        { once: true }
+      );
       v.addEventListener("loadedmetadata", () => {
         const dur = Number.isFinite(v.duration) && v.duration > 0 ? v.duration : 0;
         const p = Math.max(0, Math.min(100, Number(pct) || 0));
@@ -2932,12 +2951,36 @@ class CameraGalleryCard extends LitElement {
     } catch (_) {}
   }
 
+  // Drops a cached thumbnail for a URL. Used when the underlying file is
+  // confirmed missing (HTTP 404 / MediaError NETWORK) so a deleted file's
+  // stale localStorage thumb stops being shown on next render.
+  _lsThumbDelete(url) {
+    try {
+      const key = this._lsKey(url);
+      const indexKey = "cgc_poster_index";
+      const index = JSON.parse(localStorage.getItem(indexKey) || "[]");
+      const idx = index.indexOf(key);
+      if (idx >= 0) {
+        index.splice(idx, 1);
+        localStorage.setItem(indexKey, JSON.stringify(index));
+      }
+      localStorage.removeItem(key);
+    } catch (_) {}
+  }
+
   async _fetchProtectedAsDataUrl(src) {
     const token = this._hass?.auth?.data?.access_token;
     if (!token) return null;
     const res = await fetch(window.location.origin + src, {
       headers: { Authorization: `Bearer ${token}` },
     });
+    if (res.status === 404) {
+      // Throw with a marker so _ensurePoster can drop the stale localStorage
+      // thumb for files that have been deleted on disk.
+      const err = new Error("not found");
+      err.status = 404;
+      throw err;
+    }
     if (!res.ok) return null;
     const blob = await res.blob();
     return new Promise((resolve, reject) => {
@@ -2950,6 +2993,7 @@ class CameraGalleryCard extends LitElement {
 
   async _ensurePoster(src) {
     if (!src || this._posterCache.has(src) || this._posterPending.has(src)) return;
+    if (this._posterFailed.has(src)) return;
 
     const cached = this._lsThumbGet(src);
     if (cached) {
@@ -2971,8 +3015,24 @@ class CameraGalleryCard extends LitElement {
       if (dataUrl) {
         this._posterCache.set(src, dataUrl);
         this._lsThumbSet(src, dataUrl);
+      } else {
+        // Reached the !res.ok branch in _fetchProtectedAsDataUrl (non-404
+        // failure). Don't keep retrying every render.
+        this._posterFailed.add(src);
       }
-    } catch (_) {
+    } catch (e) {
+      // Hard failure: 404, decode error, timeout, network error. Mark as
+      // failed so subsequent renders skip it instead of re-spamming the
+      // network/console.
+      this._posterFailed.add(src);
+      // For confirmed-missing files (HTTP 404, or video URLs that couldn't
+      // be loaded over the network) drop any stale localStorage thumb so a
+      // deleted file stops displaying its last cached frame.
+      const isMissing =
+        e?.status === 404 ||
+        e?.mediaErrorCode === 2 || // MEDIA_ERR_NETWORK
+        e?.mediaErrorCode === 4;   // MEDIA_ERR_SRC_NOT_SUPPORTED
+      if (isMissing) this._lsThumbDelete(src);
     } finally {
       this._posterPending.delete(src);
       this.requestUpdate();
@@ -4823,6 +4883,7 @@ class CameraGalleryCard extends LitElement {
       this._resetPosterQueue();
       this._posterCache.clear();
       this._posterPending.clear();
+      this._posterFailed.clear();
       this._objectCache.clear();
     }
 
