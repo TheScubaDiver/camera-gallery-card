@@ -1,0 +1,53 @@
+name: PR title
+
+# `amannn/action-semantic-pull-request` makes an authenticated API call to
+# read the PR; on a fork-originated `pull_request` the GITHUB_TOKEN's scope
+# is too narrow and the action 404s. The action's documented fix is to run
+# under `pull_request_target` instead, which executes in the upstream's
+# context with a token that can read the PR — but `pull_request_target`
+# reads workflows from the base branch, so this file has to be on `main`
+# before it can lint anything.
+#
+# Safety: this workflow does NOT check out PR code or run any contributor
+# scripts. It only reads the PR title from the event payload via an Action
+# and exits. The well-known `pull_request_target` security risk only
+# applies when a workflow runs untrusted PR code with elevated tokens.
+
+on:
+  pull_request_target:
+    types: [opened, edited, reopened, synchronize]
+
+permissions:
+  pull-requests: read
+
+concurrency:
+  group: pr-title-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  pr-title:
+    name: Check PR title is conventional
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - uses: amannn/action-semantic-pull-request@v6
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          types: |
+            feat
+            fix
+            perf
+            refactor
+            docs
+            style
+            test
+            build
+            ci
+            chore
+            revert
+          requireScope: false
+          subjectPattern: ^[a-z].+[^.]$
+          subjectPatternError: |
+            The PR title subject must start with a lowercase letter and not end with a period.
+            Example: "feat: add multi-camera live view".
