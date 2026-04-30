@@ -406,6 +406,7 @@ class CameraGalleryCard extends LitElement {
     const cameraIds = Array.isArray(this.config?.live_camera_entities)
       ? this.config.live_camera_entities
       : [];
+
     const menuIds = (this.config?.menu_buttons ?? []).map(b => b.entity).filter(Boolean);
     const watchIds = [...sensorIds, ...cameraIds, ...menuIds];
 
@@ -1046,9 +1047,6 @@ class CameraGalleryCard extends LitElement {
       .filter((entityId) => {
         const st = states[entityId];
         if (!st) return false;
-
-        const state = String(st.state || "").toLowerCase();
-        if (state === "unavailable" || state === "unknown") return false;
 
         if (!allowed.includes(entityId)) return false;
 
@@ -2063,14 +2061,14 @@ class CameraGalleryCard extends LitElement {
       }
       const camState = st.state ?? "";
       if (camState === "unavailable" || camState === "unknown") {
-        const picPath = st.attributes?.entity_picture ?? "";
-        const picUrl = picPath ? this._hass.hassUrl(picPath) : "";
+        const picUrl = "";
         return html`
           <div class="live-offline">
             ${picUrl ? html`<img class="live-offline-img" src="${picUrl}" alt="" />` : html``}
             <div class="live-offline-badge">
               <ha-icon icon="mdi:camera-off"></ha-icon>
-              <span>Offline</span>
+              <span>${this._friendlyCameraName(entity)}</span>
+              <span class="live-offline-state">Offline</span>
             </div>
           </div>
         `;
@@ -6016,6 +6014,11 @@ class CameraGalleryCard extends LitElement {
         --mdc-icon-size: 36px;
         width: 36px;
         height: 36px;
+      }
+      .live-offline-state {
+        font-size: 11px;
+        font-weight: 400;
+        opacity: 0.6;
       }
 
       .live-card-host {
