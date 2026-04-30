@@ -4689,13 +4689,11 @@ class CameraGalleryCard extends LitElement {
       !!this.config?.allow_bulk_delete &&
       !!sp;
 
-    const tsPosClass = this._isLiveActive()
+    const tsPosClass = this.config.bar_position === "bottom"
       ? "bottom"
-      : this.config.bar_position === "bottom"
-        ? "bottom"
-        : this.config.bar_position === "hidden"
-          ? "hidden"
-          : "top";
+      : this.config.bar_position === "hidden"
+        ? "hidden"
+        : "top";
 
     const previewGated = !!this.config?.clean_mode;
     const previewOpen = !previewGated || !!this._previewOpen;
@@ -4898,7 +4896,7 @@ class CameraGalleryCard extends LitElement {
               </div>
             ` : html``}
             ${isLive && !fixedMode ? html`
-              <div class="live-controls-bar ${this._pillsVisible || this._showLivePicker || this.config?.persistent_controls ? "visible" : ""}">
+              <div class="live-controls-bar ${tsPosClass} ${this._pillsVisible || this._showLivePicker || this.config?.persistent_controls ? "visible" : ""}">
                 <div class="live-controls-main">
                   ${livePillsLeft}${livePillsRight}
                 </div>
@@ -5971,6 +5969,7 @@ class CameraGalleryCard extends LitElement {
         top: 8px;
         left: 8px;
         right: 8px;
+        bottom: auto;
         display: flex;
         flex-direction: column;
         gap: 6px;
@@ -5985,6 +5984,13 @@ class CameraGalleryCard extends LitElement {
       }
       .live-controls-bar:not(.visible) .live-pill-btn {
         pointer-events: none;
+      }
+      .live-controls-bar.bottom {
+        top: auto;
+        bottom: 8px;
+      }
+      .live-controls-bar.hidden {
+        display: none;
       }
       .live-controls-main {
         display: flex;
@@ -7075,6 +7081,8 @@ const STYLE_SECTIONS = [
       { type: "color", hostId: "tsbar-txt-host", variable: "--cgc-tsbar-txt", label: "Text / icon color" },
       { type: "color", hostId: "pill-bg-host",   variable: "--cgc-pill-bg",   label: "Background color" },
       { type: "radius", variable: "--cgc-pill-size", label: "Size", min: 10, max: 28, default: 14 },
+      { type: "slider", id: "barop", valId: "barval", configKey: "bar_opacity", label: "Opacity", min: 0, max: 100, default: 45, unit: "%" },
+      { type: "select", configKey: "bar_position", label: "Position", disabledFn: (c) => c.controls_mode === "fixed", options: [{ value: "top", label: "Top" }, { value: "bottom", label: "Bottom" }, { value: "hidden", label: "Hidden" }] },
     ],
   },
   {
@@ -7960,6 +7968,37 @@ class CameraGalleryCardEditor extends HTMLElement {
       }, sig);
     });
 
+    this.shadowRoot.querySelectorAll("[data-seg-key]").forEach((el) => {
+      el.addEventListener("change", (e) => {
+        this._set(el.dataset.segKey, e.target.value);
+      }, sig);
+    });
+
+    this.shadowRoot.querySelectorAll("[data-config-slider]").forEach((slider) => {
+      const key = slider.dataset.configSlider;
+      const unit = slider.dataset.sliderUnit || "";
+      const defaultVal = Number(slider.dataset.sliderDefault);
+      const display = this.shadowRoot.getElementById(slider.dataset.sliderValId);
+
+      slider.addEventListener("input", (e) => {
+        if (display) display.textContent = e.target.value + unit;
+      }, sig);
+
+      slider.addEventListener("change", (e) => {
+        const v = Number(e.target.value);
+        if (display) display.textContent = v + unit;
+        this._set(key, Number.isFinite(v) ? v : defaultVal);
+      }, sig);
+    });
+
+    this.shadowRoot.querySelectorAll("[data-slider-reset]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const key = btn.dataset.sliderReset;
+        const defaultVal = Number(btn.dataset.sliderDefault);
+        this._set(key, defaultVal);
+      }, sig);
+    });
+
     this.shadowRoot.querySelectorAll("details.style-section").forEach((det) => {
       det.addEventListener("toggle", () => {
         const id = det.id.replace("style-section-", "");
@@ -8046,7 +8085,6 @@ class CameraGalleryCardEditor extends HTMLElement {
       return this._clampInt(n, 1, 500);
     })();
 
-    const tsPos = String(c.bar_position || "top");
     const previewPos = String(c.preview_position || "top");
     const objectFit = String(c.object_fit || "cover");
 
@@ -8101,8 +8139,6 @@ class CameraGalleryCardEditor extends HTMLElement {
     const liveAutoMuted =
       c.live_auto_muted !== undefined ? c.live_auto_muted === true : DEFAULT_LIVE_AUTO_MUTED;
 
-    const barDisabled = tsPos === "hidden";
-    const pillSize = Math.max(10, Math.min(28, Number(c.pill_size) || 14));
     const cleanMode = c.clean_mode === true;
     const persistentControls = c.persistent_controls === true;
 
@@ -8884,35 +8920,6 @@ class CameraGalleryCardEditor extends HTMLElement {
               </div>
 
               <div class="row">
-                <div class="lbl">Pill position</div>
-                <div class="segwrap">
-                  <button class="seg ${tsPos === "top" ? "on" : ""}" data-pos="top">Top</button>
-                  <button class="seg ${tsPos === "bottom" ? "on" : ""}" data-pos="bottom">Bottom</button>
-                  <button class="seg ${tsPos === "hidden" ? "on" : ""}" data-pos="hidden">Hidden</button>
-                </div>
-              </div>
-
-              <div class="row ${barDisabled ? "muted" : ""}">
-                <div class="lbl">Opacity pill</div>
-                <div class="barrow">
-                  <div class="barrow-top">
-                    <div class="pillval" id="barval">${barOpacity}%</div>
-                  </div>
-                  <input type="range" class="cgc-range" id="barop" min="0" max="100" step="1" ${barDisabled ? "disabled" : ""}>
-                </div>
-              </div>
-
-              <div class="row ${barDisabled ? "muted" : ""}">
-                <div class="lbl">Pill size</div>
-                <div class="barrow">
-                  <div class="barrow-top">
-                    <div class="pillval" id="pillsizeval">${pillSize}px</div>
-                  </div>
-                  <input type="range" class="cgc-range" id="pillsize" min="10" max="28" step="1" ${barDisabled ? "disabled" : ""}>
-                </div>
-              </div>
-
-              <div class="row">
                 <div class="lbl">Object filters</div>
                 <div class="objmeta">
                   <div class="countpill">Selected ${selectedCount}/${MAX_VISIBLE_OBJECT_FILTERS}</div>
@@ -9036,6 +9043,47 @@ class CameraGalleryCardEditor extends HTMLElement {
                                     >
                                     <span class="radius-value" id="radius-val-${safeId}">${val}px</span>
                                     <button type="button" class="color-reset" data-reset="${ctrl.variable}" title="Reset to default">
+                                      ${svgIcon('mdi:backup-restore', 16)}
+                                    </button>
+                                  </div>
+                                </div>
+                              `;
+                            }
+                            if (ctrl.type === "select") {
+                              const current = String(this._config?.[ctrl.configKey] || ctrl.options[0].value);
+                              const isDisabled = ctrl.disabledFn ? ctrl.disabledFn(this._config || {}) : false;
+                              const opts = ctrl.options.map((o) => `<option value="${o.value}" ${current === o.value ? "selected" : ""}>${o.label}</option>`).join("");
+                              return `
+                                <div class="color-row ${isDisabled ? "muted" : ""}">
+                                  <div class="lbl">${ctrl.label}</div>
+                                  <div class="selectwrap" style="min-width:120px">
+                                    <select class="select" data-seg-key="${ctrl.configKey}" ${isDisabled ? "disabled" : ""}>${opts}</select>
+                                    <span class="selarrow"></span>
+                                  </div>
+                                </div>
+                              `;
+                            }
+                            if (ctrl.type === "slider") {
+                              const n = Number(this._config?.[ctrl.configKey]);
+                              const val = Number.isFinite(n) ? Math.min(ctrl.max, Math.max(ctrl.min, n)) : ctrl.default;
+                              return `
+                                <div class="color-row">
+                                  <div class="lbl">${ctrl.label}</div>
+                                  <div class="color-controls">
+                                    <input
+                                      type="range"
+                                      class="radius-range"
+                                      data-config-slider="${ctrl.configKey}"
+                                      data-slider-val-id="${ctrl.valId}"
+                                      data-slider-unit="${ctrl.unit}"
+                                      data-slider-default="${ctrl.default}"
+                                      id="${ctrl.id}"
+                                      min="${ctrl.min}"
+                                      max="${ctrl.max}"
+                                      value="${val}"
+                                    >
+                                    <span class="radius-value" id="${ctrl.valId}">${val}${ctrl.unit}</span>
+                                    <button type="button" class="color-reset" data-slider-reset="${ctrl.configKey}" data-slider-default="${ctrl.default}" title="Reset to default">
                                       ${svgIcon('mdi:backup-restore', 16)}
                                     </button>
                                   </div>
@@ -10648,10 +10696,6 @@ if (oldPanel && tmp.firstElementChild) {
 
     const thumbEl = $("thumb");
     const maxmediaEl = $("maxmedia");
-    const baropEl = $("barop");
-    const barvalEl = $("barval");
-    const pillsizeEl = $("pillsize");
-    const pillsizevalEl = $("pillsizeval");
     const thumbpctEl = $("thumbpct");
     const thumbpctvalEl = $("thumbpctval");
 
@@ -10665,8 +10709,6 @@ if (oldPanel && tmp.firstElementChild) {
     this._setControlValue(folderFmtEl, folderDatetimeFormat);
     this._setControlValue(thumbEl, String(thumbSize));
     this._setControlValue(maxmediaEl, String(maxMedia));
-    this._setControlValue(baropEl, barOpacity);
-    this._setControlValue(pillsizeEl, pillSize);
     this._setControlValue(thumbpctEl, thumbFramePct);
     if (autoplayEl) autoplayEl.checked = autoplay;
     if (autoMutedEl) autoMutedEl.checked = autoMuted;
@@ -11502,40 +11544,6 @@ if (oldPanel && tmp.firstElementChild) {
       });
     }
 
-    this.shadowRoot.querySelectorAll(".seg[data-pos]").forEach((btn) => {
-      btn.addEventListener("click", () =>
-        this._set("bar_position", btn.dataset.pos)
-      );
-    });
-
-    const updateBarVal = (v) => {
-      if (barvalEl) barvalEl.textContent = `${v}%`;
-    };
-
-    baropEl?.addEventListener("input", (e) => {
-      const v = Number(e.target.value);
-      updateBarVal(v);
-    });
-
-    baropEl?.addEventListener("change", (e) => {
-      const v = Number(e.target.value);
-      updateBarVal(v);
-      this._set("bar_opacity", Number.isFinite(v) ? v : 45);
-    });
-
-    const updatePillSizeVal = (v) => {
-      if (pillsizevalEl) pillsizevalEl.textContent = `${v}px`;
-    };
-
-    pillsizeEl?.addEventListener("input", (e) => {
-      updatePillSizeVal(Number(e.target.value));
-    });
-
-    pillsizeEl?.addEventListener("change", (e) => {
-      const v = Number(e.target.value);
-      updatePillSizeVal(v);
-      this._set("pill_size", Number.isFinite(v) ? v : 14);
-    });
 
     const updateThumbPctVal = (v) => {
       if (thumbpctvalEl) thumbpctvalEl.textContent = `${v}%`;
