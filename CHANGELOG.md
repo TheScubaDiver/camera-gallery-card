@@ -1,5 +1,26 @@
 # Changelog
 
+## [2.8.0](https://github.com/TheScubaDiver/camera-gallery-card/compare/v2.7.0...v2.8.0) (2026-04-30)
+
+
+### Features
+
+* show placeholder for offline/unavailable live cameras ([#58](https://github.com/TheScubaDiver/camera-gallery-card/issues/58)) ([6bc23ef](https://github.com/TheScubaDiver/camera-gallery-card/commit/6bc23efcce1a942bf26f423fe94c2da81fc8eac9))
+
+
+### Bug Fixes
+
+* explicit-only datetime parsing and traverse newest folder first ([#56](https://github.com/TheScubaDiver/camera-gallery-card/issues/56)) ([3322efa](https://github.com/TheScubaDiver/camera-gallery-card/commit/3322efa448674f637b5750fa167462c4542ad6c1))
+* replace deprecated app-id with client-id in GitHub App token action ([#62](https://github.com/TheScubaDiver/camera-gallery-card/issues/62)) ([9a05562](https://github.com/TheScubaDiver/camera-gallery-card/commit/9a0556280086c05d8ea2fb2488b810db98fe0b56))
+* stop spamming 404s and decode errors on broken media files ([#55](https://github.com/TheScubaDiver/camera-gallery-card/issues/55)) ([ce0d150](https://github.com/TheScubaDiver/camera-gallery-card/commit/ce0d15066799d567c2244d4d25dde7acb5d3c540))
+
+
+### Code Refactoring
+
+* distribute bundle as release asset only ([#63](https://github.com/TheScubaDiver/camera-gallery-card/issues/63)) ([ba3a92e](https://github.com/TheScubaDiver/camera-gallery-card/commit/ba3a92ea2a7f203e058c6aed9209370693950fcd))
+* extract const.ts and typing baseline ([#53](https://github.com/TheScubaDiver/camera-gallery-card/issues/53)) ([ffafcc1](https://github.com/TheScubaDiver/camera-gallery-card/commit/ffafcc1bb15e8107583855eb62977d01500f7a59))
+* move pill controls from thumbnails tab to styling section ([#61](https://github.com/TheScubaDiver/camera-gallery-card/issues/61)) ([2fe2e66](https://github.com/TheScubaDiver/camera-gallery-card/commit/2fe2e66a99318f6fd44d196c58f8e16538aacc07))
+
 ## [2.7.0](https://github.com/TheScubaDiver/camera-gallery-card/compare/v2.6.0...v2.7.0) (2026-04-28)
 
 
