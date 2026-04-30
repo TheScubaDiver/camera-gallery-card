@@ -19,13 +19,11 @@ apple-music-search-card.js
 node_modules/
 .env
 
-# Build artifacts. The bundle (dist/camera-gallery-card.js) lives on main
-# only — sync-bundle.yml (re)builds and force-commits it after every push,
-# and release.yml does the same on the release PR's branch. Contributors
-# never commit it themselves, which is why the path is gitignored here:
-# it makes accidental dist commits (and their resulting merge conflicts)
-# impossible on PR branches. The bot bypasses the ignore via `git add -f`.
-# HACS still serves the file from the repo (hacs.json: content_in_root: false).
+# Build artifacts. The bundle (dist/camera-gallery-card.js) is never
+# committed — release.yml builds it from the tagged source and attaches
+# it to the GitHub Release as an asset. HACS picks it up from there
+# (hacs.json: hide_default_branch: true blocks default-branch installs,
+# so users always get the asset from a tagged release).
 dist/
 
 # Tooling caches

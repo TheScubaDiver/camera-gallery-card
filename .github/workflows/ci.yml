@@ -39,9 +39,8 @@ jobs:
       - name: Format check
         run: npm run format:check
 
-      # Verifies the bundle still builds clean from src/. The committed
-      # dist/camera-gallery-card.js is *not* required to be in sync with src/
-      # on PR branches — sync-bundle.yml handles that automatically after each
-      # push to main, and release.yml handles it on the release PR's branch.
+      # Verifies the bundle still builds clean from src/. The bundle is not
+      # committed to the repo — release.yml builds it from the tagged source
+      # and attaches it to the GitHub Release as an asset.
       - name: Build
         run: npm run build

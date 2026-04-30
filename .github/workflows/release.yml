@@ -20,14 +20,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
-      # release-please-action's `pr` output is the JSON of the release PR it
-      # opened or updated *this run*, OR an empty string if no PR work was
-      # done (typical when the previous release was just merged and a tag was
-      # cut — see `release_created` below). The empty-string check downstream
-      # depends on this; if release-please ever changes that contract and
-      # emits `pr` on tag creation too, sync-bundle-in-release-pr would try
-      # to check out a deleted branch and fail.
-      pr_branch: ${{ steps.release.outputs.pr && fromJSON(steps.release.outputs.pr).headBranchName || '' }}
       release_created: ${{ steps.release.outputs.release_created }}
       tag_name: ${{ steps.release.outputs.tag_name }}
     steps:
@@ -54,33 +46,22 @@ jobs:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 
-  # When release-please opens or updates a release PR, rebuild the bundle on
-  # that PR's branch so the release commit ships a bundle whose CARD_VERSION
-  # matches the bumped package.json. Has to live in the same workflow as
-  # release-please-action: a separate `pull_request`-triggered workflow would
-  # never fire, because the release PR is opened by the bot — its `opened`
-  # and `synchronize` events use a token that doesn't trigger downstream
-  # workflows from cross-workflow events.
-  sync-bundle-in-release-pr:
-    name: Sync bundle in release PR
+  # When release-please cuts a tag, build the bundle from the tagged source
+  # and attach it to the GitHub Release. The bundle is *not* committed to the
+  # repo — HACS picks it up from the release asset (hacs.json sets
+  # hide_default_branch: true so default-branch installs are disabled).
+  upload-bundle:
+    name: Upload bundle to GitHub Release
     needs: release-please
-    if: ${{ needs.release-please.outputs.pr_branch != '' }}
+    if: ${{ needs.release-please.outputs.release_created == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
       contents: write
     steps:
-      - name: Generate app token
-        id: app-token
-        uses: actions/create-github-app-token@v3
-        with:
-          client-id: ${{ vars.RELEASE_BOT_APP_ID }}
-          private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
-
       - uses: actions/checkout@v6
         with:
-          ref: ${{ needs.release-please.outputs.pr_branch }}
-          token: ${{ steps.app-token.outputs.token }}
+          ref: ${{ needs.release-please.outputs.tag_name }}
 
       - uses: actions/setup-node@v6
         with:
@@ -92,41 +73,6 @@ jobs:
 
       - name: Build bundle
         run: npm run build
-
-      - name: Commit rebuilt bundle if changed
-        run: |
-          if git diff --exit-code -- dist/camera-gallery-card.js; then
-            echo "Bundle already in sync with release PR — nothing to do."
-            exit 0
-          fi
-          git config user.name '${{ steps.app-token.outputs.app-slug }}[bot]'
-          git config user.email '${{ steps.app-token.outputs.app-slug }}[bot]@users.noreply.github.com'
-          # -f bypasses the dist/ gitignore — only the bot is allowed to
-          # commit the built bundle.
-          git add -f dist/camera-gallery-card.js
-          git commit -m "chore: rebuild bundle for release PR"
-          # --force-with-lease: if release-please pushed another update to the
-          # PR branch between our checkout and this push, fail loudly instead
-          # of overwriting it. The next release.yml run will catch up.
-          git push --force-with-lease
-
-  # When the release PR merges and release-please creates the GitHub Release,
-  # attach the committed bundle from the tagged commit. We don't rebuild here:
-  # the bundle on the tagged commit was already rebuilt inside the release PR
-  # by sync-bundle-in-release-pr, so reuse it verbatim — that way the release
-  # asset and the committed bundle are byte-identical.
-  upload-bundle:
-    name: Upload bundle to GitHub Release
-    needs: release-please
-    if: ${{ needs.release-please.outputs.release_created == 'true' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          ref: ${{ needs.release-please.outputs.tag_name }}
 
       - name: Upload bundle to GitHub Release
         uses: softprops/action-gh-release@v3

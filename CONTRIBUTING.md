@@ -103,9 +103,9 @@ Stop with Ctrl-C. Both watchers shut down together.
 npm run check
 ```
 
-This is the same set of steps CI runs on your PR — type-check, lint, prettier check, build, and bundle drift guard. If anything fails locally it'll fail on CI, so fix it now.
+This is the same set of steps CI runs on your PR — type-check, lint, prettier check, and build. If anything fails locally it'll fail on CI, so fix it now.
 
-If you touched anything in `src/`, **commit the rebuilt `dist/camera-gallery-card.js` alongside your source changes**. The drift guard rejects PRs where the committed bundle doesn't match what `npm run build` produces from `src/`.
+The built bundle (`dist/camera-gallery-card.js`) is **not committed** to the repo — `dist/` is gitignored. The release workflow builds it from the tagged source and attaches it to the GitHub Release as an asset. You should never need to stage anything under `dist/`.
 
 ### 7. Commit
 
@@ -136,7 +136,7 @@ A good PR description includes:
 CI runs on every push to your PR branch:
 
 - **Check PR title is conventional** — runs the [PR-title workflow](.github/workflows/pr-title.yml) against your title.
-- **build** — runs `npm run check` (typecheck, lint, format, build, drift guard).
+- **build** — runs `npm run check` (typecheck, lint, format, build).
 - **validate** — runs HACS structural validation.
 
 If any of these fail, fix and push again. Each push re-runs CI automatically.
@@ -156,7 +156,6 @@ On every push to `main`, the [Release workflow](.github/workflows/release.yml) r
 1. Reads the new conventional-commit message.
 2. Decides whether to bump major (breaking change), minor (`feat`), patch (`fix` / `perf`), or do nothing (`chore`, `docs`, `ci`, `refactor`, etc).
 3. Opens (or updates) a single PR titled something like `chore(main): release 2.7.0` that bumps `package.json` and regenerates `CHANGELOG.md`.
-4. A follow-up job in the same workflow rebuilds `dist/camera-gallery-card.js` so the release commit ships a bundle whose `CARD_VERSION` matches the bumped version.
 
 **Where to look:** the **Pull requests** tab on the upstream repo. The release PR will be open and labeled `autorelease: pending`. CI runs on it like any other PR.
 
@@ -168,9 +167,9 @@ When a maintainer is ready, they squash-merge the release PR. release-please the
 
 1. Tags `vX.Y.Z` on `main`.
 2. Creates a GitHub Release at that tag.
-3. Attaches `dist/camera-gallery-card.js` as a release asset.
+3. The follow-up `upload-bundle` job in [release.yml](.github/workflows/release.yml) checks out the tag, runs `npm run build`, and attaches `dist/camera-gallery-card.js` as a release asset.
 
-HACS picks up the new release automatically — users on tagged installs get it via the release asset, users on the default branch get the bundle that's already committed to `main`.
+HACS picks up the new release automatically. The built bundle lives **only** in release assets — it's not committed to the repo, and `hacs.json` sets `hide_default_branch: true` so HACS doesn't offer default-branch installs.
 
 **Where to look:** the **Releases** sidebar on the repo. A new release should appear within ~30 seconds of the release PR merging. The asset (`camera-gallery-card.js`) should be listed as a downloadable file.
 
@@ -257,7 +256,6 @@ Both loaders get rsynced to HA alongside the bundle. The rsync logic lives in [`
 - **rsync says "permission denied" or "no such directory"**: run the SSH `mkdir`+`chown` command from [step 3](#3-one-time-local-setup) once. The target directory has to exist and be owned by your SSH user.
 - **rsync isn't found / Windows**: the dev loop uses `rsync` and `ssh`. On Windows, run it under WSL.
 - **Card doesn't update in the browser after a change**: cache. The dev loaders sidestep this; if you wired up a different resource URL, hard-refresh with Ctrl/Cmd-Shift-R or switch to `loader-hot.js`. Also check Lovelace → Resources for a stale `/hacsfiles/camera-gallery-card/...` entry — only one resource per custom-element tag works, so leave just `/local/dev/loader.js` (or `loader-hot.js`) while developing.
-- **`drift guard` CI step fails**: you changed `src/` but didn't commit the rebuilt bundle. Run `npm run build` and commit `dist/camera-gallery-card.js`.
 - **PR-title check fails**: your title isn't a [conventional commit](#commit-and-pr-title-format). Edit it on the GitHub PR page; the check re-runs automatically.
 
 ## Maintainer notes
@@ -270,7 +268,7 @@ After merging a PR, the **Release** workflow run on `main` is what to watch. It 
 If the workflow run fails, click into the failed job to diagnose. Common causes:
 
 - **Token errors** (`error:1E08010C:DECODER routines::unsupported`, `Bad credentials`): the `RELEASE_BOT_PRIVATE_KEY` secret or `RELEASE_BOT_CLIENT_ID` variable on the upstream repo is misconfigured.
-- **Drift guard fails on the release PR**: the rebuild-bundle step in `release.yml` should have caught this — investigate why it didn't run.
+- **`upload-bundle` job fails**: the build step at the tagged commit failed, or the asset upload itself failed. Re-running the workflow usually works for transient asset-upload failures; build failures need a fix in `src/` and a new release.
 
 When merging the release PR, double-check:
 

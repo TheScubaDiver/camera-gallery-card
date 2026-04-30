@@ -2,6 +2,7 @@
   "name": "Camera Gallery Card",
   "filename": "camera-gallery-card.js",
   "content_in_root": false,
+  "hide_default_branch": true,
   "render_readme": true,
   "homeassistant": "2023.9.0"
 }
