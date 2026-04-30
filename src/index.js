@@ -3061,7 +3061,7 @@ class CameraGalleryCard extends LitElement {
       h ^= key.charCodeAt(i);
       h = Math.imul(h, 16777619) >>> 0;
     }
-    return "cgc_mswalk2_" + h.toString(36);
+    return "cgc_mswalk3_" + h.toString(36);
   }
 
   _msWalkCacheSave(key, list) {
@@ -4177,7 +4177,10 @@ class CameraGalleryCard extends LitElement {
       );
     }
 
-    if (!folder_datetime_format && !filename_datetime_format) {
+    const hasFrigateSource =
+      !!String(config.frigate_url || "").trim() ||
+      [...mediaSourcesClean, mediaRaw].some((s) => s.includes("frigate"));
+    if (!folder_datetime_format && !filename_datetime_format && !hasFrigateSource) {
       throw new Error(
         "camera-gallery-card: 'folder_datetime_format' or 'filename_datetime_format' is required so files can be grouped by date"
       );
