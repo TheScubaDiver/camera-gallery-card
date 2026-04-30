@@ -64,7 +64,9 @@ jobs:
           fi
           git config user.name '${{ steps.app-token.outputs.app-slug }}[bot]'
           git config user.email '${{ steps.app-token.outputs.app-slug }}[bot]@users.noreply.github.com'
-          git add dist/camera-gallery-card.js
+          # -f bypasses the dist/ gitignore — only the bot is allowed to
+          # commit the built bundle.
+          git add -f dist/camera-gallery-card.js
           git commit -m "chore: sync bundle"
           # If another push to main raced ahead of us, fail loud instead of
           # overwriting it. The next push will trigger a fresh sync run that

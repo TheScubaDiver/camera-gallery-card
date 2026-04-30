@@ -101,7 +101,9 @@ jobs:
           fi
           git config user.name '${{ steps.app-token.outputs.app-slug }}[bot]'
           git config user.email '${{ steps.app-token.outputs.app-slug }}[bot]@users.noreply.github.com'
-          git add dist/camera-gallery-card.js
+          # -f bypasses the dist/ gitignore — only the bot is allowed to
+          # commit the built bundle.
+          git add -f dist/camera-gallery-card.js
           git commit -m "chore: rebuild bundle for release PR"
           # --force-with-lease: if release-please pushed another update to the
           # PR branch between our checkout and this push, fail loudly instead

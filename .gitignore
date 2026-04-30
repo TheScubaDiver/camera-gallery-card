@@ -19,11 +19,14 @@ apple-music-search-card.js
 node_modules/
 .env
 
-# Build artifacts. dist/camera-gallery-card.js stays tracked — HACS serves
-# it from there (hacs.json: content_in_root: false). Source maps and any
-# other dist artifacts are not tracked.
-dist/*
-!dist/camera-gallery-card.js
+# Build artifacts. The bundle (dist/camera-gallery-card.js) lives on main
+# only — sync-bundle.yml (re)builds and force-commits it after every push,
+# and release.yml does the same on the release PR's branch. Contributors
+# never commit it themselves, which is why the path is gitignored here:
+# it makes accidental dist commits (and their resulting merge conflicts)
+# impossible on PR branches. The bot bypasses the ignore via `git add -f`.
+# HACS still serves the file from the repo (hacs.json: content_in_root: false).
+dist/
 
 # Tooling caches
 *.tsbuildinfo

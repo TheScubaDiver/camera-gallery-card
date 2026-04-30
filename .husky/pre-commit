@@ -1,1 +1,12 @@
+# Block accidental commits of the built bundle. dist/camera-gallery-card.js
+# is bot-managed: sync-bundle.yml rebuilds and force-commits it after every
+# push to main. Contributors should never commit it themselves — it produces
+# merge conflicts when PRs land out of order. Bypass with `git commit --no-verify`
+# only if you really know what you're doing.
+if git diff --cached --name-only | grep -qx 'dist/camera-gallery-card.js'; then
+  echo "Error: dist/camera-gallery-card.js is bot-managed; do not commit it." >&2
+  echo "  Run \`git restore --staged dist/camera-gallery-card.js\` to unstage." >&2
+  exit 1
+fi
+
 npx lint-staged
