@@ -4,7 +4,8 @@
             ${t?N`<img class="live-offline-img" src="${t}" alt="" />`:N``}
             <div class="live-offline-badge">
               <ha-icon icon="mdi:camera-off"></ha-icon>
-              <span>Offline</span>
+              <span>${this._friendlyCameraName(t)}</span>
+              <span class="live-offline-state">Offline</span>
             </div>
           </div>
         `}}return N`
@@ -675,6 +676,11 @@
         --mdc-icon-size: 36px;
         width: 36px;
         height: 36px;
+      }
+      .live-offline-state {
+        font-size: 11px;
+        font-weight: 400;
+        opacity: 0.6;
       }
 
       .live-card-host {
