@@ -759,6 +759,17 @@ class CameraGalleryCard extends LitElement {
           }
         }
 
+        // Paired jpg thumbnails: resolve jpg before video so thumbnail is ready first
+        if (this._ms?.pairedThumbs?.size) {
+          for (const src of visibleThumbIds) {
+            if (src === selectedSrc) continue;
+            const pairedJpgId = this._ms.pairedThumbs.get(src);
+            if (pairedJpgId && !this._ms.urlCache.has(pairedJpgId) && !this._msResolveFailed.has(pairedJpgId)) {
+              want.push(pairedJpgId);
+            }
+          }
+        }
+
         for (const src of visibleThumbIds) {
           if (src !== selectedSrc) want.push(src);
         }
@@ -2564,6 +2575,20 @@ class CameraGalleryCard extends LitElement {
       }
     }
 
+    // Paired thumbnail: same-stem jpg next to the mp4
+    const pairedJpgId = this._ms?.pairedThumbs?.get(it.src);
+    if (pairedJpgId && !this._msResolveFailed.has(pairedJpgId)) {
+      const jpgUrl = this._ms?.urlCache?.get(pairedJpgId) || "";
+      if (jpgUrl) {
+        const cached = this._posterCache.get(jpgUrl);
+        if (cached) return cached;
+        this._enqueuePoster(jpgUrl);
+        return "";
+      }
+      this._msQueueResolve([pairedJpgId]);
+      return "";
+    }
+
     // Skip poster-capture for the selected video — it's already loading as preview;
     // double-loading the same MS URL blocks autoplay.
     for (const url of [tThumb, thumbUrl]) {
@@ -2985,9 +3010,10 @@ class CameraGalleryCard extends LitElement {
         return a.title < b.title ? 1 : a.title > b.title ? -1 : 0;
       });
 
-      this._msSetList(items.slice(0, internalCap));
+      const itemsToSave = items.slice(0, internalCap);
+      this._msSetList(itemsToSave);
       this._ms.loadedAt = Date.now();
-      this._msWalkCacheSave(key, this._ms.list);
+      this._msWalkCacheSave(key, itemsToSave);
     } catch (e) {
       console.warn("MS ensure load failed:", e);
       console.warn("MS roots used:", roots);
@@ -3081,9 +3107,31 @@ class CameraGalleryCard extends LitElement {
       .join(" | ");
   }
 
+  _msPairThumbnails(items) {
+    const videosByStem = new Map();
+    for (let i = 0; i < items.length; i++) {
+      const m = String(items[i].id || "").match(/([^/]+)\.(mp4|webm|mov|m4v)$/i);
+      if (m) videosByStem.set(m[1].toLowerCase(), i);
+    }
+    const pairedThumbs = new Map();
+    const toRemove = new Set();
+    for (let i = 0; i < items.length; i++) {
+      const m = String(items[i].id || "").match(/([^/]+)\.(jpg|jpeg|png|webp)$/i);
+      if (!m) continue;
+      const vidIdx = videosByStem.get(m[1].toLowerCase());
+      if (vidIdx === undefined) continue;
+      pairedThumbs.set(items[vidIdx].id, items[i].id);
+      toRemove.add(i);
+    }
+    const filtered = toRemove.size ? items.filter((_, i) => !toRemove.has(i)) : items;
+    return { items: filtered, pairedThumbs };
+  }
+
   _msSetList(items) {
-    this._ms.list = items;
-    this._ms.listIndex = new Map(items.map((x) => [x.id, x]));
+    const { items: paired, pairedThumbs } = this._msPairThumbnails(Array.isArray(items) ? [...items] : []);
+    this._ms.list = paired;
+    this._ms.listIndex = new Map(paired.map((x) => [x.id, x]));
+    this._ms.pairedThumbs = pairedThumbs;
   }
 
   _msMetaById(id) {
@@ -5039,7 +5087,7 @@ class CameraGalleryCard extends LitElement {
                     }
 
                     const needsResolve = isMs;
-                    const hasUrl = !needsResolve || !!thumbUrl || !!tThumb;
+                    const hasUrl = !needsResolve || !!thumbUrl || !!tThumb || !!poster;
                     // For media source: show as soon as poster is ready — no observer gate needed
                     // because we eagerly resolve all visible items. For sensor mode: keep lazy
                     // reveal via IntersectionObserver to avoid loading off-screen video frames.
