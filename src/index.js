@@ -107,6 +107,7 @@ class CameraGalleryCard extends LitElement {
       _hamburgerOpen: { type: Boolean },
       _filterVideo: { type: Boolean },
       _filterImage: { type: Boolean },
+      _filterFavorites: { type: Boolean },
     };
   }
 
@@ -151,6 +152,7 @@ class CameraGalleryCard extends LitElement {
     this._objectFilters = [];
     this._filterVideo = false;
     this._filterImage = false;
+    this._filterFavorites = false;
     this._pendingScrollToI = null;
     this._posterCache = new Map();
     this._msBrowseTtlCache = new Map();
@@ -178,6 +180,7 @@ class CameraGalleryCard extends LitElement {
     this._pillsHideActive = false;
     this._srcEntityMap = new Map();
     this._sensorPairedThumbs = new Map();
+    this._favorites = new Set();
     this._suppressNextThumbClick = false;
     this._swipeStartX = 0;
     this._swipeStartY = 0;
@@ -2675,6 +2678,32 @@ class CameraGalleryCard extends LitElement {
     return "cgc_p_" + h.toString(36);
   }
 
+  _favKey() {
+    const id = [
+      ...(this.config?.entities ?? (this.config?.entity ? [this.config.entity] : [])),
+      ...(this.config?.media_sources ?? (this.config?.media_source ? [this.config.media_source] : [])),
+    ].sort().join("|");
+    return "cgc_favs_" + this._thumbHash(id);
+  }
+
+  _loadFavorites() {
+    try {
+      const raw = localStorage.getItem(this._favKey());
+      this._favorites = raw ? new Set(JSON.parse(raw)) : new Set();
+    } catch (_) { this._favorites = new Set(); }
+  }
+
+  _saveFavorites() {
+    try { localStorage.setItem(this._favKey(), JSON.stringify([...this._favorites])); } catch (_) {}
+  }
+
+  _toggleFavorite(src) {
+    if (this._favorites.has(src)) this._favorites.delete(src);
+    else this._favorites.add(src);
+    this._saveFavorites();
+    this.requestUpdate();
+  }
+
   // Salt the localStorage key with the current frame %, so changing the % invalidates
   // cached frames without needing to wipe storage.
   _lsKey(url) {
@@ -3868,6 +3897,14 @@ class CameraGalleryCard extends LitElement {
     this.requestUpdate();
   }
 
+  _toggleFilterFavorites() {
+    this._filterFavorites = !this._filterFavorites;
+    this._selectedIndex = 0;
+    this._pendingScrollToI = null;
+    this._forceThumbReset = true;
+    this.requestUpdate();
+  }
+
   // ─── Selection / bulk delete ──────────────────────────────────────
 
   async _bulkDelete(selectedSrcList) {
@@ -4381,6 +4418,7 @@ class CameraGalleryCard extends LitElement {
     };
 
     this.config = nextConfig;
+    this._loadFavorites();
     this._startMediaPoll();
 
     const changedKeys = prevConfig
@@ -4704,7 +4742,10 @@ class CameraGalleryCard extends LitElement {
     const showTypeFilter = videoCount > 0 && imageCount > 0;
     if (!showTypeFilter) { this._filterVideo = false; this._filterImage = false; }
 
-    const filteredAll = objFiltered.filter((x) => this._matchesTypeFilter(x.src));
+    const filteredAll = objFiltered.filter((x) =>
+      this._matchesTypeFilter(x.src) &&
+      (!this._filterFavorites || this._favorites.has(x.src))
+    );
 
     const noResultsForFilter = !filteredAll.length;
 
@@ -5237,6 +5278,16 @@ class CameraGalleryCard extends LitElement {
                               </div>
                             `
                           : html``}
+
+                        <div
+                          class="fav-btn ${this._favorites.has(it.src) ? 'on' : ''}"
+                          @click=${(e) => { e.stopPropagation(); this._toggleFavorite(it.src); }}
+                          @pointerdown=${(e) => e.stopPropagation()}
+                          role="button"
+                          title="Favoriet"
+                        >
+                          <ha-icon icon="${this._favorites.has(it.src) ? 'mdi:star' : 'mdi:star-outline'}"></ha-icon>
+                        </div>
                       </button>
                     `;
                   })}
@@ -5245,7 +5296,9 @@ class CameraGalleryCard extends LitElement {
             : noResultsForFilter
               ? html`
                   <div class="thumbs-empty-state">
-                    No ${this._filterLabelList(this._objectFilters)} media for this day.
+                    ${this._filterFavorites
+                      ? "No favorites for this day."
+                      : `No ${this._filterLabelList(this._objectFilters)} media for this day.`}
                   </div>
                 `
               : html``}
@@ -5313,6 +5366,12 @@ class CameraGalleryCard extends LitElement {
                   </button>
                 </div>
               ` : html``}
+
+              <div class="seg">
+                <button class="segbtn ${this._filterFavorites ? "on" : ""}" @click=${() => this._toggleFilterFavorites()} title="Favorieten" style="border-radius:10px">
+                  <ha-icon icon="mdi:star" style="--mdc-icon-size:16px"></ha-icon>
+                </button>
+              </div>
 
               ${showLiveToggle
                 ? html`
@@ -6647,6 +6706,30 @@ class CameraGalleryCard extends LitElement {
         width: var(--ha-icon-size);
         height: var(--ha-icon-size);
         flex: 0 0 auto;
+      }
+
+      .fav-btn {
+        position: absolute;
+        bottom: 4px;
+        left: 4px;
+        background: none;
+        border: none;
+        padding: 0;
+        cursor: pointer;
+        color: rgba(255,255,255,0.5);
+        --mdc-icon-size: 22px;
+        --ha-icon-size: 22px;
+        width: 22px;
+        height: 22px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        transition: color 0.15s ease;
+        filter: drop-shadow(0 1px 2px rgba(0,0,0,0.6));
+      }
+
+      .fav-btn.on {
+        color: gold;
       }
 
       .selOverlay {
