@@ -177,6 +177,7 @@ class CameraGalleryCard extends LitElement {
     this._pillsTimer = null;
     this._pillsHideActive = false;
     this._srcEntityMap = new Map();
+    this._sensorPairedThumbs = new Map();
     this._suppressNextThumbClick = false;
     this._swipeStartX = 0;
     this._swipeStartY = 0;
@@ -2564,7 +2565,11 @@ class CameraGalleryCard extends LitElement {
   // Resolve the poster URL to render for a video thumb.
   // Side effects: enqueues poster capture / snapshot resolution when needed.
   _resolveVideoPoster(it, isMs, thumbUrl, tThumb, selectedUrl) {
-    if (!isMs) return this._posterCache.get(it.src) || "";
+    if (!isMs) {
+      const pairedJpg = this._sensorPairedThumbs?.get(it.src);
+      if (pairedJpg) return this._posterCache.get(pairedJpg) || "";
+      return this._posterCache.get(it.src) || "";
+    }
 
     if (hasFrigateConfig(this.config)) {
       const snapshotId = this._findMatchingSnapshotMediaId(it.src);
@@ -3127,6 +3132,26 @@ class CameraGalleryCard extends LitElement {
     return { items: filtered, pairedThumbs };
   }
 
+  _pairSensorItems(items) {
+    const videosByStem = new Map();
+    for (let i = 0; i < items.length; i++) {
+      const m = String(items[i].src || "").match(/([^/]+)\.(mp4|webm|mov|m4v)$/i);
+      if (m) videosByStem.set(m[1].toLowerCase(), i);
+    }
+    const pairedThumbs = new Map();
+    const toRemove = new Set();
+    for (let i = 0; i < items.length; i++) {
+      const m = String(items[i].src || "").match(/([^/]+)\.(jpg|jpeg|png|webp)$/i);
+      if (!m) continue;
+      const vidIdx = videosByStem.get(m[1].toLowerCase());
+      if (vidIdx === undefined) continue;
+      pairedThumbs.set(items[vidIdx].src, items[i].src);
+      toRemove.add(i);
+    }
+    const filtered = toRemove.size ? items.filter((_, i) => !toRemove.has(i)) : items;
+    return { items: filtered, pairedThumbs };
+  }
+
   _msSetList(items) {
     const { items: paired, pairedThumbs } = this._msPairThumbnails(Array.isArray(items) ? [...items] : []);
     this._ms.list = paired;
@@ -3404,9 +3429,11 @@ class CameraGalleryCard extends LitElement {
         }
         sensorList.push(...part);
       }
-      sensorList = this._dedupeByRelPath(sensorList).map(enrich);
+      const enrichedSensor = this._dedupeByRelPath(sensorList).map(enrich);
+      const { items: pairedSensor, pairedThumbs: sensorPaired } = this._pairSensorItems(enrichedSensor);
+      this._sensorPairedThumbs = sensorPaired;
       const msItems = this._dedupeByRelPath(this._msIds()).map(enrich);
-      const merged = this._dedupeByRelPath([...sensorList, ...msItems]);
+      const merged = this._dedupeByRelPath([...pairedSensor, ...msItems]);
       return this._deleted?.size
         ? merged.filter((it) => !this._deleted.has(it.src))
         : merged;
@@ -3460,7 +3487,10 @@ class CameraGalleryCard extends LitElement {
       list = list.filter((src) => !this._deleted.has(src));
     }
 
-    return list.map(enrich);
+    const enriched = list.map(enrich);
+    const { items: paired, pairedThumbs } = this._pairSensorItems(enriched);
+    this._sensorPairedThumbs = pairedThumbs;
+    return paired;
   }
 
   _isVideoSmart(urlOrTitle, mime, cls) {
@@ -4608,7 +4638,8 @@ class CameraGalleryCard extends LitElement {
               }
               // Viewport-aware poster prioritization: enqueue only when visible
               if (isSensor && key && this._isVideo(key)) {
-                this._enqueuePoster(key);
+                const pairedJpg = this._sensorPairedThumbs?.get(key);
+                this._enqueuePoster(pairedJpg || key);
               }
             }
           }
