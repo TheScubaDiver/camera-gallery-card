@@ -12,13 +12,13 @@ updates:
       prefix: chore
       include: scope
     groups:
-      # Bundle all dev-tooling minor + patch updates into a single weekly PR.
-      # Major bumps fall through to individual PRs so they get a closer look.
+      # Bundle all dev-tooling updates into a single weekly PR.
       # Production deps (lit) are not in this group, so they always get an
       # individual PR for careful review — they affect the shipped bundle.
       dev-tooling:
         dependency-type: development
         update-types:
+          - "major"
           - "minor"
           - "patch"
         patterns:

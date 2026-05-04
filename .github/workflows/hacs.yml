@@ -16,6 +16,15 @@ concurrency:
 
 jobs:
   validate:
+    # Skip on fork PRs: hacs/action validates the PR's head repo against the
+    # HACS plugin contract, which requires at least one published Release with
+    # the bundled asset. Forks rarely have releases (the bundle pipeline only
+    # runs upstream), so the check fails on every fork PR with a structural
+    # "not loaded properly in HACS" error that has nothing to do with the
+    # actual diff. Skipping it for fork PRs keeps the signal honest — the
+    # check still runs on push events (tags + main) and on PRs from upstream
+    # branches, which is where the structural validation actually matters.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

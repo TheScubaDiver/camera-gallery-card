@@ -11,6 +11,18 @@ import {
   extractDayKey,
   uniqueDays,
 } from "./data/datetime-parsing";
+import { configDiff } from "./config/diff";
+import { migrateLegacyKeys, normalizeConfig } from "./config/normalize";
+import {
+  filterLabel,
+  filterLabelList,
+  getFilterAliases,
+  itemFilenameForFilter,
+  matchesObjectFilterForFileSensor,
+  objectColor,
+  objectIcon,
+  sensorTextForFilter,
+} from "./data/object-filters";
 import {
   FRIGATE_SNAPSHOTS_ROOT,
   FRIGATE_URI_PREFIX,
@@ -38,9 +50,10 @@ import {
   DEFAULT_BROWSE_TIMEOUT_MS,
   DEFAULT_CLEAN_MODE,
   DEFAULT_DELETE_CONFIRM,
-  DEFAULT_DELETE_PREFIX,
   DEFAULT_DELETE_SERVICE,
+  DELETE_PREFIX_NORMALIZED,
   DEFAULT_FRIGATE_API_LIMIT,
+  FRIGATE_API_RETRY_AFTER_MS,
   DEFAULT_LIVE_AUTO_MUTED,
   DEFAULT_LIVE_ENABLED,
   DEFAULT_MAX_MEDIA,
@@ -163,6 +176,9 @@ class CameraGalleryCard extends LitElement {
     this._posterFailed = new Set();
     this._snapshotCache = new Map();
     this._frigateSnapshots = [];
+    // Unsubscribe callback for HA WS Frigate-event-push subscription.
+    // null = not subscribed, function = active subscription.
+    this._frigateEventsUnsub = null;
     this._objectCache = new Map();
     this._previewOpen = false;
     this._selectMode = false;
@@ -374,6 +390,10 @@ class CameraGalleryCard extends LitElement {
     window.addEventListener('mouseup', this._onZoomMouseUp);
     if (navigator.maxTouchPoints > 0) this._showPills(5000);
     this._startMediaPoll();
+    // Idempotent — if hass isn't set yet, returns early; the firstHass branch
+    // in `set hass` then catches it. Covers disconnect→reconnect cycles where
+    // _hass stays set but the previous subscription was torn down.
+    this._subscribeFrigateEvents();
   }
 
   disconnectedCallback() {
@@ -392,6 +412,7 @@ class CameraGalleryCard extends LitElement {
     if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
 
     this._stopMediaPoll();
+    this._unsubscribeFrigateEvents();
     if (this._liveQuickSwitchTimer) clearTimeout(this._liveQuickSwitchTimer);
     if (this._navHideT) clearTimeout(this._navHideT);
     if (this._bulkHintTimer) clearTimeout(this._bulkHintTimer);
@@ -423,6 +444,8 @@ class CameraGalleryCard extends LitElement {
       if (this.config?.start_mode === "live" && this._hasLiveConfig()) {
         this._viewMode = "live";
       }
+      // Fire-and-forget: subscribe to HA's Frigate event push stream.
+      this._subscribeFrigateEvents();
       this.requestUpdate();
       return;
     }
@@ -451,6 +474,82 @@ class CameraGalleryCard extends LitElement {
 
   get hass() {
     return this._hass;
+  }
+
+  // ─── Frigate WS event push ─────────────────────────────────────────
+  //
+  // Subscribe to HA's `frigate/events/subscribe` WS endpoint so new Frigate
+  // events arrive as push messages over the WebSocket connection HA already
+  // keeps alive. On any push we invalidate the freshness gate and trigger a
+  // refresh. Falls back silently when HA's Frigate integration isn't present.
+
+  _frigateInstanceId() {
+    // HA's Frigate integration uses a per-instance client_id. The second
+    // segment of a `media-source://frigate/<client_id>/…` URI is that id.
+    const sources = Array.isArray(this.config?.media_sources)
+      ? this.config.media_sources
+      : [];
+    for (const ms of sources) {
+      const m = String(ms || "").match(/^media-source:\/\/frigate\/([^/]+)/);
+      if (m) return m[1];
+    }
+    return null;
+  }
+
+  async _subscribeFrigateEvents() {
+    if (this._frigateEventsUnsub) return;
+    const conn = this._hass?.connection;
+    if (!conn) return;
+    const sm = this.config?.source_mode;
+    if (sm !== "media" && sm !== "combined") return;
+    const instanceId = this._frigateInstanceId();
+    if (!instanceId) return;
+    try {
+      this._frigateEventsUnsub = await conn.subscribeMessage(
+        (data) => this._onFrigateEventPush(data),
+        { type: "frigate/events/subscribe", instance_id: instanceId }
+      );
+    } catch (_) {
+      // Frigate integration not installed or HA version too old — fall through
+      // to existing polling behavior.
+      this._frigateEventsUnsub = null;
+    }
+  }
+
+  _unsubscribeFrigateEvents() {
+    if (this._frigateEventsUnsub) {
+      try { this._frigateEventsUnsub(); } catch (_) {}
+      this._frigateEventsUnsub = null;
+    }
+  }
+
+  _onFrigateEventPush(data) {
+    // Frigate pushes 'new' / 'update' / 'end' messages per event. Only refresh
+    // on 'end' — the clip is finalized then, and we avoid 3× walks per event.
+    let payload;
+    try {
+      payload = typeof data === "string" ? JSON.parse(data) : data;
+    } catch (_) {
+      return;
+    }
+    if (payload?.type !== "end") return;
+
+    if (this._ms) {
+      // Bypass freshness gate.
+      this._ms.loadedAt = 0;
+      // Bypass the persistent walk cache so we do a real media-source walk
+      // instead of replaying stale localStorage data.
+      try {
+        const roots = Array.isArray(this.config?.media_sources)
+          ? this.config.media_sources
+          : [];
+        if (roots.length) {
+          const cacheKey = this._msWalkCacheKey(this._msKeyFromRoots(roots));
+          localStorage.removeItem(cacheKey);
+        }
+      } catch (_) {}
+    }
+    this._msEnsureLoaded();
   }
 
   // ─── Generic helpers ───────────────────────────────────────────────
@@ -494,7 +593,7 @@ class CameraGalleryCard extends LitElement {
       (x) => this._matchesObjectFilter(x.src) && this._matchesTypeFilter(x.src)
     );
 
-    const cap = this._normMaxMedia(this.config?.max_media);
+    const cap = (this.config?.max_media ?? DEFAULT_MAX_MEDIA);
     const filtered = filteredAll.slice(0, Math.min(cap, filteredAll.length));
 
     if (!filtered.length) {
@@ -716,7 +815,7 @@ class CameraGalleryCard extends LitElement {
 
   _scheduleVisibleMediaWork(selected, filtered, idx, usingMediaSource) {
     const selectedSrc = String(selected || "");
-    const cap = this._normMaxMedia(this.config?.max_media);
+    const cap = (this.config?.max_media ?? DEFAULT_MAX_MEDIA);
     const thumbRenderLimit = this._getThumbRenderLimit(cap, usingMediaSource);
 
     const visibleThumbIds = usingMediaSource
@@ -787,27 +886,6 @@ class CameraGalleryCard extends LitElement {
     });
   }
 
-  _normalizeEntityFilterMap(mapObj) {
-    const out = {};
-    const allowed = new Set(
-      AVAILABLE_OBJECT_FILTERS.map((x) => String(x).toLowerCase())
-    );
-
-    if (!mapObj || typeof mapObj !== "object" || Array.isArray(mapObj)) {
-      return out;
-    }
-
-    for (const [entityId, rawFilter] of Object.entries(mapObj)) {
-      const e = String(entityId || "").trim();
-      const f = String(rawFilter || "").toLowerCase().trim();
-
-      if (!e || !f || !allowed.has(f)) continue;
-      out[e] = f;
-    }
-
-    return out;
-  }
-
   _getAllLiveCameraEntities() {
     const states = this._hass?.states || {};
     const allowed = this.config?.live_camera_entities;
@@ -830,14 +908,6 @@ class CameraGalleryCard extends LitElement {
         const bn = this._friendlyCameraName(b).toLowerCase();
         return an.localeCompare(bn, resolveLocale(this._hass));
       });
-  }
-
-  _configChangedKeys(prev = {}, next = {}) {
-    const keys = new Set([
-      ...Object.keys(prev || {}),
-      ...Object.keys(next || {}),
-    ]);
-    return Array.from(keys).filter((k) => !this._jsonEq(prev?.[k], next?.[k]));
   }
 
   _thumbCanMultipleDelete() {
@@ -1003,148 +1073,8 @@ class CameraGalleryCard extends LitElement {
     return this._hasLiveConfig() && this._viewMode === "live";
   }
 
-  _isSourceConfigChange(keys = []) {
-    const sourceKeys = new Set([
-      "allow_bulk_delete",
-      "allow_delete",
-      "delete_confirm",
-      "delete_service",
-      "entities",
-      "entity",
-      "frigate_url",
-      "max_media",
-      "media_source",
-      "media_sources",
-      "source_mode",
-      "thumbnail_frame_pct",
-    ]);
-
-    return keys.some((k) => sourceKeys.has(k));
-  }
-
-  _isUiOnlyConfigChange(keys = []) {
-    if (!keys.length) return false;
-
-    const uiOnlyKeys = new Set([
-      "bar_opacity",
-      "bar_position",
-      "live_camera_entity",
-      "live_cameras",
-      "live_default_camera",
-      "live_enabled",
-      "object_filters",
-      "clean_mode",
-      "preview_close_on_tap",
-      "preview_position",
-      "pill_size",
-      "thumb_bar_position",
-      "thumb_layout",
-      "thumb_size",
-      "show_camera_title",
-      "controls_mode",
-    ]);
-
-    return keys.every((k) => uiOnlyKeys.has(k));
-  }
-
-  _normMaxMedia(v) {
-    const n = Number(String(v ?? "").trim());
-    if (!Number.isFinite(n)) return DEFAULT_MAX_MEDIA;
-    return Math.max(1, Math.min(500, Math.round(n)));
-  }
-
-  _normPrefixHardcoded() {
-    const lead = DEFAULT_DELETE_PREFIX.startsWith("/")
-      ? DEFAULT_DELETE_PREFIX
-      : "/" + DEFAULT_DELETE_PREFIX;
-    const noMulti = lead.replace(/\/{2,}/g, "/");
-    return noMulti.endsWith("/") ? noMulti : noMulti + "/";
-  }
-
-  _normPreviewPosition(v) {
-    const s = String(v || "").toLowerCase().trim();
-    return s === "bottom" ? "bottom" : "top";
-  }
-
-  _normSourceMode(v) {
-    const s = String(v || "").toLowerCase().trim();
-    return s === "media" ? "media" : s === "combined" ? "combined" : "sensor";
-  }
-
-  _normThumbBarPosition(v) {
-    const s = String(v || "").toLowerCase().trim();
-    if (s === "hidden") return "hidden";
-    if (s === "top") return "top";
-    return "bottom";
-  }
-
-  _normThumbLayout(v) {
-    const s = String(v || "").toLowerCase().trim();
-    return s === "vertical" ? "vertical" : "horizontal";
-  }
-
-  _normalizeVisibleObjectFilters(listOrSingle) {
-      const arr = Array.isArray(listOrSingle) ? listOrSingle : (listOrSingle ? [listOrSingle] : []);
-      const out = [];
-      const seen = new Set();
-      this._customIcons = {}; // Tijdelijke opslag voor custom icons
-
-      for (const item of arr) {
-        let name = "";
-        let icon = "";
-
-        if (typeof item === "string") {
-          name = item.toLowerCase().trim();
-        } else if (typeof item === "object" && item !== null) {
-          // Voor de syntax: - pakket: mdi:package
-          const entries = Object.entries(item);
-          if (entries.length > 0) {
-            name = entries[0][0].toLowerCase().trim();
-            icon = entries[0][1];
-          }
-        }
-
-        if (!name || seen.has(name)) continue;
-        seen.add(name);
-        out.push(name);
-        if (icon) this._customIcons[name] = icon; // Sla het icon op
-        
-        if (out.length >= MAX_VISIBLE_OBJECT_FILTERS) break;
-      }
-      return out;
-    }
-
   _sensorEntityList() {
-    const arr = Array.isArray(this.config?.entities) ? this.config.entities : [];
-    const clean = arr.map((x) => String(x || "").trim()).filter(Boolean);
-    if (clean.length) return clean;
-
-    const single = String(this.config?.entity || "").trim();
-    return single ? [single] : [];
-  }
-
-  _sensorNormalizeEntities(listOrSingle, fallbackSingle = "") {
-    const arr = Array.isArray(listOrSingle)
-      ? listOrSingle
-      : listOrSingle
-        ? [listOrSingle]
-        : fallbackSingle
-          ? [fallbackSingle]
-          : [];
-
-    const out = [];
-    const seen = new Set();
-
-    for (const raw of arr) {
-      const v = String(raw ?? "").trim();
-      if (!v) continue;
-      const k = v.toLowerCase();
-      if (seen.has(k)) continue;
-      seen.add(k);
-      out.push(v);
-    }
-
-    return out;
+    return Array.isArray(this.config?.entities) ? this.config.entities : [];
   }
 
   _serviceParts() {
@@ -2311,7 +2241,7 @@ class CameraGalleryCard extends LitElement {
     if (!sp) return;
 
     const fsPath = this._toFsPath(src);
-    const prefix = this._normPrefixHardcoded();
+    const prefix = DELETE_PREFIX_NORMALIZED;
 
     if (!fsPath || !fsPath.startsWith(prefix)) return;
 
@@ -2394,78 +2324,6 @@ class CameraGalleryCard extends LitElement {
     return "";
   }
 
-  _getFilterAliases(filter) {
-    const f = String(filter || "").toLowerCase().trim();
-    if (!f) return [];
-
-    const map = {
-      person: ["person", "persoon", "personen"],
-      visitor: ["visitor", "visitors", "bezoeker", "bezoekers", "bezoek"],
-      dog: ["dog", "hond", "honden"],
-      cat: ["cat", "kat", "katten"],
-      car: ["car", "auto", "autos", "voertuig", "vehicle"],
-      truck: ["truck", "vrachtwagen"],
-      bicycle: ["bicycle", "fiets", "fietser", "bike"],
-      motorcycle: ["motorcycle", "motor", "motorbike"],
-      bird: ["bird", "vogel", "vogels"],
-      bus: ["bus"],
-    };
-
-    return map[f] || [f];
-  }
-
-  _itemFilenameForFilter(itemOrSrc) {
-    if (!itemOrSrc) return "";
-
-    if (typeof itemOrSrc === "string") {
-      return String(itemOrSrc).toLowerCase();
-    }
-
-    return String(
-      itemOrSrc.filename ||
-      itemOrSrc.name ||
-      itemOrSrc.basename ||
-      itemOrSrc.path ||
-      itemOrSrc.file ||
-      itemOrSrc.fullpath ||
-      itemOrSrc.src ||
-      ""
-    ).toLowerCase();
-  }
-
-  _sensorTextForFilter(sensorEntityId, sensorStateObj = null) {
-    const entityId = String(sensorEntityId || "").toLowerCase();
-    const friendly = String(
-      sensorStateObj?.attributes?.friendly_name ||
-      sensorStateObj?.attributes?.name ||
-      ""
-    ).toLowerCase();
-
-    return `${entityId} ${friendly}`.trim();
-  }
-
-  _matchesObjectFilterForFileSensor(
-    srcOrItem,
-    filter,
-    sensorEntityId,
-    sensorStateObj = null
-  ) {
-    const aliases = this._getFilterAliases(filter);
-    if (!aliases.length) return true;
-
-    const sensorText = this._sensorTextForFilter(
-      sensorEntityId,
-      sensorStateObj
-    );
-    const fileText = this._itemFilenameForFilter(srcOrItem);
-
-    return aliases.some((alias) => {
-      const a = String(alias || "").toLowerCase().trim();
-      if (!a) return false;
-
-      return sensorText.includes(a) || fileText.includes(a);
-    });
-  }
 
   _findMatchingSnapshotMediaId(videoId) {
     const src = String(videoId || "").trim();
@@ -2597,13 +2455,22 @@ class CameraGalleryCard extends LitElement {
       return "";
     }
 
-    // Skip poster-capture for the selected video — it's already loading as preview;
-    // double-loading the same MS URL blocks autoplay.
+    // Skip poster-capture for the URL that's currently loading as the preview —
+    // double-loading the same MS URL blocks autoplay on some browsers, and the
+    // preview's `canplay` handler in `_ensurePreviewVideoHostPlayback` enqueues
+    // the poster once the preview itself has the data.
+    //
+    // In live mode the preview shows the live feed instead of the selected
+    // video, so that handler never fires for `selectedUrl` — the selected
+    // thumb would stay blank until the user leaves live mode. Treat the
+    // "preview owns this URL's poster" exemption as not applying in live mode.
+    const previewOwnsSelectedPoster = !this._isLiveActive();
     for (const url of [tThumb, thumbUrl]) {
       if (!url) continue;
       const cached = this._posterCache.get(url);
       if (cached) return cached;
-      if (url !== selectedUrl) this._enqueuePoster(url);
+      const skipForPreview = previewOwnsSelectedPoster && url === selectedUrl;
+      if (!skipForPreview) this._enqueuePoster(url);
       return "";
     }
     return "";
@@ -2680,8 +2547,8 @@ class CameraGalleryCard extends LitElement {
 
   _favKey() {
     const id = [
-      ...(this.config?.entities ?? (this.config?.entity ? [this.config.entity] : [])),
-      ...(this.config?.media_sources ?? (this.config?.media_source ? [this.config.media_source] : [])),
+      ...(this.config?.entities ?? []),
+      ...(this.config?.media_sources ?? []),
     ].sort().join("|");
     return "cgc_favs_" + this._thumbHash(id);
   }
@@ -2835,17 +2702,21 @@ class CameraGalleryCard extends LitElement {
   }
 
   async _msEnsureLoaded() {
-    const roots =
-      Array.isArray(this.config?.media_sources) &&
-      this.config.media_sources.length
-        ? this._msNormalizeRoots(this.config.media_sources)
-        : this._msNormalizeRoots(this.config?.media_source);
+    const roots = Array.isArray(this.config?.media_sources)
+      ? this.config.media_sources
+      : [];
 
     if (!roots.length) return;
 
     // === FRIGATE HTTP API PATH ===
-    if (this.config?.frigate_url && roots.some(isFrigateRoot) && !this._ms.frigateApiFailed) {
-      const cap = this._normMaxMedia(this.config?.max_media);
+    // The failed flag latches per-key; honor it only within the retry-cooldown
+    // window so a transient error (DNS blip, container restart) doesn't disable
+    // the direct path for the rest of the session.
+    const failedRecently =
+      this._ms.frigateApiFailed &&
+      Date.now() - (this._ms.frigateApiFailedAt || 0) < FRIGATE_API_RETRY_AFTER_MS;
+    if (this.config?.frigate_url && roots.some(isFrigateRoot) && !failedRecently) {
+      const cap = (this.config?.max_media ?? DEFAULT_MAX_MEDIA);
       const key = `frigate_api:${this.config.frigate_url}:${cap}`;
       const sameKey = this._ms.key === key;
       const fresh = sameKey && Date.now() - (this._ms.loadedAt || 0) < 30_000;
@@ -2857,6 +2728,7 @@ class CameraGalleryCard extends LitElement {
         this._ms.urlCache = new Map();
         this._msResolveFailed = new Set();
         this._ms.frigateApiFailed = false;
+        this._ms.frigateApiFailedAt = 0;
       }
 
       this._ms.loading = true;
@@ -2864,6 +2736,7 @@ class CameraGalleryCard extends LitElement {
         const items = await this._msLoadFrigateApi();
         if (items === null) {
           this._ms.frigateApiFailed = true;
+          this._ms.frigateApiFailedAt = Date.now();
           this._ms.loading = false;
           setTimeout(() => this._msEnsureLoaded(), 0);
           return;
@@ -2873,6 +2746,7 @@ class CameraGalleryCard extends LitElement {
       } catch (e) {
         console.warn("CGC Frigate API load failed:", e);
         this._ms.frigateApiFailed = true;
+        this._ms.frigateApiFailedAt = Date.now();
         this._msSetList([]);
       } finally {
         this._ms.loading = false;
@@ -2922,7 +2796,7 @@ class CameraGalleryCard extends LitElement {
     this._ms.loading = true;
 
     try {
-      const visibleCap = this._normMaxMedia(this.config?.max_media);
+      const visibleCap = (this.config?.max_media ?? DEFAULT_MAX_MEDIA);
 
       const internalCap = Math.min(2000, Math.max(visibleCap * 4, 400));
 
@@ -3067,7 +2941,7 @@ class CameraGalleryCard extends LitElement {
 
     const limit = Math.min(
       DEFAULT_FRIGATE_API_LIMIT,
-      Math.max(this._normMaxMedia(this.config?.max_media) * 2, 100)
+      Math.max((this.config?.max_media ?? DEFAULT_MAX_MEDIA) * 2, 100)
     );
 
     // Direct fetch — requires Frigate to allow CORS from the HA origin.
@@ -3128,12 +3002,8 @@ class CameraGalleryCard extends LitElement {
     return false;
   }
 
-  _msKeyFromRoots(rootsArr, fallbackSingle) {
-    const roots =
-      Array.isArray(rootsArr) && rootsArr.length
-        ? this._msNormalizeRoots(rootsArr)
-        : this._msNormalizeRoots(fallbackSingle);
-
+  _msKeyFromRoots(rootsArr) {
+    const roots = Array.isArray(rootsArr) ? rootsArr : [];
     if (!roots.length) return "";
     return roots
       .slice()
@@ -3192,55 +3062,6 @@ class CameraGalleryCard extends LitElement {
     const it = this._ms?.listIndex?.get(id);
     if (!it) return { cls: "", mime: "", title: "", thumb: "" };
     return { cls: it.cls || "", mime: it.mime || "", title: it.title || "", thumb: it.thumb || "" };
-  }
-
-  _msNormalizeRoot(raw) {
-    let v = String(raw || "").trim();
-    if (!v) return "";
-
-    const strip = (s) =>
-      String(s || "").replace(/^\/+/, "").replace(/\/+$/, "");
-
-    if (v.startsWith("media-source://")) {
-      let rest = v
-        .slice("media-source://".length)
-        .replace(/\/{2,}/g, "/")
-        .replace(/\/+$/g, "");
-      if (rest.startsWith("local/")) rest = `media_source/${rest}`;
-      return `media-source://${rest}`;
-    }
-
-    v = strip(v);
-
-    if (/^frigate(\/|$)/i.test(v)) {
-      const rest = strip(v.replace(/^frigate/i, ""));
-      return rest ? `${FRIGATE_URI_PREFIX}/${rest}` : FRIGATE_URI_PREFIX;
-    }
-
-    v = v.replace(/^media\//, "");
-    return `media-source://media_source/${v}`;
-  }
-
-  _msNormalizeRoots(listOrSingle) {
-    const arr = Array.isArray(listOrSingle)
-      ? listOrSingle
-      : listOrSingle
-        ? [listOrSingle]
-        : [];
-
-    const out = [];
-    const seen = new Set();
-
-    for (const raw of arr) {
-      const n = this._msNormalizeRoot(raw);
-      if (!n) continue;
-      const k = String(n).toLowerCase();
-      if (seen.has(k)) continue;
-      seen.add(k);
-      out.push(n);
-    }
-
-    return out;
   }
 
   _msQueueResolve(ids) {
@@ -3660,32 +3481,6 @@ class CameraGalleryCard extends LitElement {
       : [];
   }
 
-  _filterLabel(v) {
-    const s = String(v || "").toLowerCase();
-    if (s === "bicycle") return "bicycle";
-    if (s === "bird") return "bird";
-    if (s === "bus") return "bus";
-    if (s === "car") return "car";
-    if (s === "cat") return "cat";
-    if (s === "dog") return "dog";
-    if (s === "motorcycle") return "motorcycle";
-    if (s === "person") return "person";
-    if (s === "truck") return "truck";
-    if (s === "visitor") return "visitor";
-    return "selected";
-  }
-
-  _filterLabelList(values) {
-    const arr = Array.isArray(values)
-      ? values
-          .map((x) => String(x || "").toLowerCase().trim())
-          .filter(Boolean)
-      : [];
-
-    if (!arr.length) return "selected";
-    return arr.map((v) => this._filterLabel(v)).join(", ");
-  }
-
   _isObjectFilterActive(value) {
     const v = String(value || "").toLowerCase().trim();
     return this._activeObjectFilters().includes(v);
@@ -3726,7 +3521,7 @@ class CameraGalleryCard extends LitElement {
         : null;
 
       return active.some((filter) =>
-        this._matchesObjectFilterForFileSensor(
+        matchesObjectFilterForFileSensor(
           src,
           filter,
           sourceEntity,
@@ -3737,14 +3532,6 @@ class CameraGalleryCard extends LitElement {
 
     const obj = this._objectForSrc(src);
     return !!obj && active.includes(obj);
-  }
-
-  _objectColor(obj) {
-    const colors = this.config?.object_colors;
-    if (obj && colors && typeof colors === "object" && colors[obj]) {
-      return colors[obj];
-    }
-    return "currentColor";
   }
 
   _objectForSrc(src) {
@@ -3760,7 +3547,7 @@ class CameraGalleryCard extends LitElement {
       if (this.config?.source_mode === "sensor") {
         const sourceEntity = this._srcEntityMap?.get(src) || "";
         const sensorStateObj = sourceEntity ? this._hass?.states?.[sourceEntity] : null;
-        sourceText = [this._itemFilenameForFilter(src), this._sensorTextForFilter(sourceEntity, sensorStateObj)].join(" ");
+        sourceText = [itemFilenameForFilter(src), sensorTextForFilter(sourceEntity, sensorStateObj)].join(" ");
       } else {
         const meta = this._msMetaById(src);
         sourceText = [meta?.title, src].join(" ");
@@ -3768,7 +3555,7 @@ class CameraGalleryCard extends LitElement {
       sourceText = sourceText.toLowerCase();
 
       for (const filter of activeFilters) {
-        const aliases = this._getFilterAliases(filter);
+        const aliases = getFilterAliases(filter);
         if (aliases.some(alias => sourceText.includes(alias))) {
           detected = filter;
           break;
@@ -3779,28 +3566,6 @@ class CameraGalleryCard extends LitElement {
       return detected;
     }
 
-  _objectIcon(obj) {
-      if (!obj) return "";
-      
-      if (this._customIcons && this._customIcons[obj]) {
-        return this._customIcons[obj];
-      }
-
-      const icons = {
-        bicycle: "mdi:bicycle",
-        bird: "mdi:bird",
-        bus: "mdi:bus",
-        car: "mdi:car",
-        cat: "mdi:cat",
-        dog: "mdi:dog",
-        motorcycle: "mdi:motorbike",
-        person: "mdi:account",
-        truck: "mdi:truck",
-        visitor: "mdi:doorbell-video",
-      };
-
-      return icons[obj] || "mdi:magnify"; 
-    }
 
   _setObjectFilter(next) {
     const clicked = String(next || "").toLowerCase().trim();
@@ -3915,7 +3680,7 @@ class CameraGalleryCard extends LitElement {
     const sp = this._serviceParts();
     if (!sp) return;
 
-    const prefix = this._normPrefixHardcoded();
+    const prefix = DELETE_PREFIX_NORMALIZED;
     const srcs = Array.from(selectedSrcList || []);
     if (!srcs.length) return;
 
@@ -4123,313 +3888,15 @@ class CameraGalleryCard extends LitElement {
   setConfig(config) {
     const prevConfig = this.config ? { ...this.config } : null;
 
-    const autoplay =
-      config.autoplay !== undefined
-        ? !!config.autoplay
-        : DEFAULT_AUTOPLAY;
-
-    const auto_muted =
-      config.auto_muted !== undefined
-        ? !!config.auto_muted
-        : DEFAULT_AUTOMUTED;
-
-    const live_auto_muted =
-      config.live_auto_muted !== undefined
-        ? !!config.live_auto_muted
-        : DEFAULT_LIVE_AUTO_MUTED;
-
-    const filename_datetime_format = String(
-      config.filename_datetime_format || ""
-    ).trim();
-
-    const folder_datetime_format = String(
-      config.folder_datetime_format || ""
-    ).trim();
-
-    const clamp = (n, a, b) => Math.min(b, Math.max(a, n));
-    const num = (v, d) => {
-      if (v === null || v === undefined) return d;
-      const n = Number(String(v).trim().replace("px", "").replace("%", ""));
-      return Number.isFinite(n) ? n : d;
-    };
-
-    const posRaw = String(config.bar_position ?? "top").toLowerCase().trim();
-    const bar_position =
-      posRaw === "bottom" ? "bottom" : posRaw === "hidden" ? "hidden" : "top";
-
-    const thumb_size = Math.max(
-      40,
-      Math.min(220, num(config.thumb_size, THUMB_SIZE))
-    );
-
-    const thumb_bar_position = this._normThumbBarPosition(
-      config.thumb_bar_position ?? DEFAULT_THUMB_BAR_POSITION
-    );
-
-    const thumb_layout = this._normThumbLayout(
-      config.thumb_layout ?? DEFAULT_THUMB_LAYOUT
-    );
-
-    const bar_opacity = clamp(
-      num(config.bar_opacity, DEFAULT_BAR_OPACITY),
-      0,
-      100
-    );
-
-    const thumbnail_frame_pct = Math.round(
-      clamp(num(config.thumbnail_frame_pct, DEFAULT_THUMBNAIL_FRAME_PCT), 0, 100)
-    );
-
-    const max_media = this._normMaxMedia(config.max_media ?? DEFAULT_MAX_MEDIA);
-
-    let source_mode = this._normSourceMode(
-      config.source_mode ?? DEFAULT_SOURCE_MODE
-    );
-
-    const preview_position = this._normPreviewPosition(
-      config.preview_position ?? DEFAULT_PREVIEW_POSITION
-    );
-
-    const entityRaw = String(config?.entity || "").trim();
-    const sensorEntitiesClean = this._sensorNormalizeEntities(
-      config?.entities,
-      entityRaw
-    );
-
-    const mediaRaw = String(config?.media_source || "").trim();
-    const mediaArrRaw = Array.isArray(config?.media_sources)
-      ? config.media_sources
-      : Array.isArray(config?.media_folders_fav)
-        ? config.media_folders_fav
-        : null;
-
-    const mediaSourcesClean = Array.isArray(mediaArrRaw)
-      ? mediaArrRaw.map((x) => String(x ?? "").trim()).filter(Boolean)
-      : [];
-
-    const visibleObjectFilters = this._normalizeVisibleObjectFilters(
-      config.object_filters ?? DEFAULT_VISIBLE_OBJECT_FILTERS
-    );
-
-    const entity_filter_map = this._normalizeEntityFilterMap(
-      config.entity_filter_map || {}
-    );
-
-    if (
-      config.source_mode === undefined ||
-      config.source_mode === null ||
-      String(config.source_mode).trim() === ""
-    ) {
-      if ((mediaSourcesClean.length || mediaRaw) && !sensorEntitiesClean.length) {
-        source_mode = "media";
-      } else {
-        source_mode = "sensor";
-      }
-    }
-
-    if (source_mode === "sensor") {
-      if (!sensorEntitiesClean.length) {
-        throw new Error(
-          "camera-gallery-card: 'entity' or 'entities' is required in source_mode: sensor"
-        );
-      }
-    } else if (source_mode === "combined") {
-      if (!sensorEntitiesClean.length) {
-        throw new Error(
-          "camera-gallery-card: 'entity' or 'entities' is required in source_mode: combined"
-        );
-      }
-      if (!mediaRaw && !mediaSourcesClean.length) {
-        throw new Error(
-          "camera-gallery-card: 'media_source' or 'media_sources' is required in source_mode: combined"
-        );
-      }
-    } else if (!mediaRaw && !mediaSourcesClean.length) {
-        throw new Error(
-          "camera-gallery-card: 'media_source' OR 'media_sources' is required in source_mode: media"
-      );
-    }
-
-    if (
-      !folder_datetime_format &&
-      !filename_datetime_format &&
-      !hasFrigateConfig({
-        frigate_url: config.frigate_url,
-        media_source: mediaRaw,
-        media_sources: mediaSourcesClean,
-      })
-    ) {
-      throw new Error(
-        "camera-gallery-card: 'folder_datetime_format' or 'filename_datetime_format' is required so files can be grouped by date"
-      );
-    }
-
-    const allow_delete =
-      config.allow_delete !== undefined
-        ? !!config.allow_delete
-        : DEFAULT_ALLOW_DELETE;
-
-    const allow_bulk_delete =
-      config.allow_bulk_delete !== undefined
-        ? !!config.allow_bulk_delete
-        : DEFAULT_ALLOW_BULK_DELETE;
-
-    const delete_service =
-      (config.delete_service && String(config.delete_service).trim()) ||
-      (config.shell_command && String(config.shell_command).trim()) ||
-      DEFAULT_DELETE_SERVICE;
-
-    const delete_confirm =
-      config.delete_confirm !== undefined
-        ? !!config.delete_confirm
-        : DEFAULT_DELETE_CONFIRM;
-
-    const wantsDelete = (source_mode === "sensor" || source_mode === "combined") && allow_delete;
-
-    let effectiveAllowDelete = allow_delete;
-    let effectiveAllowBulkDelete = allow_bulk_delete;
-    let effectiveDeleteService = delete_service;
-
-    if (wantsDelete && !delete_service) {
-      effectiveAllowBulkDelete = false;
-      effectiveAllowDelete = false;
-    }
-
-    // Delete only works when items map to filesystem paths — media-source
-    // URIs (Frigate, network shares, etc.) can't be deleted by the shell
-    // command, so clear delete-related keys in pure media mode.
-    if (source_mode === "media") {
-      effectiveAllowDelete = false;
-      effectiveAllowBulkDelete = false;
-      effectiveDeleteService = "";
-    }
-
-    if (effectiveDeleteService && !/^[a-z0-9_]+\.[a-z0-9_]+$/i.test(effectiveDeleteService)) {
-      throw new Error(
-        "camera-gallery-card: 'delete_service' must be 'domain.service'"
-      );
-    }
-
-    const clean_mode = config.clean_mode !== undefined
-      ? !!config.clean_mode
-      : (config.preview_click_to_open !== undefined ? !!config.preview_click_to_open : DEFAULT_CLEAN_MODE);
-
-    const preview_close_on_tap =
-      config.preview_close_on_tap !== undefined
-        ? !!config.preview_close_on_tap
-        : clean_mode
-          ? DEFAULT_PREVIEW_CLOSE_ON_TAP_WHEN_GATED
-          : false;
-
-    const normalizedMediaRoots =
-      (source_mode === "media" || source_mode === "combined")
-        ? this._msNormalizeRoots(
-            mediaSourcesClean.length ? mediaSourcesClean : mediaRaw
-          )
-        : [];
-
-    const live_enabled =
-      config.live_enabled !== undefined
-        ? !!config.live_enabled
-        : DEFAULT_LIVE_ENABLED;
-
-    const live_camera_entity = String(config.live_camera_entity || "").trim();
-    const live_stream_url = String(config.live_stream_url || "").trim();
-    const live_stream_name = String(config.live_stream_name || "").trim();
-    const live_go2rtc_url = String(config.live_go2rtc_url || "").trim();
-    const frigate_url = String(config.frigate_url || "").trim().replace(/\/+$/, "");
-    const live_stream_urls = Array.isArray(config.live_stream_urls)
-      ? config.live_stream_urls
-          .filter(e => e && typeof e === "object" && String(e.url || "").trim())
-          .map(e => ({ url: String(e.url).trim(), name: String(e.name || "").trim() || null }))
-      : [];
-
-    const live_camera_entities = Array.isArray(config.live_camera_entities)
-      ? config.live_camera_entities.map(String).map((s) => s.trim()).filter(Boolean)
-      : [];
-
-    const style_variables = String(config.style_variables || "").trim();
-
-    const object_fit = config.object_fit === "contain" ? "contain" : "cover";
-
-    const pill_size = Math.max(10, Math.min(28, num(config.pill_size, 14)));
-
-    const nextConfig = {
-      autoplay,
-      auto_muted,
-      live_auto_muted,
-      allow_bulk_delete: effectiveAllowBulkDelete,
-      allow_delete: effectiveAllowDelete,
-      bar_opacity,
-      bar_position,
-      delete_confirm,
-      delete_service: effectiveDeleteService || "",
-      entities: (source_mode === "sensor" || source_mode === "combined") ? sensorEntitiesClean : [],
-      entity: (source_mode === "sensor" || source_mode === "combined") ? sensorEntitiesClean[0] || "" : "",
-      entity_filter_map,
-      filename_datetime_format,
-      live_camera_entities,
-      live_camera_entity,
-      live_enabled,
-      live_stream_url: live_stream_url || null,
-      live_stream_name: live_stream_name || null,
-      live_stream_urls: live_stream_urls.length > 0 ? live_stream_urls : null,
-      live_go2rtc_url: live_go2rtc_url || null,
-      frigate_url: frigate_url || null,
-      max_media,
-      media_source: (source_mode === "media" || source_mode === "combined") ? mediaRaw : "",
-      media_sources: (source_mode === "media" || source_mode === "combined") ? normalizedMediaRoots : [],
-      object_colors: (typeof config.object_colors === "object" && config.object_colors !== null) ? config.object_colors : {},
-      object_filters: visibleObjectFilters,
-      clean_mode,
-      preview_close_on_tap,
-      preview_position,
-      aspect_ratio: ["16:9", "4:3", "1:1"].includes(config.aspect_ratio) ? config.aspect_ratio : "16:9",
-      source_mode,
-      start_mode: config.start_mode === "live" ? "live" : "gallery",
-      style_variables,
-      object_fit,
-      persistent_controls: config.persistent_controls === true,
-      pill_size,
-      thumb_bar_position,
-      thumb_layout,
-      thumb_size,
-      thumbnail_frame_pct,
-      live_go2rtc_stream: String(config.live_go2rtc_stream || "").trim() || null,
-      folder_datetime_format: folder_datetime_format || null,
-      sync_entity: String(config.sync_entity || "").trim() || null,
-      menu_buttons: Array.isArray(config.menu_buttons)
-        ? config.menu_buttons
-            .filter(b => b && typeof b === "object" && b.entity && b.icon)
-            .map(b => ({
-              entity: String(b.entity).trim(),
-              icon: String(b.icon).trim(),
-              icon_on: b.icon_on ? String(b.icon_on).trim() : undefined,
-              color_on: b.color_on ? String(b.color_on).trim() : undefined,
-              color_off: b.color_off ? String(b.color_off).trim() : undefined,
-              title: b.title ? String(b.title).trim() : undefined,
-              service: b.service ? String(b.service).trim() : undefined,
-              state_on: b.state_on ? String(b.state_on).trim() : undefined,
-            }))
-        : [],
-      show_camera_title: config.show_camera_title !== false,
-      controls_mode: ["overlay","fixed"].includes(config.controls_mode)
-        ? config.controls_mode : "overlay",
-    };
+    const { config: nextConfig, customIcons } = normalizeConfig(config);
 
     this.config = nextConfig;
+    this._customIcons = customIcons;
     this._loadFavorites();
     this._startMediaPoll();
 
-    const changedKeys = prevConfig
-      ? this._configChangedKeys(prevConfig, nextConfig)
-      : [];
-    const sourceChange = prevConfig
-      ? this._isSourceConfigChange(changedKeys)
-      : true;
-    const uiOnlyChange = prevConfig
-      ? this._isUiOnlyConfigChange(changedKeys)
-      : false;
+    const { changedKeys, isSourceChange: sourceChange, isUiOnly: uiOnlyChange } =
+      configDiff(prevConfig, nextConfig);
 
     if (this._selectedIndex === undefined) this._selectedIndex = 0;
     if (this._selectedSet == null) this._selectedSet = new Set();
@@ -4440,7 +3907,12 @@ class CameraGalleryCard extends LitElement {
     const visibleSet = new Set(this._getVisibleObjectFilters());
     this._objectFilters = this._objectFilters.filter((x) => visibleSet.has(x));
 
-    const liveEntityChanged = !prevConfig || prevConfig.live_camera_entity !== live_camera_entity || prevConfig.live_stream_url !== config.live_stream_url || JSON.stringify(prevConfig.live_stream_urls) !== JSON.stringify(nextConfig.live_stream_urls);
+    const liveEntityChanged =
+      !prevConfig ||
+      prevConfig.live_camera_entity !== nextConfig.live_camera_entity ||
+      prevConfig.live_stream_url !== nextConfig.live_stream_url ||
+      JSON.stringify(prevConfig.live_stream_urls) !==
+        JSON.stringify(nextConfig.live_stream_urls);
     if (liveEntityChanged) {
       const liveOptions = this._getLiveCameraOptions();
       const validSelected =
@@ -4448,12 +3920,12 @@ class CameraGalleryCard extends LitElement {
         liveOptions.some((x) => x === this._liveSelectedCamera);
       if (!validSelected && liveOptions.length > 0) {
         this._liveSelectedCamera =
-          (live_camera_entity
-            ? live_camera_entity
+          (nextConfig.live_camera_entity
+            ? nextConfig.live_camera_entity
             : liveOptions[0]) || "";
       }
       if (prevConfig) {
-        this._aspectRatio = this._parseAspectRatio(config.aspect_ratio);
+        this._aspectRatio = this._parseAspectRatio(nextConfig.aspect_ratio);
       }
     }
 
@@ -4461,7 +3933,7 @@ class CameraGalleryCard extends LitElement {
       this._previewOpen = this.config.clean_mode ? false : true;
       this._showLivePicker = false;
       this._showLiveQuickSwitch = false;
-      this._aspectRatio = this._parseAspectRatio(config.aspect_ratio);
+      this._aspectRatio = this._parseAspectRatio(nextConfig.aspect_ratio);
       const hasMedia = nextConfig.entities.length > 0 || nextConfig.media_sources.length > 0;
       const startMode = nextConfig.start_mode;
       if (startMode === "live" && nextConfig.live_enabled && nextConfig.live_camera_entity) {
@@ -4520,15 +3992,9 @@ class CameraGalleryCard extends LitElement {
 
     if (this.config.source_mode === "media" || this.config.source_mode === "combined") {
       const prevKey = prevConfig
-        ? this._msKeyFromRoots(
-            prevConfig?.media_sources,
-            prevConfig?.media_source
-          )
+        ? this._msKeyFromRoots(prevConfig.media_sources)
         : "";
-      const nextKey = this._msKeyFromRoots(
-        this.config?.media_sources,
-        this.config?.media_source
-      );
+      const nextKey = this._msKeyFromRoots(this.config.media_sources);
 
       if (!prevConfig || (sourceChange && prevKey !== nextKey)) {
         this._ms.key = "";
@@ -4611,7 +4077,7 @@ class CameraGalleryCard extends LitElement {
         this._matchesObjectFilter(x.src)
       );
 
-      const cap = this._normMaxMedia(this.config?.max_media);
+      const cap = (this.config?.max_media ?? DEFAULT_MAX_MEDIA);
       const filtered = filteredAll.slice(0, Math.min(cap, filteredAll.length));
       const thumbRenderLimit = this._getThumbRenderLimit(cap, usingMediaSource);
 
@@ -4749,7 +4215,7 @@ class CameraGalleryCard extends LitElement {
 
     const noResultsForFilter = !filteredAll.length;
 
-    const cap = this._normMaxMedia(this.config?.max_media);
+    const cap = (this.config?.max_media ?? DEFAULT_MAX_MEDIA);
     const filtered = noResultsForFilter
       ? []
       : filteredAll.slice(0, Math.min(cap, filteredAll.length));
@@ -4864,7 +4330,7 @@ class CameraGalleryCard extends LitElement {
       <div class="gallery-pills-center">
         ${(() => {
           const obj = this._objectForSrc(selected);
-          const icon = obj ? this._objectIcon(obj) : null;
+          const icon = obj ? objectIcon(obj, this._customIcons, "mdi:magnify") : null;
           if (!icon) return html``;
           return html`<div class="gallery-pill live-pill-btn" style="flex-shrink:0;width:calc(var(--cgc-pill-size,14px)*1.6 + 2px);height:calc(var(--cgc-pill-size,14px)*1.6 + 2px);padding:0"><ha-icon icon="${icon}"></ha-icon></div>`;
         })()}
@@ -5043,9 +4509,9 @@ class CameraGalleryCard extends LitElement {
       ? html`
           <div class="objfilters" role="group" aria-label="Object filters">
             ${visibleObjectFilters.map((filterValue) => {
-              const objIcon = this._objectIcon(filterValue);
-              const label = this._filterLabel(filterValue);
-              const objColor = this._objectColor(filterValue);
+              const objIcon = objectIcon(filterValue, this._customIcons, "mdi:magnify");
+              const label = filterLabel(filterValue);
+              const objColor = objectColor(filterValue, this.config?.object_colors ?? {});
               return html`
                 <button
                   class="objbtn icon-only ${this._isObjectFilterActive(filterValue)
@@ -5172,8 +4638,8 @@ class CameraGalleryCard extends LitElement {
                       : "";
 
                     const obj = this._objectForSrc(it.src);
-                    const objIcon = this._objectIcon(obj);
-                    const objColor = this._objectColor(obj);
+                    const objIcon = objectIcon(obj, this._customIcons, "mdi:magnify");
+                    const objColor = objectColor(obj, this.config?.object_colors ?? {});
 
                     const tBarLeft = tTime;
 
@@ -5185,7 +4651,7 @@ class CameraGalleryCard extends LitElement {
 
                     return html`
                       <button
-                        class="tthumb ${isOn ? "on" : ""} ${this._selectMode && isSel ? "sel" : ""}"
+                        class="tthumb ${isOn ? "on" : ""} ${this._selectMode && isSel ? "sel" : ""} bar-${barPos}"
                         data-i="${it.i}"
                         data-lazy-src="${it.src}"
                         style="${thumbStyle}"
@@ -5284,7 +4750,7 @@ class CameraGalleryCard extends LitElement {
                           @click=${(e) => { e.stopPropagation(); this._toggleFavorite(it.src); }}
                           @pointerdown=${(e) => e.stopPropagation()}
                           role="button"
-                          title="Favoriet"
+                          title="Favorite"
                         >
                           <ha-icon icon="${this._favorites.has(it.src) ? 'mdi:star' : 'mdi:star-outline'}"></ha-icon>
                         </div>
@@ -5298,7 +4764,7 @@ class CameraGalleryCard extends LitElement {
                   <div class="thumbs-empty-state">
                     ${this._filterFavorites
                       ? "No favorites for this day."
-                      : `No ${this._filterLabelList(this._objectFilters)} media for this day.`}
+                      : `No ${filterLabelList(this._objectFilters)} media for this day.`}
                   </div>
                 `
               : html``}
@@ -5368,7 +4834,7 @@ class CameraGalleryCard extends LitElement {
               ` : html``}
 
               <div class="seg">
-                <button class="segbtn ${this._filterFavorites ? "on" : ""}" @click=${() => this._toggleFilterFavorites()} title="Favorieten" style="border-radius:10px">
+                <button class="segbtn ${this._filterFavorites ? "on" : ""}" @click=${() => this._toggleFilterFavorites()} title="Favorites" style="border-radius:10px">
                   <ha-icon icon="mdi:star" style="--mdc-icon-size:16px"></ha-icon>
                 </button>
               </div>
@@ -6726,6 +6192,15 @@ class CameraGalleryCard extends LitElement {
         justify-content: center;
         transition: color 0.15s ease;
         filter: drop-shadow(0 1px 2px rgba(0,0,0,0.6));
+        z-index: 3;
+      }
+
+      /* Bar at the bottom would overlay the default bottom-left favorite
+         button (the bar has an opaque blur background). Move the button to
+         the top-left corner in that case so it stays visible. */
+      .tthumb.bar-bottom .fav-btn {
+        top: 4px;
+        bottom: auto;
       }
 
       .fav-btn.on {
@@ -7824,22 +7299,6 @@ class CameraGalleryCardEditor extends HTMLElement {
     const n = Number(v);
     if (!Number.isFinite(n)) return fallback;
     return Math.round(n);
-  }
-
-  _objectIcon(v) {
-    const map = {
-      bicycle: "mdi:bicycle",
-      bird: "mdi:bird",
-      bus: "mdi:bus",
-      car: "mdi:car",
-      cat: "mdi:cat",
-      dog: "mdi:dog",
-      motorcycle: "mdi:motorbike",
-      person: "mdi:account",
-      truck: "mdi:truck",
-      visitor: "mdi:doorbell-video",
-    };
-    return map[v] || "mdi:shape";
   }
 
   _objectLabel(v) {
@@ -9101,7 +8560,7 @@ class CameraGalleryCardEditor extends HTMLElement {
                         title="${this._objectLabel(obj)}"
                       >
                         <span class="objchip-icon" ${currentColor ? `style="color:${currentColor}"` : ""}>
-                          ${svgIcon(this._objectIcon(obj), 18)}
+                          ${svgIcon(objectIcon(obj), 18)}
                         </span>
                         <span class="objchip-color">
                           <input type="color" class="cgc-color" value="${colorVal}" style="${!currentColor ? "opacity:0.35" : ""}" data-filtercolor="${obj}">
@@ -10886,17 +10345,7 @@ if (oldPanel && tmp.firstElementChild) {
 
     this.shadowRoot.querySelectorAll("[data-src]").forEach((btn) => {
       btn.addEventListener("click", () => {
-        const next = btn.dataset.src;
-        if (next === "media") {
-          const cleaned = { ...this._config };
-          delete cleaned.delete_service;
-          delete cleaned.shell_command;
-          delete cleaned.allow_delete;
-          delete cleaned.allow_bulk_delete;
-          delete cleaned.delete_confirm;
-          this._config = this._stripAlwaysTrueKeys(cleaned);
-        }
-        this._set("source_mode", next);
+        this._set("source_mode", btn.dataset.src);
       });
     });
 
@@ -11981,121 +11430,50 @@ if (oldPanel && tmp.firstElementChild) {
   }
 
   setConfig(config) {
-    this._config = this._stripAlwaysTrueKeys({ ...(config || {}) });
+    // Run shared legacy-key migration so the saved YAML uses canonical keys.
+    // The editor preserves the loose `object_filters` shape (string-or-object
+    // entries) so user icon choices survive a YAML save round-trip — full
+    // normalization happens on the card side.
+    const { migrated, hadLegacyKeys } = migrateLegacyKeys(config || {});
 
-    if (typeof this._config.autoplay === "undefined") {
-      this._config.autoplay = DEFAULT_AUTOPLAY;
+    // Defaults the editor reads at render time. These don't propagate back to
+    // YAML on their own — only legacy-key migrations trigger `_fire()`.
+    if (typeof migrated.autoplay === "undefined") {
+      migrated.autoplay = DEFAULT_AUTOPLAY;
+    }
+    if (typeof migrated.auto_muted === "undefined") {
+      migrated.auto_muted = DEFAULT_AUTOMUTED;
+    }
+    if (typeof migrated.live_auto_muted === "undefined") {
+      migrated.live_auto_muted = DEFAULT_LIVE_AUTO_MUTED;
     }
 
-    if (typeof this._config.auto_muted === "undefined") {
-      this._config.auto_muted = DEFAULT_AUTOMUTED;
-    }
-
-    if (typeof this._config.live_auto_muted === "undefined") {
-      this._config.live_auto_muted = DEFAULT_LIVE_AUTO_MUTED;
-    }
-
-    if ("shell_command" in this._config) {
-      const next = { ...this._config };
-      delete next.shell_command;
-      this._config = next;
-    }
-
-    try {
-      const cfg = { ...(config || {}) };
-
-      const normArr = (arr) =>
-        (arr || [])
-          .map(String)
-          .map((s) => s.trim())
-          .filter(Boolean);
-
-      const entArr = Array.isArray(cfg.entities) ? cfg.entities : null;
-      const singleEntity = String(cfg.entity || "").trim();
-
-      const pickedEntities =
-        (entArr && normArr(entArr)) || (singleEntity ? [singleEntity] : []);
-
-      const hasEntities =
-        Array.isArray(this._config.entities) && this._config.entities.length;
-
-      if (
-        !hasEntities &&
-        pickedEntities.length &&
-        ("entity" in cfg || singleEntity)
-      ) {
-        const next = { ...this._config, entities: pickedEntities };
-        delete next.entity;
-        this._config = this._stripAlwaysTrueKeys(next);
-        this._fire();
-      }
-
-      const msArr = Array.isArray(cfg.media_sources) ? cfg.media_sources : null;
-      const favArr = Array.isArray(cfg.media_folders_fav)
-        ? cfg.media_folders_fav
-        : null;
-      const single = String(cfg.media_source || "").trim();
-
-      const pickedMedia =
-        (msArr && normArr(msArr)) ||
-        (favArr && normArr(favArr)) ||
-        (single ? [single] : []);
-
-      const hasMediaSources =
-        Array.isArray(this._config.media_sources) &&
-        this._config.media_sources.length;
-
-      const hasLegacyMedia =
-        "media_folder_favorites" in cfg ||
-        "media_folders_fav" in cfg ||
-        "media_source" in cfg;
-
-      if (
-        !hasMediaSources &&
-        pickedMedia.length &&
-        (hasLegacyMedia || single)
-      ) {
-        const next = { ...this._config, media_sources: pickedMedia };
-        delete next.media_folder_favorites;
-        delete next.media_folders_fav;
-        delete next.media_source;
-        this._config = this._stripAlwaysTrueKeys(next);
-        this._fire();
-      }
-
-      const rawObjectFilters = Array.isArray(cfg.object_filters)
-        ? cfg.object_filters
-        : String(cfg.object_filters || "").trim()
-          ? [cfg.object_filters]
+    // De-dup `object_filters` while preserving the original entry form
+    // (string OR `{name: icon}` object). Editor needs the icon-bearing form
+    // to round-trip user icon choices through YAML.
+    let objectFiltersChanged = false;
+    if ("object_filters" in migrated) {
+      const before = Array.isArray(migrated.object_filters)
+        ? migrated.object_filters
+        : migrated.object_filters
+          ? [migrated.object_filters]
           : [];
-
-      const normObjectFilters = this._normalizeObjectFilters(rawObjectFilters);
-      const currentObjectFilters = Array.isArray(this._config.object_filters)
-        ? this._normalizeObjectFilters(this._config.object_filters)
-        : [];
-
-      if (
-        JSON.stringify(normObjectFilters) !==
-        JSON.stringify(currentObjectFilters)
-      ) {
-        const next = { ...this._config };
-        if (normObjectFilters.length) next.object_filters = normObjectFilters;
-        else delete next.object_filters;
-        this._config = this._stripAlwaysTrueKeys(next);
-        this._fire();
+      const deduped = this._normalizeObjectFilters(before);
+      if (JSON.stringify(deduped) !== JSON.stringify(migrated.object_filters)) {
+        objectFiltersChanged = true;
       }
-
-      const thumbLayout = String(cfg.thumb_layout || "").toLowerCase().trim();
-      if (thumbLayout === "horizontal" || thumbLayout === "vertical") {
-        if (this._config.thumb_layout !== thumbLayout) {
-          this._config = this._stripAlwaysTrueKeys({
-            ...this._config,
-            thumb_layout: thumbLayout,
-          });
-          this._fire();
-        }
+      if (deduped.length) {
+        migrated.object_filters = deduped;
+      } else {
+        delete migrated.object_filters;
       }
-    } catch (_) {}
+    }
+
+    this._config = this._stripAlwaysTrueKeys(migrated);
+
+    if (hadLegacyKeys || objectFiltersChanged) {
+      this._fire();
+    }
 
     this._scheduleRender();
   }

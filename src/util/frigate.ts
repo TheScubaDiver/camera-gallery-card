@@ -36,15 +36,11 @@ export function isFrigateRoot(uri: string | null | undefined): boolean {
  * fields are optional in Frigate-only setups.
  */
 export function hasFrigateConfig(config: {
-  frigate_url?: string | null;
-  media_source?: string | null;
-  media_sources?: readonly string[] | null;
+  frigate_url?: string | null | undefined;
+  media_sources?: readonly string[] | null | undefined;
 }): boolean {
-  if (String(config?.frigate_url ?? "").trim()) return true;
-  const roots: string[] = [
-    ...(Array.isArray(config?.media_sources) ? config.media_sources : []),
-    String(config?.media_source ?? ""),
-  ];
+  if ((config.frigate_url ?? "").trim()) return true;
+  const roots = config.media_sources ?? [];
   return roots.some(isFrigateRoot);
 }
 

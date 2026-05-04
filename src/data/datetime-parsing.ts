@@ -71,24 +71,19 @@ function build(
 
 // ---------- Format mini-language ----------
 
-const TOKEN_FIELDS: Record<string, DateField> = {
-  YYYY: "year",
-  YY: "year2",
-  MM: "month",
-  DD: "day",
-  HH: "hour",
-  mm: "minute",
-  ss: "second",
-};
-const TOKEN_DIGITS: Record<string, number> = {
-  YYYY: 4,
-  YY: 2,
-  MM: 2,
-  DD: 2,
-  HH: 2,
-  mm: 2,
-  ss: 2,
-};
+/** Token → `(field, digit count)` pair. Single source of truth for the format mini-language. */
+const TOKEN_SPECS = {
+  YYYY: { field: "year", digits: 4 },
+  YY: { field: "year2", digits: 2 },
+  MM: { field: "month", digits: 2 },
+  DD: { field: "day", digits: 2 },
+  HH: { field: "hour", digits: 2 },
+  mm: { field: "minute", digits: 2 },
+  ss: { field: "second", digits: 2 },
+} as const satisfies Record<string, { field: DateField; digits: number }>;
+
+type TokenName = keyof typeof TOKEN_SPECS;
+
 const TOKEN_RE = /(YYYY|YY|MM|DD|HH|mm|ss)/g;
 const escapeRe = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
@@ -101,12 +96,10 @@ export function buildFilenameDateRegex(
   let regexStr = "";
   let last = 0;
   for (let m = TOKEN_RE.exec(fmt); m !== null; m = TOKEN_RE.exec(fmt)) {
-    const tok = m[0];
-    const field = TOKEN_FIELDS[tok];
-    const digits = TOKEN_DIGITS[tok];
-    if (!field || !digits) continue;
-    regexStr += escapeRe(fmt.slice(last, m.index)) + `(\\d{${digits}})`;
-    fields.push(field);
+    const tok = m[0] as TokenName;
+    const spec = TOKEN_SPECS[tok];
+    regexStr += escapeRe(fmt.slice(last, m.index)) + `(\\d{${spec.digits}})`;
+    fields.push(spec.field);
     last = m.index + tok.length;
   }
   regexStr += escapeRe(fmt.slice(last));

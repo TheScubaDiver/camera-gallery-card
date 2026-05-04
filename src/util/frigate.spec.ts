@@ -90,8 +90,8 @@ describe("hasFrigateConfig", () => {
     expect(hasFrigateConfig({ frigate_url: "http://frigate.local:5000" })).toBe(true);
   });
 
-  it("is true when media_source is a Frigate root", () => {
-    expect(hasFrigateConfig({ media_source: FRIGATE_URI_PREFIX })).toBe(true);
+  it("is true when the sole media_sources entry is a Frigate root", () => {
+    expect(hasFrigateConfig({ media_sources: [FRIGATE_URI_PREFIX] })).toBe(true);
   });
 
   it("is true when any media_sources entry is a Frigate root", () => {
@@ -108,7 +108,7 @@ describe("hasFrigateConfig", () => {
   it("is false for non-Frigate media sources only", () => {
     expect(
       hasFrigateConfig({
-        media_source: "media-source://media_source/local/cameras",
+        media_sources: ["media-source://media_source/local/cameras"],
       })
     ).toBe(false);
   });
@@ -124,7 +124,7 @@ describe("hasFrigateConfig", () => {
   it("does NOT match the loose 'frigate' substring elsewhere", () => {
     expect(
       hasFrigateConfig({
-        media_source: "media-source://media_source/local/my-frigate-backup/",
+        media_sources: ["media-source://media_source/local/my-frigate-backup/"],
       })
     ).toBe(false);
   });
