@@ -18,6 +18,7 @@ export const START_MODES = ["gallery", "live"] as const;
 export const OBJECT_FITS = ["cover", "contain"] as const;
 export const CONTROLS_MODES = ["overlay", "fixed"] as const;
 export const ASPECT_RATIOS = ["16:9", "4:3", "1:1"] as const;
+export const LIVE_LAYOUTS = ["single", "grid"] as const;
 
 export type SourceMode = (typeof SOURCE_MODES)[number];
 export type PreviewPosition = (typeof PREVIEW_POSITIONS)[number];
@@ -28,6 +29,7 @@ export type StartMode = (typeof START_MODES)[number];
 export type ObjectFit = (typeof OBJECT_FITS)[number];
 export type ControlsMode = (typeof CONTROLS_MODES)[number];
 export type AspectRatio = (typeof ASPECT_RATIOS)[number];
+export type LiveLayout = (typeof LIVE_LAYOUTS)[number];
 
 /** Public CSS-variable namespace — every styling API key is `--cgc-*`. */
 export type CssVarKey = `--cgc-${string}`;
@@ -136,6 +138,7 @@ export const DEFAULT_FRIGATE_API_LIMIT = 500;
 export const FRIGATE_API_RETRY_AFTER_MS = 5 * 60 * 1000;
 export const DEFAULT_LIVE_AUTO_MUTED = true;
 export const DEFAULT_LIVE_ENABLED = false;
+export const DEFAULT_LIVE_LAYOUT = "single" satisfies LiveLayout;
 export const DEFAULT_MAX_MEDIA = 50;
 export const DEFAULT_OBJECT_FIT = "cover" satisfies ObjectFit;
 export const DEFAULT_PER_ROOT_MIN_LIMIT = 40;
