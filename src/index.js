@@ -53,6 +53,7 @@ import {
   DEFAULT_DELETE_SERVICE,
   DELETE_PREFIX_NORMALIZED,
   DEFAULT_FRIGATE_API_LIMIT,
+  FRIGATE_API_RETRY_AFTER_MS,
   DEFAULT_LIVE_AUTO_MUTED,
   DEFAULT_LIVE_ENABLED,
   DEFAULT_MAX_MEDIA,
@@ -2622,7 +2623,13 @@ class CameraGalleryCard extends LitElement {
     if (!roots.length) return;
 
     // === FRIGATE HTTP API PATH ===
-    if (this.config?.frigate_url && roots.some(isFrigateRoot) && !this._ms.frigateApiFailed) {
+    // The failed flag latches per-key; honor it only within the retry-cooldown
+    // window so a transient error (DNS blip, container restart) doesn't disable
+    // the direct path for the rest of the session.
+    const failedRecently =
+      this._ms.frigateApiFailed &&
+      Date.now() - (this._ms.frigateApiFailedAt || 0) < FRIGATE_API_RETRY_AFTER_MS;
+    if (this.config?.frigate_url && roots.some(isFrigateRoot) && !failedRecently) {
       const cap = (this.config?.max_media ?? DEFAULT_MAX_MEDIA);
       const key = `frigate_api:${this.config.frigate_url}:${cap}`;
       const sameKey = this._ms.key === key;
@@ -2635,6 +2642,7 @@ class CameraGalleryCard extends LitElement {
         this._ms.urlCache = new Map();
         this._msResolveFailed = new Set();
         this._ms.frigateApiFailed = false;
+        this._ms.frigateApiFailedAt = 0;
       }
 
       this._ms.loading = true;
@@ -2642,6 +2650,7 @@ class CameraGalleryCard extends LitElement {
         const items = await this._msLoadFrigateApi();
         if (items === null) {
           this._ms.frigateApiFailed = true;
+          this._ms.frigateApiFailedAt = Date.now();
           this._ms.loading = false;
           setTimeout(() => this._msEnsureLoaded(), 0);
           return;
@@ -2651,6 +2660,7 @@ class CameraGalleryCard extends LitElement {
       } catch (e) {
         console.warn("CGC Frigate API load failed:", e);
         this._ms.frigateApiFailed = true;
+        this._ms.frigateApiFailedAt = Date.now();
         this._msSetList([]);
       } finally {
         this._ms.loading = false;
