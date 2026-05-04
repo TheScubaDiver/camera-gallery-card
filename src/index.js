@@ -53,6 +53,7 @@ import {
   DEFAULT_DELETE_SERVICE,
   DELETE_PREFIX_NORMALIZED,
   DEFAULT_FRIGATE_API_LIMIT,
+  FRIGATE_API_RETRY_AFTER_MS,
   DEFAULT_LIVE_AUTO_MUTED,
   DEFAULT_LIVE_ENABLED,
   DEFAULT_MAX_MEDIA,
@@ -175,6 +176,9 @@ class CameraGalleryCard extends LitElement {
     this._posterFailed = new Set();
     this._snapshotCache = new Map();
     this._frigateSnapshots = [];
+    // Unsubscribe callback for HA WS Frigate-event-push subscription.
+    // null = not subscribed, function = active subscription.
+    this._frigateEventsUnsub = null;
     this._objectCache = new Map();
     this._previewOpen = false;
     this._selectMode = false;
@@ -386,6 +390,10 @@ class CameraGalleryCard extends LitElement {
     window.addEventListener('mouseup', this._onZoomMouseUp);
     if (navigator.maxTouchPoints > 0) this._showPills(5000);
     this._startMediaPoll();
+    // Idempotent — if hass isn't set yet, returns early; the firstHass branch
+    // in `set hass` then catches it. Covers disconnect→reconnect cycles where
+    // _hass stays set but the previous subscription was torn down.
+    this._subscribeFrigateEvents();
   }
 
   disconnectedCallback() {
@@ -404,6 +412,7 @@ class CameraGalleryCard extends LitElement {
     if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
 
     this._stopMediaPoll();
+    this._unsubscribeFrigateEvents();
     if (this._liveQuickSwitchTimer) clearTimeout(this._liveQuickSwitchTimer);
     if (this._navHideT) clearTimeout(this._navHideT);
     if (this._bulkHintTimer) clearTimeout(this._bulkHintTimer);
@@ -435,6 +444,8 @@ class CameraGalleryCard extends LitElement {
       if (this.config?.start_mode === "live" && this._hasLiveConfig()) {
         this._viewMode = "live";
       }
+      // Fire-and-forget: subscribe to HA's Frigate event push stream.
+      this._subscribeFrigateEvents();
       this.requestUpdate();
       return;
     }
@@ -463,6 +474,82 @@ class CameraGalleryCard extends LitElement {
 
   get hass() {
     return this._hass;
+  }
+
+  // ─── Frigate WS event push ─────────────────────────────────────────
+  //
+  // Subscribe to HA's `frigate/events/subscribe` WS endpoint so new Frigate
+  // events arrive as push messages over the WebSocket connection HA already
+  // keeps alive. On any push we invalidate the freshness gate and trigger a
+  // refresh. Falls back silently when HA's Frigate integration isn't present.
+
+  _frigateInstanceId() {
+    // HA's Frigate integration uses a per-instance client_id. The second
+    // segment of a `media-source://frigate/<client_id>/…` URI is that id.
+    const sources = Array.isArray(this.config?.media_sources)
+      ? this.config.media_sources
+      : [];
+    for (const ms of sources) {
+      const m = String(ms || "").match(/^media-source:\/\/frigate\/([^/]+)/);
+      if (m) return m[1];
+    }
+    return null;
+  }
+
+  async _subscribeFrigateEvents() {
+    if (this._frigateEventsUnsub) return;
+    const conn = this._hass?.connection;
+    if (!conn) return;
+    const sm = this.config?.source_mode;
+    if (sm !== "media" && sm !== "combined") return;
+    const instanceId = this._frigateInstanceId();
+    if (!instanceId) return;
+    try {
+      this._frigateEventsUnsub = await conn.subscribeMessage(
+        (data) => this._onFrigateEventPush(data),
+        { type: "frigate/events/subscribe", instance_id: instanceId }
+      );
+    } catch (_) {
+      // Frigate integration not installed or HA version too old — fall through
+      // to existing polling behavior.
+      this._frigateEventsUnsub = null;
+    }
+  }
+
+  _unsubscribeFrigateEvents() {
+    if (this._frigateEventsUnsub) {
+      try { this._frigateEventsUnsub(); } catch (_) {}
+      this._frigateEventsUnsub = null;
+    }
+  }
+
+  _onFrigateEventPush(data) {
+    // Frigate pushes 'new' / 'update' / 'end' messages per event. Only refresh
+    // on 'end' — the clip is finalized then, and we avoid 3× walks per event.
+    let payload;
+    try {
+      payload = typeof data === "string" ? JSON.parse(data) : data;
+    } catch (_) {
+      return;
+    }
+    if (payload?.type !== "end") return;
+
+    if (this._ms) {
+      // Bypass freshness gate.
+      this._ms.loadedAt = 0;
+      // Bypass the persistent walk cache so we do a real media-source walk
+      // instead of replaying stale localStorage data.
+      try {
+        const roots = Array.isArray(this.config?.media_sources)
+          ? this.config.media_sources
+          : [];
+        if (roots.length) {
+          const cacheKey = this._msWalkCacheKey(this._msKeyFromRoots(roots));
+          localStorage.removeItem(cacheKey);
+        }
+      } catch (_) {}
+    }
+    this._msEnsureLoaded();
   }
 
   // ─── Generic helpers ───────────────────────────────────────────────
@@ -2622,7 +2709,13 @@ class CameraGalleryCard extends LitElement {
     if (!roots.length) return;
 
     // === FRIGATE HTTP API PATH ===
-    if (this.config?.frigate_url && roots.some(isFrigateRoot) && !this._ms.frigateApiFailed) {
+    // The failed flag latches per-key; honor it only within the retry-cooldown
+    // window so a transient error (DNS blip, container restart) doesn't disable
+    // the direct path for the rest of the session.
+    const failedRecently =
+      this._ms.frigateApiFailed &&
+      Date.now() - (this._ms.frigateApiFailedAt || 0) < FRIGATE_API_RETRY_AFTER_MS;
+    if (this.config?.frigate_url && roots.some(isFrigateRoot) && !failedRecently) {
       const cap = (this.config?.max_media ?? DEFAULT_MAX_MEDIA);
       const key = `frigate_api:${this.config.frigate_url}:${cap}`;
       const sameKey = this._ms.key === key;
@@ -2635,6 +2728,7 @@ class CameraGalleryCard extends LitElement {
         this._ms.urlCache = new Map();
         this._msResolveFailed = new Set();
         this._ms.frigateApiFailed = false;
+        this._ms.frigateApiFailedAt = 0;
       }
 
       this._ms.loading = true;
@@ -2642,6 +2736,7 @@ class CameraGalleryCard extends LitElement {
         const items = await this._msLoadFrigateApi();
         if (items === null) {
           this._ms.frigateApiFailed = true;
+          this._ms.frigateApiFailedAt = Date.now();
           this._ms.loading = false;
           setTimeout(() => this._msEnsureLoaded(), 0);
           return;
@@ -2651,6 +2746,7 @@ class CameraGalleryCard extends LitElement {
       } catch (e) {
         console.warn("CGC Frigate API load failed:", e);
         this._ms.frigateApiFailed = true;
+        this._ms.frigateApiFailedAt = Date.now();
         this._msSetList([]);
       } finally {
         this._ms.loading = false;

@@ -130,6 +130,7 @@ export const DELETE_PREFIX_NORMALIZED = ((): string => {
 })();
 export const DEFAULT_DELETE_SERVICE = "";
 export const DEFAULT_FRIGATE_API_LIMIT = 500;
+export const FRIGATE_API_RETRY_AFTER_MS = 5 * 60 * 1000;
 export const DEFAULT_LIVE_AUTO_MUTED = true;
 export const DEFAULT_LIVE_ENABLED = false;
 export const DEFAULT_MAX_MEDIA = 50;
