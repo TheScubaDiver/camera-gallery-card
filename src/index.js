@@ -242,6 +242,14 @@ class CameraGalleryCard extends LitElement {
       this.requestUpdate();
     };
 
+    // iOS WebView freezes JS (including setInterval) when the HA app is
+    // backgrounded. On resume, restart the media-poll so a fresh fetch fires
+    // immediately and the 30s timer is back on schedule.
+    this._onVisibilityChange = () => {
+      if (document.visibilityState !== "visible") return;
+      this._startMediaPoll();
+    };
+
     this._onZoomTouchStart = (e) => {
       if (!this._isLiveActive() && !this._previewOpen) return;
       if (e.touches.length === 2) {
@@ -377,6 +385,7 @@ class CameraGalleryCard extends LitElement {
     super.connectedCallback();
     document.addEventListener("fullscreenchange", this._onFullscreenChange);
     document.addEventListener("webkitfullscreenchange", this._onFullscreenChange);
+    document.addEventListener("visibilitychange", this._onVisibilityChange);
     this.addEventListener('touchstart', this._onZoomTouchStart, { passive: false });
     this.addEventListener('touchmove', this._onZoomTouchMove, { passive: false });
     this.addEventListener('touchend', this._onZoomTouchEnd);
@@ -394,6 +403,7 @@ class CameraGalleryCard extends LitElement {
 
     document.removeEventListener("fullscreenchange", this._onFullscreenChange);
     document.removeEventListener("webkitfullscreenchange", this._onFullscreenChange);
+    document.removeEventListener("visibilitychange", this._onVisibilityChange);
     this.removeEventListener('touchstart', this._onZoomTouchStart);
     this.removeEventListener('touchmove', this._onZoomTouchMove);
     this.removeEventListener('touchend', this._onZoomTouchEnd);
