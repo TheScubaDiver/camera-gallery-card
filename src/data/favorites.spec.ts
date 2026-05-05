@@ -59,12 +59,12 @@ describe("favoritesKey", () => {
 
 describe("FavoritesStore", () => {
   let storage: MemoryStorage;
-  let onChange: ReturnType<typeof vi.fn>;
+  let onChange: ReturnType<typeof vi.fn<() => void>>;
   const config = { entities: ["sensor.cam"], media_sources: [] };
 
   beforeEach(() => {
     storage = new MemoryStorage();
-    onChange = vi.fn();
+    onChange = vi.fn<() => void>();
   });
 
   afterEach(() => {
