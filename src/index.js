@@ -761,6 +761,15 @@ class CameraGalleryCard extends LitElement {
     video.muted = shouldMute;
 
     if (video.src !== selectedUrl) {
+      // Cancel any in-flight load on the previous src before swapping. Without
+      // this, Firefox surfaces the browser-internal fetch abort as
+      // `Uncaught (in promise) DOMException: aborted by the user agent` —
+      // harmless, but it spams the console on every quick thumb-to-thumb tap.
+      if (video.src) {
+        try { video.pause(); } catch (_) {}
+        try { video.removeAttribute("src"); video.load(); } catch (_) {}
+      }
+
       video.src = selectedUrl;
 
       const poster = this._posterCache.get(selectedUrl) || "";
