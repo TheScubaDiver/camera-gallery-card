@@ -5253,7 +5253,7 @@ class CameraGalleryCard extends LitElement {
         position: absolute;
         bottom: 6px;
         left: 6px;
-        background: rgba(0, 0, 0, 0.6);
+        background: rgba(0, 0, 0, 0.4);
         color: #fff;
         padding: 2px 8px;
         border-radius: 10px;
