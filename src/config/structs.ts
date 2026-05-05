@@ -204,6 +204,7 @@ export const cameraGalleryCardConfigStruct = type({
   style_variables: defaulted(string(), ""),
   show_camera_title: defaulted(boolean(), true),
   persistent_controls: defaulted(boolean(), false),
+  debug_enabled: defaulted(boolean(), false),
 
   // ─── Preview ───────────────────────────────────────────────
   preview_position: defaulted(enums(PREVIEW_POSITIONS), DEFAULT_PREVIEW_POSITION),

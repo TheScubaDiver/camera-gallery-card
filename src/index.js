@@ -202,6 +202,7 @@ class CameraGalleryCard extends LitElement {
     this._datePickerDays = null;
     this._showLivePicker = false;
     this._showLiveQuickSwitch = false;
+    this._debugOpen = false;
     this._showNav = false;
     this._pillsVisible = false;
     this._pillsHovered = false;
@@ -1124,6 +1125,133 @@ class CameraGalleryCard extends LitElement {
     this._showLivePicker = false;
     this._liveCameraListCache = null;
     this.requestUpdate();
+  }
+
+  // ─── Debug / diagnostics ──────────────────────────────────────────
+
+  _openDebug() {
+    this._debugOpen = true;
+    this.requestUpdate();
+  }
+
+  _closeDebug() {
+    this._debugOpen = false;
+    this.requestUpdate();
+  }
+
+  _buildDiagnostics() {
+    const cfg = this.config || {};
+    const hass = this._hass;
+    const frigateInstalled = !!hass?.config?.components?.includes?.("frigate");
+    const frigateInstanceId = this._frigateInstanceId?.() || null;
+    const ms = this._ms || {};
+    const loadedAt = ms.loadedAt || 0;
+    const failedAt = ms.frigateApiFailedAt || 0;
+    const ageS = (ts) => (ts ? Math.round((Date.now() - ts) / 1000) + "s ago" : "—");
+    const fmtTs = (ts) => (ts ? new Date(ts).toLocaleTimeString() + " (" + ageS(ts) + ")" : "—");
+
+    // Each row: [key, value, status?]
+    //   status = "ok" | "warn" | "bad" | undefined
+    // ok   = healthy / configured / active
+    // warn = degraded but functional (e.g. fallback path)
+    // bad  = broken / missing / failed
+
+    return [
+      ["Card", "mdi:card-outline", [
+        ["Version", typeof CARD_VERSION === "string" ? CARD_VERSION : "(unknown)"],
+        ["View mode", this._viewMode || "—"],
+      ]],
+      ["Home Assistant", "mdi:home-assistant", [
+        ["Version", hass?.config?.version || "—"],
+        ["Language", hass?.config?.language || "—"],
+        ["Timezone", hass?.config?.time_zone || "—"],
+      ]],
+      ["Frigate integration", "mdi:cctv", [
+        ["Installed", frigateInstalled ? "yes" : "no", frigateInstalled ? "ok" : "bad"],
+        ["Instance id (from media_sources)", frigateInstanceId || "—", frigateInstanceId ? "ok" : "warn"],
+      ]],
+      ["Config summary", "mdi:cog-outline", [
+        ["source_mode", cfg.source_mode || "—"],
+        ["max_media", String(cfg.max_media ?? "—")],
+        ["frigate_url", cfg.frigate_url ? "set" : "(not set)"],
+        ["media_sources", String((cfg.media_sources || []).length)],
+        ["entities (sensor)", String((cfg.entities || []).length)],
+        ["live_enabled", cfg.live_enabled ? "yes" : "no", cfg.live_enabled ? "ok" : null],
+        ["live_camera_entities", String((cfg.live_camera_entities || []).length)],
+        ["live_layout", cfg.live_layout || "single"],
+        ["live_grid_labels", cfg.live_grid_labels === false ? "no" : "yes"],
+        ["start_mode", cfg.start_mode || "—"],
+      ]],
+      ["Runtime state", "mdi:pulse", [
+        ["Items in gallery", String((ms.list || []).length), (ms.list || []).length > 0 ? "ok" : "warn"],
+        ["Last fetch", fmtTs(loadedAt), loadedAt && (Date.now() - loadedAt < 5 * 60 * 1000) ? "ok" : loadedAt ? "warn" : "bad"],
+        ["Direct API failed", ms.frigateApiFailed ? "yes" : "no", ms.frigateApiFailed ? "warn" : "ok"],
+        ["Direct API failed at", fmtTs(failedAt)],
+        ["WS subscribe (frigate/events)", this._frigateEventsUnsub ? "active" : "inactive", this._frigateEventsUnsub ? "ok" : (frigateInstalled ? "warn" : null)],
+        ["Live card mounted", this._liveCard ? "yes" : "no", this._liveCard ? "ok" : (cfg.live_enabled ? "warn" : null)],
+        ["Live card key", this._liveCardConfigKey || "—"],
+        ["Live layout override", this._liveLayoutOverride || "—"],
+        ["Grid tiles", String(this._liveGridTiles?.size || 0)],
+      ]],
+      ["Live cameras", "mdi:cctv", (() => {
+        const cams = Array.isArray(cfg.live_camera_entities) ? cfg.live_camera_entities : [];
+        if (!cams.length) return [["(no cameras configured)", "—"]];
+        const rows = [];
+        for (const id of cams) {
+          const st = hass?.states?.[id];
+          if (!st) {
+            rows.push([id, "(entity not found)", "bad"]);
+            continue;
+          }
+          const streamType = st.attributes?.frontend_stream_type;
+          const display = streamType
+            ? streamType + (streamType === "web_rtc" ? " (low-latency)" : streamType === "hls" ? " (~2-5s buffer)" : "")
+            : "(unknown)";
+          // web_rtc = ok (fast), hls = warn (slow), unknown/missing = bad
+          const status = streamType === "web_rtc" ? "ok" : streamType === "hls" ? "warn" : "bad";
+          rows.push([st.attributes?.friendly_name || id, display, status]);
+        }
+        return rows;
+      })()],
+      ["Browser", "mdi:cellphone", [
+        ["User agent", navigator.userAgent || "—"],
+        ["Connection", navigator.onLine === false ? "offline" : "online", navigator.onLine === false ? "bad" : "ok"],
+      ]],
+    ];
+  }
+
+  _diagnosticsToText() {
+    const sections = this._buildDiagnostics();
+    const lines = [`Camera Gallery Card — Diagnostics`, `Generated: ${new Date().toISOString()}`, ""];
+    for (const [title, , rows] of sections) {
+      lines.push(`## ${title}`);
+      for (const [k, v] of rows) lines.push(`  ${k}: ${v}`);
+      lines.push("");
+    }
+    return lines.join("\n");
+  }
+
+  async _copyDebug() {
+    const text = this._diagnosticsToText();
+    try {
+      await navigator.clipboard.writeText(text);
+      this._debugCopied = true;
+      this.requestUpdate();
+      setTimeout(() => { this._debugCopied = false; this.requestUpdate(); }, 2000);
+    } catch (_clipErr) {
+      // Fallback for older webviews
+      try {
+        const ta = document.createElement("textarea");
+        ta.value = text;
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        document.body.removeChild(ta);
+        this._debugCopied = true;
+        this.requestUpdate();
+        setTimeout(() => { this._debugCopied = false; this.requestUpdate(); }, 2000);
+      } catch (_fallbackErr) { /* swallow */ }
+    }
   }
 
   async _ensureLiveCard() {
@@ -2295,6 +2423,52 @@ class CameraGalleryCard extends LitElement {
     try {
       navigator.vibrate?.(12);
     } catch (_) {}
+  }
+
+  _renderDebugModal() {
+    if (!this._debugOpen) return html``;
+    const sections = this._buildDiagnostics();
+    return html`
+      <div class="cgc-debug-backdrop" @click=${() => this._closeDebug()}></div>
+      <div class="cgc-debug-modal" @click=${(e) => e.stopPropagation()}>
+        <div class="cgc-debug-head">
+          <div class="cgc-debug-head-title">
+            <ha-icon icon="mdi:bug-outline"></ha-icon>
+            <span>Diagnostics</span>
+          </div>
+          <button class="cgc-debug-close" @click=${() => this._closeDebug()} aria-label="Close">
+            <ha-icon icon="mdi:close"></ha-icon>
+          </button>
+        </div>
+        <div class="cgc-debug-body">
+          ${sections.map(([title, icon, rows]) => html`
+            <div class="cgc-debug-section">
+              <div class="cgc-debug-section-head">
+                <ha-icon icon=${icon}></ha-icon>
+                <span>${title}</span>
+              </div>
+              <div class="cgc-debug-rows">
+                ${rows.map(([k, v, status]) => html`
+                  <div class="cgc-debug-row">
+                    <div class="cgc-debug-key">${k}</div>
+                    <div class="cgc-debug-val ${status ? "has-status status-" + status : ""}">
+                      ${status ? html`<span class="cgc-debug-dot"></span>` : html``}
+                      <span class="cgc-debug-val-text">${v}</span>
+                    </div>
+                  </div>
+                `)}
+              </div>
+            </div>
+          `)}
+        </div>
+        <div class="cgc-debug-foot">
+          <button class="cgc-debug-copy ${this._debugCopied ? "copied" : ""}" @click=${() => this._copyDebug()}>
+            <ha-icon icon=${this._debugCopied ? "mdi:check" : "mdi:content-copy"}></ha-icon>
+            <span>${this._debugCopied ? "Copied to clipboard" : "Copy full report"}</span>
+          </button>
+        </div>
+      </div>
+    `;
   }
 
   _renderThumbActionSheet() {
@@ -4418,6 +4592,11 @@ class CameraGalleryCard extends LitElement {
             <ha-icon icon="mdi:view-grid"></ha-icon>
           </button>
         ` : html``}
+        ${this.config?.debug_enabled ? html`
+          <button class="gallery-pill live-pill-btn" title="Diagnostics" @pointerdown=${(e) => e.stopPropagation()} @click=${(e) => { e.stopPropagation(); this._openDebug(); }}>
+            <ha-icon icon="mdi:bug-outline"></ha-icon>
+          </button>
+        ` : html``}
         <button class="gallery-pill live-pill-btn" @pointerdown=${(e) => e.stopPropagation()} @click=${(e) => { e.stopPropagation(); this._toggleLiveMute(); }}>
           <ha-icon icon=${this._liveMuted ? "mdi:volume-off" : "mdi:volume-high"}></ha-icon>
         </button>
@@ -4945,6 +5124,8 @@ class CameraGalleryCard extends LitElement {
 
         ${this._renderThumbActionSheet()}
 
+        ${this._renderDebugModal()}
+
         ${this._imgFsOpen && selectedUrl ? html`
           <div class="img-fs-overlay" @click=${() => this._closeImageFullscreen()}>
             <img src=${selectedUrl} alt="" @click=${(e) => e.stopPropagation()} />
@@ -5315,6 +5496,152 @@ class CameraGalleryCard extends LitElement {
         backdrop-filter: blur(2px);
         -webkit-backdrop-filter: blur(2px);
       }
+
+      /* ─── Diagnostics modal ─── */
+      .cgc-debug-backdrop {
+        position: absolute;
+        inset: 0;
+        z-index: 30;
+        background: rgba(0, 0, 0, 0.55);
+        backdrop-filter: blur(4px);
+        -webkit-backdrop-filter: blur(4px);
+      }
+      .cgc-debug-modal {
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        transform: translate(-50%, -50%);
+        width: min(94%, 540px);
+        max-height: min(88%, 680px);
+        z-index: 31;
+        background: var(--card-background-color, #16191e);
+        border: 1px solid rgba(255,255,255,0.08);
+        border-radius: 16px;
+        box-shadow: 0 24px 56px rgba(0,0,0,0.55);
+        color: var(--primary-text-color, #e6edf3);
+        display: grid;
+        grid-template-rows: auto minmax(0, 1fr) auto;
+        overflow: hidden;
+      }
+      .cgc-debug-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 16px 20px 14px;
+        background: linear-gradient(180deg, rgba(255,255,255,0.03), transparent);
+        border-bottom: 1px solid rgba(255,255,255,0.06);
+      }
+      .cgc-debug-head-title {
+        display: inline-flex;
+        align-items: center;
+        gap: 10px;
+        font-size: 17px;
+        font-weight: 600;
+        letter-spacing: -0.01em;
+      }
+      .cgc-debug-head-title ha-icon {
+        --mdc-icon-size: 22px;
+        color: #f0883e;
+      }
+      .cgc-debug-close {
+        background: transparent;
+        border: 0;
+        color: inherit;
+        cursor: pointer;
+        padding: 6px;
+        border-radius: 8px;
+        opacity: 0.7;
+        display: inline-flex;
+      }
+      .cgc-debug-close:hover { background: rgba(255,255,255,0.08); opacity: 1; }
+      .cgc-debug-body {
+        overflow-y: auto;
+        padding: 8px 20px 16px;
+      }
+      .cgc-debug-section {
+        margin-top: 18px;
+      }
+      .cgc-debug-section:first-child { margin-top: 8px; }
+      .cgc-debug-section-head {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 13px;
+        font-weight: 600;
+        margin-bottom: 8px;
+        color: var(--primary-text-color);
+      }
+      .cgc-debug-section-head ha-icon {
+        --mdc-icon-size: 16px;
+        opacity: 0.65;
+      }
+      .cgc-debug-rows {
+        background: rgba(255,255,255,0.02);
+        border: 1px solid rgba(255,255,255,0.05);
+        border-radius: 10px;
+        overflow: hidden;
+      }
+      .cgc-debug-row {
+        display: grid;
+        grid-template-columns: minmax(0, 0.55fr) minmax(0, 1fr);
+        gap: 14px;
+        padding: 9px 14px;
+        font-size: 13px;
+        line-height: 1.4;
+        border-bottom: 1px solid rgba(255,255,255,0.04);
+      }
+      .cgc-debug-row:last-child { border-bottom: 0; }
+      .cgc-debug-key {
+        opacity: 0.62;
+        font-weight: 500;
+        word-break: break-word;
+      }
+      .cgc-debug-val {
+        font-family: ui-monospace, SFMono-Regular, "SF Mono", Consolas, monospace;
+        font-size: 12.5px;
+        word-break: break-all;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .cgc-debug-val-text { flex: 1; min-width: 0; word-break: break-all; }
+      .cgc-debug-dot {
+        flex-shrink: 0;
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: #768390;
+      }
+      .cgc-debug-val.status-ok .cgc-debug-dot { background: #2da44e; box-shadow: 0 0 0 2px rgba(45,164,78,0.18); }
+      .cgc-debug-val.status-warn .cgc-debug-dot { background: #d29922; box-shadow: 0 0 0 2px rgba(210,153,34,0.18); }
+      .cgc-debug-val.status-bad .cgc-debug-dot { background: #f85149; box-shadow: 0 0 0 2px rgba(248,81,73,0.18); }
+      .cgc-debug-foot {
+        padding: 12px 20px 16px;
+        border-top: 1px solid rgba(255,255,255,0.06);
+      }
+      .cgc-debug-copy {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        width: 100%;
+        padding: 11px 14px;
+        border-radius: 10px;
+        border: 1px solid rgba(255,255,255,0.10);
+        background: rgba(255,255,255,0.04);
+        color: inherit;
+        font-size: 13px;
+        font-weight: 500;
+        cursor: pointer;
+        transition: background 120ms ease, border-color 120ms ease;
+      }
+      .cgc-debug-copy:hover { background: rgba(255,255,255,0.08); border-color: rgba(255,255,255,0.16); }
+      .cgc-debug-copy.copied {
+        background: rgba(45,164,78,0.15);
+        border-color: rgba(45,164,78,0.45);
+        color: #56d364;
+      }
+      .cgc-debug-copy ha-icon { --mdc-icon-size: 16px; }
 
       .live-picker {
         position: relative;
@@ -8370,6 +8697,18 @@ class CameraGalleryCardEditor extends HTMLElement {
                   <span class="selarrow"></span>
                 </div>
               </div>
+
+              <div class="row">
+                <div class="row-head">
+                  <div>
+                    <div class="lbl">Debug mode</div>
+                    <div class="desc">Show a debug pill in live view that opens a diagnostics report (card version, HA info, runtime state). Useful for support questions.</div>
+                  </div>
+                  <div class="togrow">
+                    <label class="cgc-switch"><input type="checkbox" id="debug-enabled" ${this._config?.debug_enabled ? "checked" : ""}><span class="cgc-track"></span></label>
+                  </div>
+                </div>
+              </div>
             </div>
           `;
 
@@ -10949,6 +11288,18 @@ if (oldPanel && tmp.firstElementChild) {
       const val = String(e.target.value || "").trim().replace(/\/+$/, "");
       if (val) this._set("frigate_url", val);
       else { const n = { ...this._config }; delete n.frigate_url; this._config = this._stripAlwaysTrueKeys(n); this._fire(); }
+    });
+
+    $("debug-enabled")?.addEventListener("change", (e) => {
+      const on = !!e.target.checked;
+      if (on) {
+        this._set("debug_enabled", true);
+      } else {
+        const next = { ...this._config };
+        delete next.debug_enabled;
+        this._config = this._stripAlwaysTrueKeys(next);
+        this._fire();
+      }
     });
 
     $("liveenabled")?.addEventListener("change", (e) => {
