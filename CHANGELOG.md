@@ -1,5 +1,22 @@
 # Changelog
 
+## [2.9.0](https://github.com/TheScubaDiver/camera-gallery-card/compare/v2.8.0...v2.9.0) (2026-05-04)
+
+
+### Features
+
+* favorites ([#70](https://github.com/TheScubaDiver/camera-gallery-card/issues/70)) ([98da87e](https://github.com/TheScubaDiver/camera-gallery-card/commit/98da87e4751b9e8c328474bd87a58dfe895d0e33))
+* pair same-stem jpg/mp4 in sensor and combined mode ([#67](https://github.com/TheScubaDiver/camera-gallery-card/issues/67)) ([7d938ad](https://github.com/TheScubaDiver/camera-gallery-card/commit/7d938add21e83aef4a8ab6128c4bec0d8de57030))
+* real-time Frigate event updates via Home Assistant WebSocket ([#83](https://github.com/TheScubaDiver/camera-gallery-card/issues/83)) ([4551b36](https://github.com/TheScubaDiver/camera-gallery-card/commit/4551b36f59c6288bfc73dd11681b05c7e4824af1))
+
+
+### Bug Fixes
+
+* live-mode thumbnail, favorite button, hardcoded Dutch + typed config ([#72](https://github.com/TheScubaDiver/camera-gallery-card/issues/72)) ([427a102](https://github.com/TheScubaDiver/camera-gallery-card/commit/427a102c469ecb312f18d532a82bdf6bfc9916f2))
+* reduce topbar button spacing ([#69](https://github.com/TheScubaDiver/camera-gallery-card/issues/69)) ([bd26448](https://github.com/TheScubaDiver/camera-gallery-card/commit/bd2644844e7e06e13b1438c3383098473b5ea4e5))
+* retry direct Frigate API after transient failures ([#81](https://github.com/TheScubaDiver/camera-gallery-card/issues/81)) ([1e239ee](https://github.com/TheScubaDiver/camera-gallery-card/commit/1e239eebd6eeec35191cbef1d3213d9e83748f44))
+* use paired same-stem jpg as thumbnail for mp4 in media source mode ([#65](https://github.com/TheScubaDiver/camera-gallery-card/issues/65)) ([a3e2221](https://github.com/TheScubaDiver/camera-gallery-card/commit/a3e2221a3a6aefe7eef7c790e1633c0b9e9e14d7))
+
 ## [2.8.0](https://github.com/TheScubaDiver/camera-gallery-card/compare/v2.7.0...v2.8.0) (2026-04-30)
 
 
