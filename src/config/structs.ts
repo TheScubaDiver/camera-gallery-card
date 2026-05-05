@@ -163,6 +163,7 @@ export const cameraGalleryCardConfigStruct = type({
   live_camera_entity: defaulted(string(), ""),
   live_camera_entities: defaulted(array(string()), []),
   live_layout: defaulted(enums(LIVE_LAYOUTS), DEFAULT_LIVE_LAYOUT),
+  live_grid_labels: defaulted(boolean(), true),
   live_stream_url: optional(string()),
   live_stream_name: optional(string()),
   live_stream_urls: optional(array(liveStreamUrlEntry)),

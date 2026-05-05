@@ -1647,11 +1647,12 @@ class CameraGalleryCard extends LitElement {
     return list.filter((e) => typeof e === "string" && e.startsWith("camera."));
   }
 
-  _gridColumns(count) {
-    if (count <= 1) return 1;
-    if (count <= 4) return 2;
-    if (count <= 9) return 3;
-    return 4;
+  _gridDims(count) {
+    // Always render a square grid so two cameras don't look like a row of two
+    // boxes. Empty cells stay black via the host background.
+    if (count <= 4) return { cols: 2, rows: 2 };
+    if (count <= 9) return { cols: 3, rows: 3 };
+    return { cols: 4, rows: 4 };
   }
 
   _onGridTileTap(entity) {
@@ -1690,7 +1691,7 @@ class CameraGalleryCard extends LitElement {
     if (!host) return;
 
     const cameras = this._getGridCameraEntities();
-    const cols = this._gridColumns(cameras.length);
+    const { cols, rows } = this._gridDims(cameras.length);
 
     if (!host.classList.contains("live-grid-host")) {
       host.classList.add("live-grid-host");
@@ -1698,6 +1699,8 @@ class CameraGalleryCard extends LitElement {
       this._liveGridTiles.clear();
     }
     host.style.setProperty("--cgc-grid-cols", String(cols));
+    host.style.setProperty("--cgc-grid-rows", String(rows));
+    host.classList.toggle("live-grid-no-labels", this.config?.live_grid_labels === false);
 
     // Remove tiles for cameras no longer present.
     const wanted = new Set(cameras);
@@ -5218,7 +5221,7 @@ class CameraGalleryCard extends LitElement {
       .live-card-host.live-grid-host {
         display: grid !important;
         grid-template-columns: repeat(var(--cgc-grid-cols, 2), 1fr);
-        grid-auto-rows: 1fr;
+        grid-template-rows: repeat(var(--cgc-grid-rows, 2), 1fr);
         gap: 4px;
         padding: 0;
         background: #000;
@@ -5240,6 +5243,10 @@ class CameraGalleryCard extends LitElement {
         height: 100% !important;
         display: block !important;
         object-fit: cover !important;
+      }
+
+      .live-grid-host.live-grid-no-labels .live-grid-label {
+        display: none;
       }
 
       .live-grid-label {
@@ -7897,6 +7904,7 @@ class CameraGalleryCardEditor extends HTMLElement {
     const liveCameraEntity = String(c.live_camera_entity || "").trim();
     const liveCameraEntities = Array.isArray(c.live_camera_entities) ? c.live_camera_entities : [];
     const liveLayout = c.live_layout === "grid" ? "grid" : "single";
+    const liveGridLabels = c.live_grid_labels !== false;
     const liveControlsDisabled = false;
 
 
@@ -8498,12 +8506,16 @@ class CameraGalleryCardEditor extends HTMLElement {
                 <div class="row">
                   <div class="lbl">Live layout</div>
                   <div class="desc">Single shows one camera at a time (use the picker to switch). Grid shows all visible cameras at once — tap a tile to focus.</div>
-                  <div class="field">
-                    <select class="ed-input" id="live-layout">
-                      <option value="single" ${liveLayout === "single" ? "selected" : ""}>Single camera</option>
-                      <option value="grid" ${liveLayout === "grid" ? "selected" : ""}>Grid (all visible)</option>
-                    </select>
+                  <div class="segwrap">
+                    <button class="seg ${liveLayout === "single" ? "on" : ""}" data-livelayout="single">Single</button>
+                    <button class="seg ${liveLayout === "grid" ? "on" : ""}" data-livelayout="grid">Grid</button>
                   </div>
+                  ${liveLayout === "grid" ? `
+                  <div class="row-inline live-grid-suboption">
+                    <span>Show camera labels</span>
+                    <label class="cgc-switch"><input type="checkbox" id="live-grid-labels" ${liveGridLabels ? "checked" : ""}><span class="cgc-track"></span></label>
+                  </div>
+                  ` : ``}
                 </div>
                 ` : ``}
 
@@ -9075,6 +9087,13 @@ class CameraGalleryCardEditor extends HTMLElement {
           gap: 16px;
         }
 
+        .live-grid-suboption {
+          margin-top: 12px;
+          padding-top: 12px;
+          border-top: 1px solid var(--ed-divider, rgba(255, 255, 255, 0.08));
+          font-size: 13px;
+        }
+
         .row-inline .lbl {
           margin: 0;
         }
@@ -9429,6 +9448,10 @@ class CameraGalleryCardEditor extends HTMLElement {
         .segwrap {
           display: flex;
           gap: 8px;
+        }
+
+        .desc + .segwrap {
+          margin-top: 8px;
         }
 
         .seg {
@@ -10947,16 +10970,32 @@ if (oldPanel && tmp.firstElementChild) {
       this._scheduleRender();
     });
 
-    $("live-layout")?.addEventListener("change", (e) => {
-      const val = e.target.value === "grid" ? "grid" : "single";
-      if (val === "single") {
-        // Default — drop the key from YAML so the config stays minimal.
+    this.shadowRoot.querySelectorAll(".seg[data-livelayout]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const val = btn.dataset.livelayout === "grid" ? "grid" : "single";
+        if (val === "single") {
+          // Default — drop the key from YAML so the config stays minimal.
+          const next = { ...this._config };
+          delete next.live_layout;
+          this._config = this._stripAlwaysTrueKeys(next);
+          this._fire();
+        } else {
+          this._set("live_layout", val);
+        }
+        btn.closest(".segwrap")?.querySelectorAll(".seg").forEach((s) => s.classList.toggle("on", s === btn));
+      });
+    });
+
+    $("live-grid-labels")?.addEventListener("change", (e) => {
+      const on = !!e.target.checked;
+      if (on) {
+        // Default — drop the key from YAML.
         const next = { ...this._config };
-        delete next.live_layout;
+        delete next.live_grid_labels;
         this._config = this._stripAlwaysTrueKeys(next);
         this._fire();
       } else {
-        this._set("live_layout", val);
+        this._set("live_grid_labels", false);
       }
     });
 
