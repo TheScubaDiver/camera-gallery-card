@@ -30,6 +30,7 @@ import {
 } from "./data/pairing";
 import { FavoritesStore } from "./data/favorites";
 import { fnv1aHash } from "./util/hash";
+import { isVideo } from "./util/media-type";
 import {
   FRIGATE_SNAPSHOTS_ROOT,
   FRIGATE_URI_PREFIX,
@@ -725,7 +726,7 @@ class CameraGalleryCard extends LitElement {
     for (const it of items) {
       const src = String(it?.src || "");
       if (!src) continue;
-      if (!this._isVideo(src)) continue;
+      if (!isVideo(src)) continue;
       this._enqueuePoster(src);
     }
   }
@@ -2307,11 +2308,6 @@ class CameraGalleryCard extends LitElement {
     return String(v || "").startsWith("media-source://");
   }
 
-  _isVideo(src) {
-    const path = String(src || "").split("?")[0].split("#")[0];
-    return /\.(mp4|webm|mov|m4v)$/i.test(path);
-  }
-
   _toFsPath(src) {
     if (!src) return "";
     let clean = String(src).trim();
@@ -2627,7 +2623,7 @@ class CameraGalleryCard extends LitElement {
     try {
       // Auth-protected HA image thumbnails (browse_media) need a Bearer fetch.
       // Videos always go through _captureFrame to extract a still — never base64 the file.
-      const dataUrl = src.startsWith("/") && !this._isVideo(src)
+      const dataUrl = src.startsWith("/") && !isVideo(src)
         ? await this._fetchProtectedAsDataUrl(src)
         : await this._captureFrame(
             src,
@@ -3257,7 +3253,7 @@ class CameraGalleryCard extends LitElement {
     const c = String(cls || "").toLowerCase();
     if (m.startsWith("video/")) return true;
     if (c === "video") return true;
-    return this._isVideo(String(urlOrTitle || ""));
+    return isVideo(String(urlOrTitle || ""));
   }
 
   _resetThumbScrollToStart() {
@@ -3404,7 +3400,7 @@ class CameraGalleryCard extends LitElement {
       const meta = this._msMetaById(src);
       return this._isVideoSmart(meta.title || src, meta.mime, meta.cls);
     }
-    return this._isVideo(src);
+    return isVideo(src);
   }
 
   _matchesTypeFilter(src) {
@@ -4050,7 +4046,7 @@ class CameraGalleryCard extends LitElement {
                 changed = true;
               }
               // Viewport-aware poster prioritization: enqueue only when visible
-              if (isSensor && key && this._isVideo(key)) {
+              if (isSensor && key && isVideo(key)) {
                 const pairedJpg = this._sensorPairedThumbs?.get(key);
                 this._enqueuePoster(pairedJpg || key);
               }
