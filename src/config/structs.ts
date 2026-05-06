@@ -56,6 +56,9 @@ import {
   MAX_MEDIA_MAX,
   MAX_MEDIA_MIN,
   OBJECT_FITS,
+  CARD_HEIGHT_DEFAULT,
+  CARD_HEIGHT_MAX,
+  CARD_HEIGHT_MIN,
   PILL_SIZE_DEFAULT,
   PILL_SIZE_MAX,
   PILL_SIZE_MIN,
@@ -190,6 +193,7 @@ export const cameraGalleryCardConfigStruct = type({
     DEFAULT_THUMBNAIL_FRAME_PCT
   ),
   pill_size: defaulted(intInRange(PILL_SIZE_MIN, PILL_SIZE_MAX), PILL_SIZE_DEFAULT),
+  card_height: defaulted(intInRange(CARD_HEIGHT_MIN, CARD_HEIGHT_MAX), CARD_HEIGHT_DEFAULT),
   aspect_ratio: defaulted(enums(ASPECT_RATIOS), DEFAULT_ASPECT_RATIO),
   object_fit: defaulted(enums(OBJECT_FITS), DEFAULT_OBJECT_FIT),
   controls_mode: defaulted(enums(CONTROLS_MODES), DEFAULT_CONTROLS_MODE),

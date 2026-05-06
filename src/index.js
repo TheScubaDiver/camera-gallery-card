@@ -4219,7 +4219,7 @@ class CameraGalleryCard extends LitElement {
       --thumbEmptyH:${this.config.thumb_size}px;
       --topbarMar:${STYLE.topbar_margin};
       --topbarPad:${STYLE.topbar_padding};
-      --thumbsMaxHeight:320px;
+      --thumbsMaxHeight:${(this.config.card_height ?? 0) > 0 ? this.config.card_height + "px" : "320px"};
       --cgc-object-fit:${this.config.object_fit || "cover"};
       --cgc-pill-size:${this.config.pill_size}px;
       ${this.config.style_variables || ""}
@@ -6618,6 +6618,7 @@ const STYLE_SECTIONS = [
       { type: "color",  hostId: "bgcolor-host",     variable: "--cgc-card-bg",           label: "Background" },
       { type: "color",  hostId: "bordercolor-host", variable: "--cgc-card-border-color", label: "Border color" },
       { type: "radius", variable: "--r",             label: "Border radius", min: 0, max: 32, default: 10 },
+      { type: "slider", id: "cardheight", valId: "cardheightval", configKey: "card_height", label: "Thumb area height", min: 0, max: 1200, default: 0, unit: "px" },
     ],
   },
   {
@@ -7507,18 +7508,45 @@ class CameraGalleryCardEditor extends HTMLElement {
 
     this.shadowRoot.querySelectorAll("[data-config-slider]").forEach((slider) => {
       const key = slider.dataset.configSlider;
-      const unit = slider.dataset.sliderUnit || "";
       const defaultVal = Number(slider.dataset.sliderDefault);
-      const display = this.shadowRoot.getElementById(slider.dataset.sliderValId);
+      const numInput = this.shadowRoot.getElementById(slider.dataset.sliderMirrorId);
 
       slider.addEventListener("input", (e) => {
-        if (display) display.textContent = e.target.value + unit;
+        if (numInput) numInput.value = e.target.value;
       }, sig);
 
       slider.addEventListener("change", (e) => {
         const v = Number(e.target.value);
-        if (display) display.textContent = v + unit;
+        if (numInput) numInput.value = v;
         this._set(key, Number.isFinite(v) ? v : defaultVal);
+      }, sig);
+    });
+
+    this.shadowRoot.querySelectorAll("[data-slider-input]").forEach((numInput) => {
+      const key = numInput.dataset.sliderInput;
+      const defaultVal = Number(numInput.dataset.sliderDefault);
+      const slider = this.shadowRoot.getElementById(numInput.dataset.sliderTarget);
+      const min = Number(numInput.min);
+      const max = Number(numInput.max);
+
+      const commit = () => {
+        let v = Number(numInput.value);
+        if (!Number.isFinite(v)) v = defaultVal;
+        v = Math.min(max, Math.max(min, Math.round(v)));
+        numInput.value = v;
+        if (slider) slider.value = v;
+        this._set(key, v);
+      };
+
+      numInput.addEventListener("input", () => {
+        const v = Number(numInput.value);
+        if (Number.isFinite(v) && slider) slider.value = Math.min(max, Math.max(min, v));
+      }, sig);
+
+      numInput.addEventListener("change", commit, sig);
+      numInput.addEventListener("blur", commit, sig);
+      numInput.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") { e.preventDefault(); commit(); numInput.blur(); }
       }, sig);
     });
 
@@ -8608,12 +8636,27 @@ class CameraGalleryCardEditor extends HTMLElement {
                                       data-slider-val-id="${ctrl.valId}"
                                       data-slider-unit="${ctrl.unit}"
                                       data-slider-default="${ctrl.default}"
+                                      data-slider-mirror-id="${ctrl.id}-num"
                                       id="${ctrl.id}"
                                       min="${ctrl.min}"
                                       max="${ctrl.max}"
                                       value="${val}"
                                     >
-                                    <span class="radius-value" id="${ctrl.valId}">${val}${ctrl.unit}</span>
+                                    <span class="radius-value-wrap" id="${ctrl.valId}" data-slider-unit="${ctrl.unit}">
+                                      <input
+                                        type="number"
+                                        class="radius-value-input"
+                                        id="${ctrl.id}-num"
+                                        data-slider-input="${ctrl.configKey}"
+                                        data-slider-target="${ctrl.id}"
+                                        data-slider-default="${ctrl.default}"
+                                        min="${ctrl.min}"
+                                        max="${ctrl.max}"
+                                        step="1"
+                                        value="${val}"
+                                      >
+                                      <span class="radius-value-unit">${ctrl.unit}</span>
+                                    </span>
                                     <button type="button" class="color-reset" data-slider-reset="${ctrl.configKey}" data-slider-default="${ctrl.default}" title="Reset to default">
                                       ${svgIcon('mdi:backup-restore', 16)}
                                     </button>
@@ -9980,6 +10023,40 @@ class CameraGalleryCardEditor extends HTMLElement {
           color: var(--ed-text2);
           min-width: 34px;
           text-align: right;
+        }
+
+        .radius-value-wrap {
+          display: inline-flex;
+          align-items: baseline;
+          gap: 2px;
+          font-size: 12px;
+          font-weight: 800;
+          color: var(--ed-text2);
+        }
+        .radius-value-input {
+          width: 48px;
+          padding: 2px 4px;
+          background: transparent;
+          border: 1px solid transparent;
+          border-radius: 4px;
+          color: inherit;
+          font: inherit;
+          text-align: right;
+          -moz-appearance: textfield;
+        }
+        .radius-value-input::-webkit-outer-spin-button,
+        .radius-value-input::-webkit-inner-spin-button {
+          -webkit-appearance: none;
+          margin: 0;
+        }
+        .radius-value-input:hover { border-color: var(--ed-divider, rgba(255,255,255,0.10)); }
+        .radius-value-input:focus {
+          outline: none;
+          border-color: var(--primary-color, #03a9f4);
+          background: rgba(255,255,255,0.04);
+        }
+        .radius-value-unit {
+          opacity: 0.7;
         }
 
         .browser-empty {
