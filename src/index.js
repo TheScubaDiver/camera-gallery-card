@@ -24,6 +24,14 @@ import {
   sensorTextForFilter,
 } from "./data/object-filters";
 import {
+  dedupeByRelPath,
+  pairMediaSourceThumbnails,
+  pairSensorItems,
+} from "./data/pairing";
+import { FavoritesStore } from "./data/favorites";
+import { fnv1aHash } from "./util/hash";
+import { isVideo } from "./util/media-type";
+import {
   FRIGATE_SNAPSHOTS_ROOT,
   FRIGATE_URI_PREFIX,
   fetchFrigateEvents,
@@ -196,7 +204,7 @@ class CameraGalleryCard extends LitElement {
     this._pillsHideActive = false;
     this._srcEntityMap = new Map();
     this._sensorPairedThumbs = new Map();
-    this._favorites = new Set();
+    this._favorites = new FavoritesStore({ onChange: () => this.requestUpdate() });
     this._suppressNextThumbClick = false;
     this._swipeStartX = 0;
     this._swipeStartY = 0;
@@ -718,7 +726,7 @@ class CameraGalleryCard extends LitElement {
     for (const it of items) {
       const src = String(it?.src || "");
       if (!src) continue;
-      if (!this._isVideo(src)) continue;
+      if (!isVideo(src)) continue;
       this._enqueuePoster(src);
     }
   }
@@ -753,6 +761,15 @@ class CameraGalleryCard extends LitElement {
     video.muted = shouldMute;
 
     if (video.src !== selectedUrl) {
+      // Cancel any in-flight load on the previous src before swapping. Without
+      // this, Firefox surfaces the browser-internal fetch abort as
+      // `Uncaught (in promise) DOMException: aborted by the user agent` —
+      // harmless, but it spams the console on every quick thumb-to-thumb tap.
+      if (video.src) {
+        try { video.pause(); } catch (_) {}
+        try { video.removeAttribute("src"); video.load(); } catch (_) {}
+      }
+
       video.src = selectedUrl;
 
       const poster = this._posterCache.get(selectedUrl) || "";
@@ -933,10 +950,6 @@ class CameraGalleryCard extends LitElement {
 
   _isThumbLayoutVertical() {
     return this.config?.thumb_layout === "vertical";
-  }
-
-  _jsonEq(a, b) {
-    return JSON.stringify(a) === JSON.stringify(b);
   }
 
   // Options bag for the pure datetime-parsing functions.
@@ -2300,11 +2313,6 @@ class CameraGalleryCard extends LitElement {
     return String(v || "").startsWith("media-source://");
   }
 
-  _isVideo(src) {
-    const path = String(src || "").split("?")[0].split("#")[0];
-    return /\.(mp4|webm|mov|m4v)$/i.test(path);
-  }
-
   _toFsPath(src) {
     if (!src) return "";
     let clean = String(src).trim();
@@ -2536,46 +2544,11 @@ class CameraGalleryCard extends LitElement {
     });
   }
 
-  _thumbHash(url) {
-    let h = 2166136261;
-    for (let i = 0; i < url.length; i++) {
-      h ^= url.charCodeAt(i);
-      h = Math.imul(h, 16777619) >>> 0;
-    }
-    return "cgc_p_" + h.toString(36);
-  }
-
-  _favKey() {
-    const id = [
-      ...(this.config?.entities ?? []),
-      ...(this.config?.media_sources ?? []),
-    ].sort().join("|");
-    return "cgc_favs_" + this._thumbHash(id);
-  }
-
-  _loadFavorites() {
-    try {
-      const raw = localStorage.getItem(this._favKey());
-      this._favorites = raw ? new Set(JSON.parse(raw)) : new Set();
-    } catch (_) { this._favorites = new Set(); }
-  }
-
-  _saveFavorites() {
-    try { localStorage.setItem(this._favKey(), JSON.stringify([...this._favorites])); } catch (_) {}
-  }
-
-  _toggleFavorite(src) {
-    if (this._favorites.has(src)) this._favorites.delete(src);
-    else this._favorites.add(src);
-    this._saveFavorites();
-    this.requestUpdate();
-  }
-
   // Salt the localStorage key with the current frame %, so changing the % invalidates
   // cached frames without needing to wipe storage.
   _lsKey(url) {
     const pct = this.config?.thumbnail_frame_pct ?? DEFAULT_THUMBNAIL_FRAME_PCT;
-    return this._thumbHash(url + "|" + pct);
+    return "cgc_p_" + fnv1aHash(url + "|" + pct);
   }
 
   _lsThumbGet(url) {
@@ -2655,7 +2628,7 @@ class CameraGalleryCard extends LitElement {
     try {
       // Auth-protected HA image thumbnails (browse_media) need a Bearer fetch.
       // Videos always go through _captureFrame to extract a still — never base64 the file.
-      const dataUrl = src.startsWith("/") && !this._isVideo(src)
+      const dataUrl = src.startsWith("/") && !isVideo(src)
         ? await this._fetchProtectedAsDataUrl(src)
         : await this._captureFrame(
             src,
@@ -2905,7 +2878,7 @@ class CameraGalleryCard extends LitElement {
         })
         .filter((x) => !!x.id);
 
-      items = this._dedupeByRelPath(items);
+      items = dedupeByRelPath(items);
 
       items.sort((a, b) => {
         const am = a.dtMs ?? dtMsFromSrc(a.id, this._dtOpts);
@@ -3011,48 +2984,8 @@ class CameraGalleryCard extends LitElement {
       .join(" | ");
   }
 
-  _msPairThumbnails(items) {
-    const videosByStem = new Map();
-    for (let i = 0; i < items.length; i++) {
-      const m = String(items[i].id || "").match(/([^/]+)\.(mp4|webm|mov|m4v)$/i);
-      if (m) videosByStem.set(m[1].toLowerCase(), i);
-    }
-    const pairedThumbs = new Map();
-    const toRemove = new Set();
-    for (let i = 0; i < items.length; i++) {
-      const m = String(items[i].id || "").match(/([^/]+)\.(jpg|jpeg|png|webp)$/i);
-      if (!m) continue;
-      const vidIdx = videosByStem.get(m[1].toLowerCase());
-      if (vidIdx === undefined) continue;
-      pairedThumbs.set(items[vidIdx].id, items[i].id);
-      toRemove.add(i);
-    }
-    const filtered = toRemove.size ? items.filter((_, i) => !toRemove.has(i)) : items;
-    return { items: filtered, pairedThumbs };
-  }
-
-  _pairSensorItems(items) {
-    const videosByStem = new Map();
-    for (let i = 0; i < items.length; i++) {
-      const m = String(items[i].src || "").match(/([^/]+)\.(mp4|webm|mov|m4v)$/i);
-      if (m) videosByStem.set(m[1].toLowerCase(), i);
-    }
-    const pairedThumbs = new Map();
-    const toRemove = new Set();
-    for (let i = 0; i < items.length; i++) {
-      const m = String(items[i].src || "").match(/([^/]+)\.(jpg|jpeg|png|webp)$/i);
-      if (!m) continue;
-      const vidIdx = videosByStem.get(m[1].toLowerCase());
-      if (vidIdx === undefined) continue;
-      pairedThumbs.set(items[vidIdx].src, items[i].src);
-      toRemove.add(i);
-    }
-    const filtered = toRemove.size ? items.filter((_, i) => !toRemove.has(i)) : items;
-    return { items: filtered, pairedThumbs };
-  }
-
   _msSetList(items) {
-    const { items: paired, pairedThumbs } = this._msPairThumbnails(Array.isArray(items) ? [...items] : []);
+    const { items: paired, pairedThumbs } = pairMediaSourceThumbnails(Array.isArray(items) ? [...items] : []);
     this._ms.list = paired;
     this._ms.listIndex = new Map(paired.map((x) => [x.id, x]));
     this._ms.pairedThumbs = pairedThumbs;
@@ -3209,29 +3142,6 @@ class CameraGalleryCard extends LitElement {
     return Promise.race([p, t]);
   }
 
-  _dedupeByRelPath(items) {
-    const seen = new Map();
-
-    const norm = (idOrPath) =>
-      String(idOrPath || "")
-        .replace(/^media-source:\/\/media_source\//, "")
-        .replace(/^media-source:\/\/media_source/, "")
-        .replace(/^media-source:\/\//, "")
-        .replace(/\/{2,}/g, "/")
-        .replace(/^\/+/, "")
-        .replace(/\/+$/g, "")
-        .trim()
-        .toLowerCase();
-
-    for (const it of items || []) {
-      const key = norm(it?.media_content_id || it?.path || it?.id || it?.src || it);
-      if (!key) continue;
-      if (!seen.has(key)) seen.set(key, it);
-    }
-
-    return Array.from(seen.values());
-  }
-
   /**
    * @typedef {{ src: string, dtMs?: number }} CardItem
    *
@@ -3279,18 +3189,18 @@ class CameraGalleryCard extends LitElement {
         }
         sensorList.push(...part);
       }
-      const enrichedSensor = this._dedupeByRelPath(sensorList).map(enrich);
-      const { items: pairedSensor, pairedThumbs: sensorPaired } = this._pairSensorItems(enrichedSensor);
+      const enrichedSensor = dedupeByRelPath(sensorList).map(enrich);
+      const { items: pairedSensor, pairedThumbs: sensorPaired } = pairSensorItems(enrichedSensor);
       this._sensorPairedThumbs = sensorPaired;
-      const msItems = this._dedupeByRelPath(this._msIds()).map(enrich);
-      const merged = this._dedupeByRelPath([...pairedSensor, ...msItems]);
+      const msItems = dedupeByRelPath(this._msIds()).map(enrich);
+      const merged = dedupeByRelPath([...pairedSensor, ...msItems]);
       return this._deleted?.size
         ? merged.filter((it) => !this._deleted.has(it.src))
         : merged;
     }
 
     if (usingMediaSource) {
-      const ids = this._dedupeByRelPath(this._msIds()).map(enrich);
+      const ids = dedupeByRelPath(this._msIds()).map(enrich);
       return this._deleted?.size ? ids.filter((it) => !this._deleted.has(it.src)) : ids;
     }
 
@@ -3331,14 +3241,14 @@ class CameraGalleryCard extends LitElement {
       list.push(...part);
     }
 
-    list = this._dedupeByRelPath(list);
+    list = dedupeByRelPath(list);
 
     if (this._deleted?.size) {
       list = list.filter((src) => !this._deleted.has(src));
     }
 
     const enriched = list.map(enrich);
-    const { items: paired, pairedThumbs } = this._pairSensorItems(enriched);
+    const { items: paired, pairedThumbs } = pairSensorItems(enriched);
     this._sensorPairedThumbs = pairedThumbs;
     return paired;
   }
@@ -3348,7 +3258,7 @@ class CameraGalleryCard extends LitElement {
     const c = String(cls || "").toLowerCase();
     if (m.startsWith("video/")) return true;
     if (c === "video") return true;
-    return this._isVideo(String(urlOrTitle || ""));
+    return isVideo(String(urlOrTitle || ""));
   }
 
   _resetThumbScrollToStart() {
@@ -3495,7 +3405,7 @@ class CameraGalleryCard extends LitElement {
       const meta = this._msMetaById(src);
       return this._isVideoSmart(meta.title || src, meta.mime, meta.cls);
     }
-    return this._isVideo(src);
+    return isVideo(src);
   }
 
   _matchesTypeFilter(src) {
@@ -3892,7 +3802,7 @@ class CameraGalleryCard extends LitElement {
 
     this.config = nextConfig;
     this._customIcons = customIcons;
-    this._loadFavorites();
+    this._favorites.load(this.config);
     this._startMediaPoll();
 
     const { changedKeys, isSourceChange: sourceChange, isUiOnly: uiOnlyChange } =
@@ -4141,7 +4051,7 @@ class CameraGalleryCard extends LitElement {
                 changed = true;
               }
               // Viewport-aware poster prioritization: enqueue only when visible
-              if (isSensor && key && this._isVideo(key)) {
+              if (isSensor && key && isVideo(key)) {
                 const pairedJpg = this._sensorPairedThumbs?.get(key);
                 this._enqueuePoster(pairedJpg || key);
               }
@@ -4747,7 +4657,7 @@ class CameraGalleryCard extends LitElement {
 
                         <div
                           class="fav-btn ${this._favorites.has(it.src) ? 'on' : ''}"
-                          @click=${(e) => { e.stopPropagation(); this._toggleFavorite(it.src); }}
+                          @click=${(e) => { e.stopPropagation(); this._favorites.toggle(it.src); }}
                           @pointerdown=${(e) => e.stopPropagation()}
                           role="button"
                           title="Favorite"
