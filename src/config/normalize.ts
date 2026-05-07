@@ -132,6 +132,7 @@ export interface InputConfig {
   thumb_layout?: string;
   thumbnail_frame_pct?: number;
   pill_size?: number;
+  card_height?: number;
   aspect_ratio?: string;
   object_fit?: string;
   controls_mode?: string;
