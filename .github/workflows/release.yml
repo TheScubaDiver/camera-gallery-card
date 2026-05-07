@@ -17,6 +17,11 @@ concurrency:
 
 jobs:
   release-please:
+    # Only run on the upstream repo. Forks don't have the release-bot App
+    # secrets (RELEASE_BOT_APP_ID / RELEASE_BOT_PRIVATE_KEY), so the token
+    # step would fail on every sync of upstream main. upload-bundle has
+    # `needs: release-please` and skips when this job is skipped.
+    if: github.repository == 'TheScubaDiver/camera-gallery-card'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
