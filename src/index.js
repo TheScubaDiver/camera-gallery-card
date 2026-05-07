@@ -1139,6 +1139,64 @@ class CameraGalleryCard extends LitElement {
     this.requestUpdate();
   }
 
+  async _probeCameraResolution(entityId) {
+    if (!this._diagResolutions) this._diagResolutions = {};
+    const cache = this._diagResolutions;
+    if (cache[entityId]) return;
+    const st = this._hass?.states?.[entityId];
+    if (!st) { cache[entityId] = { state: "unavailable" }; return; }
+    cache[entityId] = { state: "loading" };
+
+    const tryProbe = async (url) => {
+      const r = await fetch(url, { cache: "no-store", credentials: "same-origin" });
+      if (!r.ok) return { error: `HTTP ${r.status}` };
+      const blob = await r.blob();
+      const objUrl = URL.createObjectURL(blob);
+      try {
+        return await new Promise((resolve) => {
+          const img = new Image();
+          img.onload = () => resolve({ w: img.naturalWidth, h: img.naturalHeight });
+          img.onerror = () => resolve({ error: "decode failed" });
+          img.src = objUrl;
+        });
+      } finally {
+        URL.revokeObjectURL(objUrl);
+      }
+    };
+
+    const sources = [];
+    if (st.attributes?.entity_picture) sources.push(st.attributes.entity_picture);
+    const frigateBase = (this.config?.frigate_url || "").replace(/\/+$/, "");
+    const frigateCam = st.attributes?.camera_name;
+    if (frigateBase && frigateCam) sources.push(`${frigateBase}/api/${frigateCam}/latest.jpg`);
+
+    if (!sources.length) { cache[entityId] = { state: "unavailable" }; this.requestUpdate(); return; }
+
+    let lastReason = "no source";
+    for (const src of sources) {
+      try {
+        const out = await tryProbe(src);
+        if (out.w && out.h) {
+          cache[entityId] = { state: "ok", w: out.w, h: out.h };
+          this.requestUpdate();
+          return;
+        }
+        lastReason = out.error || "unknown";
+      } catch (e) {
+        lastReason = e?.message || "fetch failed";
+      }
+    }
+    cache[entityId] = { state: "error", reason: lastReason };
+    this.requestUpdate();
+  }
+
+  _formatAspectRatio(w, h) {
+    if (!w || !h) return "?";
+    const gcd = (a, b) => (b === 0 ? a : gcd(b, a % b));
+    const g = gcd(w, h);
+    return `${w / g}:${h / g}`;
+  }
+
   _buildDiagnostics() {
     const cfg = this.config || {};
     const hass = this._hass;
@@ -1203,13 +1261,37 @@ class CameraGalleryCard extends LitElement {
             rows.push([id, "(entity not found)", "bad"]);
             continue;
           }
-          const streamType = st.attributes?.frontend_stream_type;
+          // Prefer the explicit attribute when present (older HA versions);
+          // newer HA exposes streaming via supported_features bits only:
+          //   1 = STREAM (HLS), 2 = WEB_RTC.
+          let streamType = st.attributes?.frontend_stream_type;
+          if (!streamType) {
+            const sf = Number(st.attributes?.supported_features ?? 0);
+            if (sf & 2) streamType = "web_rtc";
+            else if (sf & 1) streamType = "hls";
+          }
           const display = streamType
             ? streamType + (streamType === "web_rtc" ? " (low-latency)" : streamType === "hls" ? " (~2-5s buffer)" : "")
-            : "(unknown)";
+            : "(no streaming)";
           // web_rtc = ok (fast), hls = warn (slow), unknown/missing = bad
           const status = streamType === "web_rtc" ? "ok" : streamType === "hls" ? "warn" : "bad";
-          rows.push([st.attributes?.friendly_name || id, display, status]);
+          const name = st.attributes?.friendly_name || id;
+          rows.push([name, display, status]);
+          this._probeCameraResolution(id);
+          const r = this._diagResolutions?.[id];
+          let resText = "(loading…)";
+          let resStatus = null;
+          if (r?.state === "ok") {
+            resText = `${r.w}×${r.h} (${this._formatAspectRatio(r.w, r.h)})`;
+            resStatus = "ok";
+          } else if (r?.state === "error") {
+            resText = r.reason ? `(snapshot failed: ${r.reason})` : "(snapshot failed)";
+            resStatus = "warn";
+          } else if (r?.state === "unavailable") {
+            resText = "(no entity_picture)";
+            resStatus = "warn";
+          }
+          rows.push(["  resolution", resText, resStatus]);
         }
         return rows;
       })()],
