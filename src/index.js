@@ -6618,7 +6618,7 @@ const STYLE_SECTIONS = [
       { type: "color",  hostId: "bgcolor-host",     variable: "--cgc-card-bg",           label: "Background" },
       { type: "color",  hostId: "bordercolor-host", variable: "--cgc-card-border-color", label: "Border color" },
       { type: "radius", variable: "--r",             label: "Border radius", min: 0, max: 32, default: 10 },
-      { type: "slider", id: "cardheight", valId: "cardheightval", configKey: "card_height", label: "Thumb area height", min: 0, max: 1200, default: 0, unit: "px" },
+      { type: "slider", id: "cardheight", valId: "cardheightval", configKey: "card_height", label: "Height", min: 0, max: 1200, default: 0, unit: "px" },
     ],
   },
   {
