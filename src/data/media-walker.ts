@@ -297,6 +297,14 @@ export class MediaSourceClient {
     };
   }
 
+  /** Authoritative dtMs for an `id`, if the source attached one (Frigate
+   * REST event-id, Frigate URI parse). Returns `null` when absent — the
+   * caller falls back to filename parsing. */
+  getDtMsForId(id: string): number | null {
+    const dt = this.state.listIndex.get(id)?.dtMs;
+    return typeof dt === "number" && Number.isFinite(dt) ? dt : null;
+  }
+
   getTitleById(id: string): string {
     return this.state.listIndex.get(id)?.title ?? "";
   }
