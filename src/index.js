@@ -163,6 +163,11 @@ class CameraGalleryCard extends LitElement {
     this._forceThumbReset = false;
     this._liveCard = null;
     this._liveCardConfigKey = "";
+    // Runtime override of `live_layout`. null = follow config; "single" =
+    // user tapped a grid tile and we're temporarily in single-camera mode.
+    this._liveLayoutOverride = null;
+    // Per-tile player elements when in grid layout, keyed by camera entity.
+    this._liveGridTiles = new Map();
     this._liveWarmedUp = false;
     this._signedWsPath = null;
     this._signedWsPathTs = 0;
@@ -255,6 +260,7 @@ class CameraGalleryCard extends LitElement {
 
     this._onZoomTouchStart = (e) => {
       if (!this._isLiveActive() && !this._previewOpen) return;
+      if (this._isGridLayout()) return;
       if (e.touches.length === 2) {
         e.preventDefault();
         this._zoomIsPinching = true;
@@ -275,6 +281,7 @@ class CameraGalleryCard extends LitElement {
 
     this._onZoomTouchMove = (e) => {
       if (!this._isLiveActive() && !this._previewOpen) return;
+      if (this._isGridLayout()) return;
       if (this._zoomIsPinching && e.touches.length >= 2) {
         e.preventDefault();
         const t = e.touches;
@@ -300,6 +307,7 @@ class CameraGalleryCard extends LitElement {
 
     this._onZoomMouseDown = (e) => {
       if ((!this._isLiveActive() && !this._previewOpen) || this._zoomScale <= 1) return;
+      if (this._isGridLayout()) return;
       e.preventDefault();
       this._zoomIsPanning = true;
       this._zoomPanStartX = e.clientX;
@@ -323,6 +331,7 @@ class CameraGalleryCard extends LitElement {
 
     this._onZoomWheel = (e) => {
       if (!this._isLiveActive() && !this._previewOpen) return;
+      if (this._isGridLayout()) return;
       const host = this._getZoomHost();
       if (!host) return;
       const r = host.getBoundingClientRect();
@@ -1619,11 +1628,144 @@ class CameraGalleryCard extends LitElement {
     }
   }
 
+  // ─── Live layout (single / grid) ───────────────────────────────────
+
+  _isGridLayout() {
+    // Runtime override (set by grid-tile tap) wins over config.
+    if (this._liveLayoutOverride === "single") return false;
+    if (this.config?.live_layout !== "grid") return false;
+    return this._getGridCameraEntities().length >= 2;
+  }
+
+  _getGridCameraEntities() {
+    // Only HA camera entities; stream URLs and sentinels are skipped — they
+    // can't be rendered through ha-camera-stream and would need bespoke
+    // RTCPeerConnection setup, which is too costly per tile.
+    const list = Array.isArray(this.config?.live_camera_entities)
+      ? this.config.live_camera_entities
+      : [];
+    return list.filter((e) => typeof e === "string" && e.startsWith("camera."));
+  }
+
+  _gridDims(count) {
+    // Always render a square grid so two cameras don't look like a row of two
+    // boxes. Empty cells stay black via the host background.
+    if (count <= 4) return { cols: 2, rows: 2 };
+    if (count <= 9) return { cols: 3, rows: 3 };
+    return { cols: 4, rows: 4 };
+  }
+
+  _onGridTileTap(entity) {
+    this._liveLayoutOverride = "single";
+    this._liveSelectedCamera = entity;
+    this._clearLiveGrid();
+    this.requestUpdate();
+    setTimeout(() => this._mountLiveCard(), 0);
+  }
+
+  _returnToGrid() {
+    this._liveLayoutOverride = null;
+    // Tear down the single-camera player so the grid mount starts clean.
+    const host = this.renderRoot?.querySelector("#live-card-host");
+    if (this._liveCard && host && host.contains(this._liveCard)) {
+      try { this._liveCard.remove(); } catch (_) {}
+    }
+    this._liveCard = null;
+    this._liveCardConfigKey = "";
+    this.requestUpdate();
+    setTimeout(() => this._mountLiveCard(), 0);
+  }
+
+  _clearLiveGrid() {
+    const host = this.renderRoot?.querySelector("#live-card-host");
+    if (host && host.classList.contains("live-grid-host")) {
+      host.classList.remove("live-grid-host");
+      host.innerHTML = "";
+    }
+    this._liveGridTiles.clear();
+  }
+
+  async _mountLiveGrid() {
+    if (!this._isLiveActive()) return;
+    const host = this.renderRoot?.querySelector("#live-card-host");
+    if (!host) return;
+
+    const cameras = this._getGridCameraEntities();
+    const { cols, rows } = this._gridDims(cameras.length);
+
+    if (!host.classList.contains("live-grid-host")) {
+      host.classList.add("live-grid-host");
+      host.innerHTML = "";
+      this._liveGridTiles.clear();
+    }
+    host.style.setProperty("--cgc-grid-cols", String(cols));
+    host.style.setProperty("--cgc-grid-rows", String(rows));
+    host.classList.toggle("live-grid-no-labels", this.config?.live_grid_labels === false);
+
+    // Remove tiles for cameras no longer present.
+    const wanted = new Set(cameras);
+    for (const [entity, tile] of this._liveGridTiles) {
+      if (!wanted.has(entity)) {
+        try { tile.remove(); } catch (_) {}
+        this._liveGridTiles.delete(entity);
+      }
+    }
+
+    await customElements.whenDefined("ha-camera-stream");
+    for (const entity of cameras) {
+      const existing = this._liveGridTiles.get(entity);
+      if (existing) {
+        const stream = existing.querySelector("ha-camera-stream");
+        if (stream) {
+          stream.hass = this._hass;
+          const so = this._hass?.states?.[entity];
+          if (so?.last_changed !== stream.stateObj?.last_changed) stream.stateObj = so;
+        }
+        continue;
+      }
+
+      const tile = document.createElement("div");
+      tile.className = "live-grid-tile";
+      tile.dataset.entity = entity;
+      tile.addEventListener("click", () => this._onGridTileTap(entity));
+
+      const stream = document.createElement("ha-camera-stream");
+      stream.stateObj = this._hass?.states?.[entity];
+      stream.hass = this._hass;
+      stream.muted = true;
+      stream.controls = false;
+      stream.style.cssText = "display:block;width:100%;height:100%;object-fit:cover;";
+      tile.appendChild(stream);
+
+      const label = document.createElement("div");
+      label.className = "live-grid-label";
+      label.textContent = this._hass?.states?.[entity]?.attributes?.friendly_name || entity;
+      tile.appendChild(label);
+
+      host.appendChild(tile);
+      this._liveGridTiles.set(entity, tile);
+      this._injectLiveFillStyle(stream);
+    }
+  }
+
   async _mountLiveCard() {
     if (!this._isLiveActive()) return;
 
     const host = this.renderRoot?.querySelector("#live-card-host");
     if (!host) return;
+
+    if (this._isGridLayout()) {
+      // Tear down a previously-mounted single player before switching to grid.
+      if (this._liveCard && host.contains(this._liveCard)) {
+        try { this._liveCard.remove(); } catch (_) {}
+        this._liveCard = null;
+        this._liveCardConfigKey = "";
+      }
+      return this._mountLiveGrid();
+    }
+
+    // Single mode — clean up any leftover grid tiles first.
+    this._clearLiveGrid();
 
     const effectiveCam = this._getEffectiveLiveCamera();
     const streamEntry = this._getStreamEntryById(effectiveCam);
@@ -1664,6 +1806,9 @@ class CameraGalleryCard extends LitElement {
 
   async _warmupLiveCard() {
     if (!this._hasLiveConfig()) return;
+    // Grid mode mounts directly when the user opens live view; pre-warm only
+    // makes sense for the single-camera fast-path.
+    if (this._isGridLayout()) return;
     const host = this.renderRoot?.querySelector("#live-card-host");
     if (!host) return;
 
@@ -4268,6 +4413,11 @@ class CameraGalleryCard extends LitElement {
     `;
     const livePillsRight = html`
       <div class="live-pills-right">
+        ${this.config?.live_layout === "grid" && this._liveLayoutOverride === "single" ? html`
+          <button class="gallery-pill live-pill-btn" title="Back to grid" @pointerdown=${(e) => e.stopPropagation()} @click=${(e) => { e.stopPropagation(); this._returnToGrid(); }}>
+            <ha-icon icon="mdi:view-grid"></ha-icon>
+          </button>
+        ` : html``}
         <button class="gallery-pill live-pill-btn" @pointerdown=${(e) => e.stopPropagation()} @click=${(e) => { e.stopPropagation(); this._toggleLiveMute(); }}>
           <ha-icon icon=${this._liveMuted ? "mdi:volume-off" : "mdi:volume-high"}></ha-icon>
         </button>
@@ -4375,7 +4525,7 @@ class CameraGalleryCard extends LitElement {
               </div>
             ` : html``}
 
-            ${isLive && this._getLiveCameraOptions().length > 1 && (this._pillsVisible || this.config?.persistent_controls) ? html`
+            ${isLive && !this._isGridLayout() && this._getLiveCameraOptions().length > 1 && (this._pillsVisible || this.config?.persistent_controls) ? html`
               <div class="pnav">
                 <button class="pnavbtn left" @pointerdown=${(e) => e.stopPropagation()} @click=${(e) => { e.stopPropagation(); this._navLiveCamera(-1); }}>
                   <ha-icon icon="mdi:chevron-left"></ha-icon>
@@ -4391,25 +4541,25 @@ class CameraGalleryCard extends LitElement {
                 ${galleryPillsLeft}${galleryPillsCenter}${galleryPillsRight}
               </div>
             ` : html``}
-            ${isLive && !fixedMode ? html`
+            ${isLive && !this._isGridLayout() && !fixedMode ? html`
               <div class="live-controls-bar ${tsPosClass} ${this._pillsVisible || this._showLivePicker || this.config?.persistent_controls ? "visible" : ""}">
                 <div class="live-controls-main">
                   ${livePillsLeft}${livePillsRight}
                 </div>
               </div>
             ` : html``}
-            ${isLive ? hamburgerPanel : html``}
+            ${isLive && !this._isGridLayout() ? hamburgerPanel : html``}
           </div>
         `
       : html``;
 
     const controlsFixedBlock = fixedMode && showPreviewSection ? html`
       <div class="controls-bar-fixed">
-        ${isLive ? html`
+        ${isLive && !this._isGridLayout() ? html`
           <div class="live-controls-main live-controls-main--fixed">
             ${livePillsLeft}${livePillsRight}
           </div>
-        ` : tsPosClass !== "hidden" ? html`
+        ` : tsPosClass !== "hidden" && !isLive ? html`
           ${galleryPillsLeft}${galleryPillsCenter}${galleryPillsRight}
         ` : html``}
       </div>
@@ -5042,7 +5192,7 @@ class CameraGalleryCard extends LitElement {
       }
 
       .live-host-hidden {
-        display: none;
+        display: none !important;
       }
 
       .live-card-host > * {
@@ -5065,6 +5215,55 @@ class CameraGalleryCard extends LitElement {
         width: 100% !important;
         height: 100% !important;
         object-fit: var(--cgc-object-fit, cover) !important;
+      }
+
+      /* Multi-camera grid layout (live_layout: grid) */
+      .live-card-host.live-grid-host {
+        display: grid !important;
+        grid-template-columns: repeat(var(--cgc-grid-cols, 2), 1fr);
+        grid-template-rows: repeat(var(--cgc-grid-rows, 2), 1fr);
+        gap: 4px;
+        padding: 0;
+        background: #000;
+        /* Disable pinch-zoom and double-tap-zoom on the grid surface. */
+        touch-action: manipulation;
+      }
+
+      .live-grid-tile {
+        position: relative;
+        background: #000;
+        overflow: hidden;
+        cursor: pointer;
+        border-radius: 4px;
+        touch-action: manipulation;
+      }
+
+      .live-grid-tile > ha-camera-stream {
+        width: 100% !important;
+        height: 100% !important;
+        display: block !important;
+        object-fit: cover !important;
+      }
+
+      .live-grid-host.live-grid-no-labels .live-grid-label {
+        display: none;
+      }
+
+      .live-grid-label {
+        position: absolute;
+        bottom: 6px;
+        left: 6px;
+        background: rgba(0, 0, 0, 0.4);
+        color: #fff;
+        padding: 2px 8px;
+        border-radius: 10px;
+        font-size: 11px;
+        line-height: 1.4;
+        pointer-events: none;
+        max-width: calc(100% - 12px);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
       }
 
       .segbtn.livebtn {
@@ -7704,6 +7903,8 @@ class CameraGalleryCardEditor extends HTMLElement {
     const liveEnabled = c.live_enabled === true;
     const liveCameraEntity = String(c.live_camera_entity || "").trim();
     const liveCameraEntities = Array.isArray(c.live_camera_entities) ? c.live_camera_entities : [];
+    const liveLayout = c.live_layout === "grid" ? "grid" : "single";
+    const liveGridLabels = c.live_grid_labels !== false;
     const liveControlsDisabled = false;
 
 
@@ -8301,6 +8502,23 @@ class CameraGalleryCardEditor extends HTMLElement {
                 </div>
                 ` : ``}
 
+                ${liveCameraEntities.length > 1 ? `
+                <div class="row">
+                  <div class="lbl">Live layout</div>
+                  <div class="desc">Single shows one camera at a time (use the picker to switch). Grid shows all visible cameras at once — tap a tile to focus.</div>
+                  <div class="segwrap">
+                    <button class="seg ${liveLayout === "single" ? "on" : ""}" data-livelayout="single">Single</button>
+                    <button class="seg ${liveLayout === "grid" ? "on" : ""}" data-livelayout="grid">Grid</button>
+                  </div>
+                  ${liveLayout === "grid" ? `
+                  <div class="row-inline live-grid-suboption">
+                    <span>Show camera labels</span>
+                    <label class="cgc-switch"><input type="checkbox" id="live-grid-labels" ${liveGridLabels ? "checked" : ""}><span class="cgc-track"></span></label>
+                  </div>
+                  ` : ``}
+                </div>
+                ` : ``}
+
                 <div class="row ${liveControlsDisabled ? "muted" : ""}">
                   <div class="lbl">Default live camera</div>
                   ${liveCameraEntity ? `
@@ -8869,6 +9087,13 @@ class CameraGalleryCardEditor extends HTMLElement {
           gap: 16px;
         }
 
+        .live-grid-suboption {
+          margin-top: 12px;
+          padding-top: 12px;
+          border-top: 1px solid var(--ed-divider, rgba(255, 255, 255, 0.08));
+          font-size: 13px;
+        }
+
         .row-inline .lbl {
           margin: 0;
         }
@@ -9223,6 +9448,10 @@ class CameraGalleryCardEditor extends HTMLElement {
         .segwrap {
           display: flex;
           gap: 8px;
+        }
+
+        .desc + .segwrap {
+          margin-top: 8px;
         }
 
         .seg {
@@ -10741,6 +10970,35 @@ if (oldPanel && tmp.firstElementChild) {
       this._scheduleRender();
     });
 
+    this.shadowRoot.querySelectorAll(".seg[data-livelayout]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const val = btn.dataset.livelayout === "grid" ? "grid" : "single";
+        if (val === "single") {
+          // Default — drop the key from YAML so the config stays minimal.
+          const next = { ...this._config };
+          delete next.live_layout;
+          this._config = this._stripAlwaysTrueKeys(next);
+          this._fire();
+        } else {
+          this._set("live_layout", val);
+        }
+        btn.closest(".segwrap")?.querySelectorAll(".seg").forEach((s) => s.classList.toggle("on", s === btn));
+      });
+    });
+
+    $("live-grid-labels")?.addEventListener("change", (e) => {
+      const on = !!e.target.checked;
+      if (on) {
+        // Default — drop the key from YAML.
+        const next = { ...this._config };
+        delete next.live_grid_labels;
+        this._config = this._stripAlwaysTrueKeys(next);
+        this._fire();
+      } else {
+        this._set("live_grid_labels", false);
+      }
+    });
+
     // Default live camera tag input (single select)
     const livedefaultInput = $("livedefault-input");
     const livedefaultSugg = $("livedefault-suggestions");
@@ -11397,7 +11655,7 @@ if (oldPanel && tmp.firstElementChild) {
     }
 
     this._fire();
-    const RENDERS_REQUIRED = new Set(["source_mode", "live_enabled", "live_camera_entities", "object_filters", "delete_service", "live_camera_entity", "menu_buttons", "frigate_url"]);
+    const RENDERS_REQUIRED = new Set(["source_mode", "live_enabled", "live_camera_entities", "object_filters", "delete_service", "live_camera_entity", "menu_buttons", "frigate_url", "live_layout"]);
     if (RENDERS_REQUIRED.has(key)) this._scheduleRender();
   }
 

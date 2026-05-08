@@ -106,6 +106,8 @@ export interface InputConfig {
   live_auto_muted?: boolean;
   live_camera_entity?: string;
   live_camera_entities?: string[];
+  live_layout?: string;
+  live_grid_labels?: boolean;
   live_stream_url?: string;
   live_stream_name?: string;
   live_stream_urls?: LiveStreamUrlEntryInput[];
