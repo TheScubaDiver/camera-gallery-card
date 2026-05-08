@@ -1201,7 +1201,6 @@ class CameraGalleryCard extends LitElement {
     const cfg = this.config || {};
     const hass = this._hass;
     const frigateInstalled = !!hass?.config?.components?.includes?.("frigate");
-    const frigateInstanceId = this._frigateInstanceId?.() || null;
     const ms = this._ms || {};
     const loadedAt = ms.loadedAt || 0;
     const failedAt = ms.frigateApiFailedAt || 0;
@@ -1221,12 +1220,9 @@ class CameraGalleryCard extends LitElement {
       ]],
       ["Home Assistant", "mdi:home-assistant", [
         ["Version", hass?.config?.version || "—"],
-        ["Language", hass?.config?.language || "—"],
-        ["Timezone", hass?.config?.time_zone || "—"],
       ]],
       ["Frigate integration", "mdi:cctv", [
         ["Installed", frigateInstalled ? "yes" : "no", frigateInstalled ? "ok" : "bad"],
-        ["Instance id (from media_sources)", frigateInstanceId || "—", frigateInstanceId ? "ok" : "warn"],
       ]],
       ["Config summary", "mdi:cog-outline", [
         ["source_mode", cfg.source_mode || "—"],
@@ -1237,19 +1233,14 @@ class CameraGalleryCard extends LitElement {
         ["live_enabled", cfg.live_enabled ? "yes" : "no", cfg.live_enabled ? "ok" : null],
         ["live_camera_entities", String((cfg.live_camera_entities || []).length)],
         ["live_layout", cfg.live_layout || "single"],
-        ["live_grid_labels", cfg.live_grid_labels === false ? "no" : "yes"],
-        ["start_mode", cfg.start_mode || "—"],
       ]],
       ["Runtime state", "mdi:pulse", [
         ["Items in gallery", String((ms.list || []).length), (ms.list || []).length > 0 ? "ok" : "warn"],
         ["Last fetch", fmtTs(loadedAt), loadedAt && (Date.now() - loadedAt < 5 * 60 * 1000) ? "ok" : loadedAt ? "warn" : "bad"],
-        ["Direct API failed", ms.frigateApiFailed ? "yes" : "no", ms.frigateApiFailed ? "warn" : "ok"],
-        ["Direct API failed at", fmtTs(failedAt)],
+        ["Direct API", ms.frigateApiFailed ? `failed (${ageS(failedAt)})` : "ok", ms.frigateApiFailed ? "warn" : "ok"],
         ["WS subscribe (frigate/events)", this._frigateEventsUnsub ? "active" : "inactive", this._frigateEventsUnsub ? "ok" : (frigateInstalled ? "warn" : null)],
         ["Live card mounted", this._liveCard ? "yes" : "no", this._liveCard ? "ok" : (cfg.live_enabled ? "warn" : null)],
-        ["Live card key", this._liveCardConfigKey || "—"],
         ["Live layout override", this._liveLayoutOverride || "—"],
-        ["Grid tiles", String(this._liveGridTiles?.size || 0)],
       ]],
       ["Live cameras", "mdi:cctv", (() => {
         const cams = Array.isArray(cfg.live_camera_entities) ? cfg.live_camera_entities : [];
