@@ -3150,7 +3150,11 @@ class CameraGalleryCard extends LitElement {
     if (mode === "combined") {
       const entities = this._sensorEntityList();
       let sensorList = [];
-      this._srcEntityMap = this._srcEntityMap || new Map();
+      // Audit A7: was `this._srcEntityMap || new Map()` which preserved the
+      // map across calls and leaked stale entries when entities or
+      // source_mode changed. Unconditional rebuild matches what the sensor
+      // branch (now in SensorSourceClient.getItems) already does.
+      this._srcEntityMap = new Map();
       for (const entityId of entities) {
         const st = this._hass?.states?.[entityId];
         const raw = st?.attributes?.[ATTR_NAME];
