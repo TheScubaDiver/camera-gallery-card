@@ -2353,7 +2353,7 @@ class CameraGalleryCard extends LitElement {
   // Side effects: enqueues poster capture / snapshot resolution when needed.
   _resolveVideoPoster(it, isMs, thumbUrl, tThumb, selectedUrl) {
     if (!isMs) {
-      const pairedJpg = this._sensorPairedThumbs?.get(it.src);
+      const pairedJpg = this._sensorClient.getSensorPairedThumbs().get(it.src);
       if (pairedJpg) return this._posterCache.get(pairedJpg) || "";
       return this._posterCache.get(it.src) || "";
     }
@@ -2617,9 +2617,6 @@ class CameraGalleryCard extends LitElement {
 
     if (mode === "combined") {
       const merged = this._combinedClient.getItems(enrich);
-      // Mirror sensor-side maps for legacy render and delete-gate reads.
-      this._srcEntityMap = new Map(this._sensorClient.getSrcEntityMap());
-      this._sensorPairedThumbs = new Map(this._sensorClient.getSensorPairedThumbs());
       return this._deleted?.size
         ? merged.filter((it) => !this._deleted.has(it.src))
         : merged;
@@ -2630,13 +2627,11 @@ class CameraGalleryCard extends LitElement {
       return this._deleted?.size ? ids.filter((it) => !this._deleted.has(it.src)) : ids;
     }
 
-    // Sensor mode: delegate to SensorSourceClient. Mirror its maps back onto
-    // the card so the legacy combined branch + render-side reads (line 3428,
-    // 3458, 4055) continue to resolve. Combined mode and delete-service
-    // helpers extract in subsequent commits.
+    // Sensor (and the implicit fall-through default) — delegate.
+    // Render-side reads of srcEntityMap / sensorPairedThumbs route through
+    // `this._sensorClient.getSrcEntityMap()` and `getSensorPairedThumbs()`
+    // directly; no mirror-back needed.
     const items = this._sensorClient.getItems(enrich);
-    this._srcEntityMap = new Map(this._sensorClient.getSrcEntityMap());
-    this._sensorPairedThumbs = new Map(this._sensorClient.getSensorPairedThumbs());
     return this._deleted?.size ? items.filter((it) => !this._deleted.has(it.src)) : items;
   }
 
@@ -2812,7 +2807,7 @@ class CameraGalleryCard extends LitElement {
     if (!active.length) return true;
 
     if (this.config?.source_mode === "sensor") {
-      const sourceEntity = this._srcEntityMap?.get(src) || "";
+      const sourceEntity = this._sensorClient.getSrcEntityMap().get(src) || "";
       const sensorStateObj = sourceEntity
         ? this._hass?.states?.[sourceEntity]
         : null;
@@ -2842,7 +2837,7 @@ class CameraGalleryCard extends LitElement {
       
       let sourceText = "";
       if (this.config?.source_mode === "sensor") {
-        const sourceEntity = this._srcEntityMap?.get(src) || "";
+        const sourceEntity = this._sensorClient.getSrcEntityMap().get(src) || "";
         const sensorStateObj = sourceEntity ? this._hass?.states?.[sourceEntity] : null;
         sourceText = [itemFilenameForFilter(src), sensorTextForFilter(sourceEntity, sensorStateObj)].join(" ");
       } else {
@@ -3432,7 +3427,7 @@ class CameraGalleryCard extends LitElement {
               }
               // Viewport-aware poster prioritization: enqueue only when visible
               if (isSensor && key && isVideo(key)) {
-                const pairedJpg = this._sensorPairedThumbs?.get(key);
+                const pairedJpg = this._sensorClient.getSensorPairedThumbs().get(key);
                 this._enqueuePoster(pairedJpg || key);
               }
             }
