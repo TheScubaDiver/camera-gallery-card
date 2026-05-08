@@ -29,6 +29,12 @@ import {
   pairSensorItems,
 } from "./data/pairing";
 import { FavoritesStore } from "./data/favorites";
+import {
+  parseServiceParts,
+  SensorSourceClient,
+  toFsPath,
+  toWebPath,
+} from "./data/sensor-source";
 import { fnv1aHash } from "./util/hash";
 import { isVideo } from "./util/media-type";
 import {
@@ -204,6 +210,7 @@ class CameraGalleryCard extends LitElement {
     this._pillsHideActive = false;
     this._srcEntityMap = new Map();
     this._sensorPairedThumbs = new Map();
+    this._sensorClient = new SensorSourceClient();
     this._favorites = new FavoritesStore({ onChange: () => this.requestUpdate() });
     this._suppressNextThumbClick = false;
     this._swipeStartX = 0;
@@ -447,6 +454,7 @@ class CameraGalleryCard extends LitElement {
     const firstHass = !this._hass;
     const oldHass = this._hass;
     this._hass = hass;
+    this._sensorClient.setHass(hass);
 
     if (firstHass) {
       if (this.config?.start_mode === "live" && this._hasLiveConfig()) {
@@ -1087,14 +1095,11 @@ class CameraGalleryCard extends LitElement {
   }
 
   _sensorEntityList() {
-    return Array.isArray(this.config?.entities) ? this.config.entities : [];
+    return [...this._sensorClient.getEntityIds()];
   }
 
   _serviceParts() {
-    const full = String(this.config?.delete_service || "");
-    const [domain, service] = full.split(".");
-    if (!domain || !service) return null;
-    return { domain, service };
+    return parseServiceParts(this.config?.delete_service);
   }
 
   // ─── Live helpers ─────────────────────────────────────────────────
@@ -2314,22 +2319,7 @@ class CameraGalleryCard extends LitElement {
   }
 
   _toFsPath(src) {
-    if (!src) return "";
-    let clean = String(src).trim();
-    clean = clean.split("?")[0].split("#")[0];
-    try {
-      if (clean.startsWith("http://") || clean.startsWith("https://")) {
-        clean = new URL(clean).pathname;
-      }
-    } catch (_) {}
-    try {
-      clean = decodeURIComponent(clean);
-    } catch (_) {}
-    if (clean.startsWith("/local/")) {
-      return "/config/www/" + clean.slice("/local/".length);
-    }
-    if (clean.startsWith("/config/www/")) return clean;
-    return "";
+    return toFsPath(src);
   }
 
 
@@ -2420,13 +2410,7 @@ class CameraGalleryCard extends LitElement {
   }
 
   _toWebPath(p) {
-    if (!p) return "";
-    const v = String(p).trim();
-    if (v.startsWith("/config/www/")) {
-      return "/local/" + v.slice("/config/www/".length);
-    }
-    if (v === "/config/www") return "/local";
-    return v;
+    return toWebPath(p);
   }
 
   // ─── Poster helpers ───────────────────────────────────────────────
@@ -3204,53 +3188,14 @@ class CameraGalleryCard extends LitElement {
       return this._deleted?.size ? ids.filter((it) => !this._deleted.has(it.src)) : ids;
     }
 
-    const entities = this._sensorEntityList();
-    if (!entities.length) return [];
-
-    let list = [];
-    this._srcEntityMap = new Map();
-
-    for (const entityId of entities) {
-      const st = this._hass?.states?.[entityId];
-      const raw = st?.attributes?.[ATTR_NAME];
-      if (!raw) continue;
-
-      let part = [];
-
-      if (Array.isArray(raw)) {
-        part = raw.map((x) => this._toWebPath(x)).filter(Boolean);
-      } else if (typeof raw === "string") {
-        try {
-          const parsed = JSON.parse(raw);
-          if (Array.isArray(parsed)) {
-            part = parsed.map((x) => this._toWebPath(x)).filter(Boolean);
-          } else {
-            part = [this._toWebPath(raw)].filter(Boolean);
-          }
-        } catch (_) {
-          part = [this._toWebPath(raw)].filter(Boolean);
-        }
-      }
-
-      for (const src of part) {
-        if (!this._srcEntityMap.has(src)) {
-          this._srcEntityMap.set(src, entityId);
-        }
-      }
-
-      list.push(...part);
-    }
-
-    list = dedupeByRelPath(list);
-
-    if (this._deleted?.size) {
-      list = list.filter((src) => !this._deleted.has(src));
-    }
-
-    const enriched = list.map(enrich);
-    const { items: paired, pairedThumbs } = pairSensorItems(enriched);
-    this._sensorPairedThumbs = pairedThumbs;
-    return paired;
+    // Sensor mode: delegate to SensorSourceClient. Mirror its maps back onto
+    // the card so the legacy combined branch + render-side reads (line 3428,
+    // 3458, 4055) continue to resolve. Combined mode and delete-service
+    // helpers extract in subsequent commits.
+    const items = this._sensorClient.getItems(enrich);
+    this._srcEntityMap = new Map(this._sensorClient.getSrcEntityMap());
+    this._sensorPairedThumbs = new Map(this._sensorClient.getSensorPairedThumbs());
+    return this._deleted?.size ? items.filter((it) => !this._deleted.has(it.src)) : items;
   }
 
   _isVideoSmart(urlOrTitle, mime, cls) {
@@ -3803,6 +3748,7 @@ class CameraGalleryCard extends LitElement {
     this.config = nextConfig;
     this._customIcons = customIcons;
     this._favorites.load(this.config);
+    this._sensorClient.load(this.config);
     this._startMediaPoll();
 
     const { changedKeys, isSourceChange: sourceChange, isUiOnly: uiOnlyChange } =
