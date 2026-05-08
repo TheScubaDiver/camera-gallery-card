@@ -106,6 +106,8 @@ export interface InputConfig {
   live_auto_muted?: boolean;
   live_camera_entity?: string;
   live_camera_entities?: string[];
+  live_layout?: string;
+  live_grid_labels?: boolean;
   live_stream_url?: string;
   live_stream_name?: string;
   live_stream_urls?: LiveStreamUrlEntryInput[];
@@ -132,12 +134,14 @@ export interface InputConfig {
   thumb_layout?: string;
   thumbnail_frame_pct?: number;
   pill_size?: number;
+  card_height?: number;
   aspect_ratio?: string;
   object_fit?: string;
   controls_mode?: string;
   style_variables?: string;
   show_camera_title?: boolean;
   persistent_controls?: boolean;
+  debug_enabled?: boolean;
 
   // ─── Preview ───────────────────────────────────────────────
   preview_position?: string;
