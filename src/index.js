@@ -42,6 +42,7 @@ import {
   MediaSourceClient,
 } from "./data/media-walker";
 import { CombinedSourceClient } from "./data/combined-source";
+import { canDeleteItem, deleteItem } from "./data/delete-service";
 import { fnv1aHash } from "./util/hash";
 import { isVideo } from "./util/media-type";
 import {
@@ -2241,12 +2242,11 @@ class CameraGalleryCard extends LitElement {
   }
 
   _thumbCanDelete(item) {
-    if (!item?.src) return false;
-    const mode = this.config?.source_mode;
-    if (mode !== "sensor" && mode !== "combined") return false;
-    if (mode === "combined" && !this._srcEntityMap?.has(item.src)) return false;
-    if (!this.config?.allow_delete) return false;
-    return !!this._serviceParts();
+    return canDeleteItem({
+      src: item?.src,
+      config: this.config,
+      srcEntityMap: this._sensorClient.getSrcEntityMap(),
+    });
   }
 
   _thumbCanDownload(item) {
@@ -2260,36 +2260,23 @@ class CameraGalleryCard extends LitElement {
   // ─── Media / delete / download ────────────────────────────────────
 
   async _deleteSingle(src) {
-    const mode = this.config?.source_mode;
-    if (mode !== "sensor" && mode !== "combined") return;
-    if (mode === "combined" && !this._srcEntityMap?.has(src)) return;
-    if (!this.config?.allow_delete) return;
+    const ok = await deleteItem({
+      hass: this._hass,
+      src,
+      config: this.config,
+      srcEntityMap: this._sensorClient.getSrcEntityMap(),
+    });
+    if (!ok) return;
 
-    const sp = this._serviceParts();
-    if (!sp) return;
+    this._deleted.add(src);
+    this._selectedSet?.delete?.(src);
 
-    const fsPath = this._toFsPath(src);
-    const prefix = DELETE_PREFIX_NORMALIZED;
-
-    if (!fsPath || !fsPath.startsWith(prefix)) return;
-
-    if (this.config?.delete_confirm) {
-      const ok = window.confirm("Are you sure you want to delete this file?");
-      if (!ok) return;
+    const rawItems = this._items();
+    if (!rawItems.length) {
+      this._selectedIndex = 0;
     }
 
-    try {
-      await this._hass.callService(sp.domain, sp.service, { path: fsPath });
-      this._deleted.add(src);
-      this._selectedSet?.delete?.(src);
-
-      const rawItems = this._items();
-      if (!rawItems.length) {
-        this._selectedIndex = 0;
-      }
-
-      this.requestUpdate();
-    } catch (_) {}
+    this.requestUpdate();
   }
 
   async _downloadSrc(urlOrPath) {
