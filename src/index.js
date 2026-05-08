@@ -1132,6 +1132,16 @@ class CameraGalleryCard extends LitElement {
       return this._liveCard;
     }
 
+    // De-dup concurrent calls for the same URL. Without this, every Lit
+    // `updated()` cycle that runs before the WS handshake completes spawns
+    // a fresh PC + WS. The cleanup below then closes the previous in-flight
+    // PC, surfacing as `DOMException: Peer connection is closed` from the
+    // earlier call's `onopen`. Single in-flight promise per URL fixes both
+    // the noise and the cascade.
+    if (this._liveCardPending?.key === key) {
+      return this._liveCardPending.promise;
+    }
+
     // Sluit bestaande peer connection en WebSocket als die er zijn
     if (this._rtcWebSocket) {
       try { this._rtcWebSocket.close(); } catch (_) {}
@@ -1142,6 +1152,16 @@ class CameraGalleryCard extends LitElement {
       this._rtcPeerConnection = null;
     }
 
+    const promise = this._ensureLiveCardFromUrlImpl(url, key);
+    this._liveCardPending = { key, promise };
+    try {
+      return await promise;
+    } finally {
+      if (this._liveCardPending?.key === key) this._liveCardPending = null;
+    }
+  }
+
+  async _ensureLiveCardFromUrlImpl(url, key) {
     const video = document.createElement("video");
     video.autoplay = true;
     video.muted = true;
