@@ -517,10 +517,21 @@ class CameraGalleryCard extends LitElement {
   }
 
   _unsubscribeFrigateEvents() {
-    if (this._frigateEventsUnsub) {
-      try { this._frigateEventsUnsub(); } catch (_) {}
-      this._frigateEventsUnsub = null;
-    }
+    if (!this._frigateEventsUnsub) return;
+    const fn = this._frigateEventsUnsub;
+    // Null the field before invoking so a re-entry (disconnectedCallback fires
+    // twice on rapid lovelace re-renders) skips the duplicate unsubscribe.
+    this._frigateEventsUnsub = null;
+    try {
+      const result = fn();
+      // home-assistant-js-websocket's UnsubscribeFunc returns a Promise.
+      // After an HA WS reconnect the server has forgotten the subscription
+      // ID, so the resulting promise rejects with `not_found`. That's
+      // expected — swallow it so the user doesn't see "Uncaught in promise".
+      if (result && typeof result.then === "function") {
+        result.catch(() => {});
+      }
+    } catch (_) {}
   }
 
   _onFrigateEventPush(data) {
@@ -749,7 +760,12 @@ class CameraGalleryCard extends LitElement {
         ? this.config.auto_muted === true
         : true;
 
-    video.autoplay = shouldAutoplay;
+    // Don't use the `autoplay` attribute — when the browser starts an
+    // internal play() because of `autoplay=true` and we then change `src`,
+    // the internal play() promise rejects with `aborted by the user agent`
+    // and surfaces as `Uncaught (in promise) DOMException`. We start
+    // playback explicitly via `canplay` below and own the .catch.
+    video.autoplay = false;
     video.muted = shouldMute;
 
     if (video.src !== selectedUrl) {
