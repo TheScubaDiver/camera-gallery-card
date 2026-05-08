@@ -1163,10 +1163,11 @@ class CameraGalleryCard extends LitElement {
 
       // Gebruik HA ingebouwde go2rtc (auth/sign_path) of externe go2rtc instantie
       const go2rtcBase = this._getGo2rtcUrl();
-      let ws;
+      let wsUrl;
+      let pathLabel;
       if (go2rtcBase) {
-        const wsUrl = go2rtcBase.replace(/^http/, "ws") + "/api/webrtc?src=" + encodeURIComponent(url);
-        ws = new WebSocket(wsUrl);
+        wsUrl = go2rtcBase.replace(/^http/, "ws") + "/api/webrtc?src=" + encodeURIComponent(url);
+        pathLabel = "external go2rtc";
       } else {
         const now = Date.now();
         if (!this._signedWsPath || now - this._signedWsPathTs > 25_000) {
@@ -1174,13 +1175,42 @@ class CameraGalleryCard extends LitElement {
           this._signedWsPath = signed.path;
           this._signedWsPathTs = now;
         }
-        const wsUrl = "ws" + this._hass.hassUrl(this._signedWsPath).substring(4) + "&url=" + encodeURIComponent(url);
-        ws = new WebSocket(wsUrl);
+        wsUrl = "ws" + this._hass.hassUrl(this._signedWsPath).substring(4) + "&url=" + encodeURIComponent(url);
+        pathLabel = "AlexxIT/WebRTC integration";
       }
+
+      // Mixed-content: the page is HTTPS but the configured go2rtc URL is HTTP.
+      // Browsers silently block this and only fire `onerror` with no detail —
+      // surface the diagnosis here so the user knows what to fix.
+      if (
+        typeof location !== "undefined" &&
+        location.protocol === "https:" &&
+        wsUrl.startsWith("ws://")
+      ) {
+        throw new Error(
+          `Mixed content blocked: page is HTTPS but live_go2rtc_url uses http://. ` +
+          `Either configure go2rtc behind a TLS reverse proxy (https://) or ` +
+          `serve the dashboard from http://. URL: ${go2rtcBase}`
+        );
+      }
+
+      const ws = new WebSocket(wsUrl);
       this._rtcWebSocket = ws;
 
       await new Promise((resolve, reject) => {
-        const timeout = setTimeout(() => reject(new Error("go2rtc WS timeout")), 10000);
+        // `onerror` fires without detail before `onclose`; track the most
+        // recent close code so the rejection can include it.
+        let lastCloseCode = null;
+        const failPrefix = `${pathLabel} WS`;
+        const fail = (suffix) =>
+          reject(
+            new Error(
+              `${failPrefix} ${suffix}` +
+              (lastCloseCode !== null ? ` (close code ${lastCloseCode})` : "") +
+              ` — url: ${wsUrl.replace(/authSig=[^&]+/, "authSig=…")}`
+            )
+          );
+        const timeout = setTimeout(() => fail("timeout after 10s"), 10000);
 
         ws.onopen = async () => {
           try {
@@ -1201,13 +1231,16 @@ class CameraGalleryCard extends LitElement {
               pc.addIceCandidate({ candidate: msg.value, sdpMid: "0" }).catch(() => {});
             } else if (msg.type === "error") {
               clearTimeout(timeout);
-              reject(new Error("go2rtc error: " + msg.value));
+              reject(new Error(`${pathLabel} reported: ${msg.value}`));
             }
           } catch (err) { reject(err); }
         };
 
-        ws.onerror = (e) => { clearTimeout(timeout); reject(new Error("go2rtc WS error")); };
-        ws.onclose = (e) => { if (e.code !== 1000) { clearTimeout(timeout); reject(new Error("go2rtc WS closed: " + e.code)); } };
+        ws.onerror = () => { clearTimeout(timeout); fail("error"); };
+        ws.onclose = (e) => {
+          lastCloseCode = e.code;
+          if (e.code !== 1000) { clearTimeout(timeout); fail("closed"); }
+        };
       });
 
       // Stuur ICE candidates door naar go2rtc
