@@ -141,6 +141,7 @@ export interface InputConfig {
   style_variables?: string;
   show_camera_title?: boolean;
   persistent_controls?: boolean;
+  debug_enabled?: boolean;
 
   // ─── Preview ───────────────────────────────────────────────
   preview_position?: string;
