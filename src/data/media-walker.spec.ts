@@ -288,7 +288,7 @@ describe("MediaSourceClient.queueResolve", () => {
     const handler = vi.fn(() => ({ url: "/api/x" }));
     hass.registerWs("media_source/resolve_media", handler);
 
-    client.resolveFailed.add("media-source://x/dead.mp4");
+    client.resolveFailed.set("media-source://x/dead.mp4", Date.now());
     client.queueResolve(["media-source://x/dead.mp4"]);
     await new Promise((r) => setTimeout(r, 5));
     expect(handler).not.toHaveBeenCalled();
@@ -438,6 +438,140 @@ describe("MediaSourceClient.ensureLoaded", () => {
 
     const ids = client.getIds().sort();
     expect(ids).toEqual([`${root}/a.mp4`, `${root}/b.mp4`]);
+  });
+
+  it("drops stale results when load(config) bumps the generation mid-flight (B1, R5)", async () => {
+    const root = "media-source://media_source/local/recordings";
+    const child = (id: string, title: string): unknown => ({
+      title,
+      media_class: "video",
+      media_content_type: "video/mp4",
+      media_content_id: id,
+      can_play: true,
+      can_expand: false,
+      thumbnail: null,
+      children: [],
+    });
+    let release: (value: unknown) => void;
+    const gate = new Promise((resolve) => {
+      release = resolve;
+    });
+    hass.registerWs("media_source/browse_media", async (p) => {
+      await gate;
+      return {
+        title: "stale",
+        media_class: "directory",
+        media_content_type: "directory",
+        media_content_id: p["media_content_id"] as string,
+        can_play: false,
+        can_expand: true,
+        thumbnail: null,
+        children: [child(`${root}/stale.mp4`, "stale.mp4")],
+      };
+    });
+
+    client.load(baseConfig({ media_sources: [root] }));
+    const inflight = client.ensureLoaded();
+
+    // Mid-flight, the user reconfigures roots. clearForNewRoots bumps the
+    // generation; the in-flight load discards its results on completion.
+    client.load(baseConfig({ media_sources: ["media-source://media_source/local/other"] }));
+    release!(undefined);
+    await inflight;
+
+    expect(client.getIds()).toEqual([]);
+    // loading flag must not stay true after a stale-drop (would deadlock the next ensureLoaded)
+    expect(client.isLoading()).toBe(false);
+  });
+
+  it("clears every cache when media_sources changes (B10)", async () => {
+    const a = "media-source://media_source/local/a";
+    const b = "media-source://media_source/local/b";
+    client.load(baseConfig({ media_sources: [a] }));
+    client.setList([{ id: `${a}/x.mp4`, title: "x", cls: "video", mime: "video/mp4", thumb: "" }]);
+    client.state.urlCache.set(`${a}/x.mp4`, "/api/x");
+    client.state.loadedAt = Date.now();
+    client.frigateSnapshots = [
+      { id: "snap", title: "", cls: "image", mime: "image/jpeg", thumb: "" },
+    ];
+
+    client.load(baseConfig({ media_sources: [b] }));
+
+    expect(client.getIds()).toEqual([]);
+    expect(client.state.urlCache.size).toBe(0);
+    expect(client.state.loadedAt).toBe(0);
+    expect(client.frigateSnapshots).toEqual([]);
+    expect(client.snapshotCache.size).toBe(0);
+  });
+
+  it("clears caches when frigate_url changes even if media_sources is unchanged (B10)", () => {
+    const root = "media-source://frigate/clips";
+    client.load(baseConfig({ media_sources: [root], frigate_url: "http://a:5000" }));
+    client.setList([
+      { id: `${root}/x.mp4`, title: "x", cls: "video", mime: "video/mp4", thumb: "" },
+    ]);
+    client.state.urlCache.set(`${root}/x.mp4`, "/api/x");
+
+    client.load(baseConfig({ media_sources: [root], frigate_url: "http://b:5000" }));
+
+    expect(client.getIds()).toEqual([]);
+    expect(client.state.urlCache.size).toBe(0);
+  });
+
+  it("does not clear when load(config) is called with the same roots", () => {
+    const root = "media-source://media_source/local/a";
+    client.load(baseConfig({ media_sources: [root] }));
+    client.setList([
+      { id: `${root}/x.mp4`, title: "x", cls: "video", mime: "video/mp4", thumb: "" },
+    ]);
+
+    // Same config again — shouldn't bust the cache.
+    client.load(baseConfig({ media_sources: [root] }));
+
+    expect(client.getIds()).toEqual([`${root}/x.mp4`]);
+  });
+
+  it("expires resolveFailed entries after MS_RESOLVE_FAILURE_TTL_MS (B4)", async () => {
+    const id = "media-source://x/dead.mp4";
+    client.load(baseConfig({ media_sources: ["media-source://x"] }));
+
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(0));
+    client.resolveFailed.set(id, 0);
+
+    expect(client.isResolveFailed(id)).toBe(true);
+
+    // 30s in — still latched.
+    vi.setSystemTime(new Date(30_000));
+    expect(client.isResolveFailed(id)).toBe(true);
+
+    // 61s in — expired and pruned.
+    vi.setSystemTime(new Date(61_000));
+    expect(client.isResolveFailed(id)).toBe(false);
+    expect(client.resolveFailed.has(id)).toBe(false);
+  });
+
+  it("re-attempts queueResolve for IDs whose failure has expired (B4)", async () => {
+    const id = "media-source://x/recoverable.mp4";
+    const handler: WsHandler = vi.fn(() => ({ url: "/api/recoverable" }));
+    hass.registerWs("media_source/resolve_media", handler);
+
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(0));
+    client.resolveFailed.set(id, 0);
+
+    // Within TTL: skipped.
+    client.queueResolve([id]);
+    while (client.resolveInFlight) await vi.advanceTimersByTimeAsync(1);
+    expect(handler).not.toHaveBeenCalled();
+
+    // After TTL: re-attempted.
+    vi.setSystemTime(new Date(61_000));
+    client.queueResolve([id]);
+    vi.useRealTimers();
+    while (client.resolveInFlight) await new Promise((r) => setTimeout(r, 1));
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(client.getUrlCache().get(id)).toBe("/api/recoverable");
   });
 
   it("serves from the persistent walk cache when available", async () => {

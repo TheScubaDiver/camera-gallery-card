@@ -30,6 +30,8 @@ import {
   DEFAULT_RESOLVE_BATCH,
   DEFAULT_WALK_DEPTH,
   FRIGATE_API_RETRY_AFTER_MS,
+  FRIGATE_SNAPSHOT_MATCH_WINDOW_MS,
+  MS_RESOLVE_FAILURE_TTL_MS,
 } from "../const";
 import type { CameraGalleryCardConfig } from "../config/normalize";
 import type { CardItem } from "../types/media-item";
@@ -149,7 +151,6 @@ const ENSURE_LOADED_FRESHNESS_MS = 30_000;
 const BROWSE_CACHE_TTL_MS = 60 * 60 * 1000;
 const WALK_BATCH = 20;
 const RESOLVE_TIMEOUT_MS = 12_000;
-const FRIGATE_SNAPSHOT_MATCH_WINDOW_MS = 15_000;
 
 /**
  * Stateful media-source client. See module docstring.
@@ -160,8 +161,13 @@ export class MediaSourceClient {
   readonly state: MediaSourceState = makeEmptyState();
   resolveInFlight = false;
   readonly resolveQueued: Set<string> = new Set();
-  /** IDs that returned no URL or timed out; not retried this session. */
-  resolveFailed: Set<string> = new Set();
+  /**
+   * IDs that returned no URL or timed out, with the timestamp of the
+   * failure. Entries older than `MS_RESOLVE_FAILURE_TTL_MS` are pruned
+   * lazily when checked or queued — so transient outages recover within
+   * a session. Use `isResolveFailed(id)` for the TTL-aware read.
+   */
+  resolveFailed: Map<string, number> = new Map();
   readonly browseTtlCache: Map<string, { ts: number; data: MediaSourceItem }> = new Map();
   /** Frigate snapshot index, populated alongside the walk when a Frigate root is configured. */
   frigateSnapshots: FrigateSnapshot[] = [];
@@ -173,6 +179,17 @@ export class MediaSourceClient {
   private readonly _onChange?: (() => void) | undefined;
   private readonly _getDtOpts: () => DatetimeOptions;
   private readonly _resolveItemMs: ((src: string) => number | null) | undefined;
+  /**
+   * Monotonically increasing generation counter. Incremented on
+   * {@link clearForNewRoots} so an in-flight `ensureLoaded` from a prior
+   * generation drops its results instead of overwriting fresh state. See
+   * `_loadGenSnapshot` / `_isStale` below.
+   */
+  private _loadGeneration = 0;
+  /** Previous `media_sources` snapshot used by `load()` to detect changes. */
+  private _prevRootsKey = "";
+  /** Previous `frigate_url` snapshot used by `load()` to detect changes. */
+  private _prevFrigateUrl = "";
 
   constructor(opts: MediaSourceClientOptions = {}) {
     this._onChange = opts.onChange;
@@ -184,28 +201,59 @@ export class MediaSourceClient {
     this._hass = hass;
   }
 
+  /**
+   * Update the cached config. If the configured roots or Frigate REST URL
+   * change, every cache slot the new roots could touch is invalidated and
+   * the load generation is bumped so any in-flight `ensureLoaded` from
+   * the prior config drops its results instead of overwriting fresh
+   * state. Audit ID: B10.
+   */
   load(config: CameraGalleryCardConfig | null): void {
     this._config = config;
+    const nextRootsKey = keyFromRoots(config?.media_sources ?? []);
+    const nextFrigateUrl = String(config?.frigate_url ?? "");
+    if (nextRootsKey !== this._prevRootsKey || nextFrigateUrl !== this._prevFrigateUrl) {
+      this.clearForNewRoots();
+      this._prevRootsKey = nextRootsKey;
+      this._prevFrigateUrl = nextFrigateUrl;
+    }
   }
 
-  /** Reset state on a roots change (called from setConfig in the legacy
-   * code path; will move into `load()` in the next commit). */
+  /** Reset every cache slot on a roots change. Bumps the load generation
+   * so an in-flight `ensureLoaded` from a prior generation drops results. */
   clearForNewRoots(): void {
+    this._loadGeneration++;
     this.state.key = "";
     this.setList([]);
     this.state.loadedAt = 0;
     this.state.loading = false;
     this.state.roots = [];
     this.state.urlCache = new Map();
-    this.resolveFailed = new Set();
+    this.resolveFailed = new Map();
     this.frigateSnapshots = [];
     this.snapshotCache.clear();
+    this.browseTtlCache.clear();
   }
 
   /** Drop the resolve-failed latch (e.g. on a new tile-reveal pass — gives
    * IDs that 404'd a chance again when the user scrolls back). */
   clearResolveFailed(): void {
-    this.resolveFailed = new Set();
+    this.resolveFailed = new Map();
+  }
+
+  /**
+   * `true` iff `id` is currently latched as failed. Side effect: prunes
+   * an expired entry on read so the next `queueResolve` re-attempts it.
+   * Audit ID: B4.
+   */
+  isResolveFailed(id: string): boolean {
+    const ts = this.resolveFailed.get(id);
+    if (ts === undefined) return false;
+    if (Date.now() - ts > MS_RESOLVE_FAILURE_TTL_MS) {
+      this.resolveFailed.delete(id);
+      return false;
+    }
+    return true;
   }
 
   /** Mark the cache as stale so the next `ensureLoaded` does a fresh load. */
@@ -268,15 +316,16 @@ export class MediaSourceClient {
   }
 
   /**
-   * Single media-id resolve. Returns `""` on failure (latched in
-   * `resolveFailed` for the rest of the session). Cached on success.
+   * Single media-id resolve. Returns `""` on failure (latched with the
+   * current timestamp in `resolveFailed`; entries expire after
+   * `MS_RESOLVE_FAILURE_TTL_MS`). Cached on success.
    */
   async resolve(mediaId: string): Promise<string> {
     const cached = this.state.urlCache.get(mediaId);
     if (cached) return cached;
 
     if (!this._hass) {
-      this.resolveFailed.add(mediaId);
+      this.resolveFailed.set(mediaId, Date.now());
       return "";
     }
 
@@ -291,7 +340,7 @@ export class MediaSourceClient {
         RESOLVE_TIMEOUT_MS
       )) as { url?: string } | undefined;
     } catch {
-      this.resolveFailed.add(mediaId);
+      this.resolveFailed.set(mediaId, Date.now());
       return "";
     }
 
@@ -300,7 +349,7 @@ export class MediaSourceClient {
       this.state.urlCache.set(mediaId, url);
       this._fireChange();
     } else {
-      this.resolveFailed.add(mediaId);
+      this.resolveFailed.set(mediaId, Date.now());
     }
     return url;
   }
@@ -313,7 +362,7 @@ export class MediaSourceClient {
     for (const id of ids ?? []) {
       if (!id) continue;
       if (this.state.urlCache.has(id)) continue;
-      if (this.resolveFailed.has(id)) continue;
+      if (this.isResolveFailed(id)) continue;
       this.resolveQueued.add(id);
     }
     if (this.resolveInFlight) return;
@@ -450,14 +499,20 @@ export class MediaSourceClient {
       this.state.key = key;
       this.setList([]);
       this.state.urlCache = new Map();
-      this.resolveFailed = new Set();
+      this.resolveFailed = new Map();
       this.state.frigateApiFailed = false;
       this.state.frigateApiFailedAt = 0;
     }
 
+    // Synchronous before any await — ensures the de-dup flag is set
+    // before a concurrent caller observes it (audit B1 / R5).
     this.state.loading = true;
+    const gen = this._loadGeneration;
     try {
       const items = await this._loadFrigateApi(frigateUrl, config);
+      // Audit B1: drop results from a stale generation. If `clearForNewRoots`
+      // ran between the await and now, our items belong to the old config.
+      if (this._isStale(gen)) return;
       if (items === null) {
         this.state.frigateApiFailed = true;
         this.state.frigateApiFailedAt = Date.now();
@@ -469,13 +524,16 @@ export class MediaSourceClient {
       this.setList(items.slice(0, cap));
       this.state.loadedAt = Date.now();
     } catch (e) {
+      if (this._isStale(gen)) return;
       console.warn("CGC Frigate API load failed:", e);
       this.state.frigateApiFailed = true;
       this.state.frigateApiFailedAt = Date.now();
       this.setList([]);
     } finally {
-      this.state.loading = false;
-      this._fireChange();
+      if (!this._isStale(gen)) {
+        this.state.loading = false;
+        this._fireChange();
+      }
     }
   }
 
@@ -522,7 +580,7 @@ export class MediaSourceClient {
       this.setList([]);
       this.state.roots = roots.slice();
       this.state.urlCache = new Map();
-      this.resolveFailed = new Set();
+      this.resolveFailed = new Map();
     }
 
     // Serve from persistent walk cache instantly, then refresh in background if stale.
@@ -545,7 +603,9 @@ export class MediaSourceClient {
       return;
     }
 
+    // Synchronous before any await — closes the de-dup window (audit B1 / R5).
     this.state.loading = true;
+    const gen = this._loadGeneration;
 
     try {
       const visibleCap = config.max_media ?? DEFAULT_MAX_MEDIA;
@@ -571,6 +631,7 @@ export class MediaSourceClient {
             const onProgress =
               roots.length === 1
                 ? (partial: MediaSourceItem[]): void => {
+                    if (this._isStale(gen)) return;
                     if (partial.length >= 1) {
                       const items = partial
                         .map((x) => toMsItem(x))
@@ -589,6 +650,7 @@ export class MediaSourceClient {
           }
         })
       );
+      if (this._isStale(gen)) return;
       flat.push(...rootResults.flat());
 
       if (roots.some(isFrigateRoot)) {
@@ -646,17 +708,28 @@ export class MediaSourceClient {
       });
 
       const itemsToSave = items.slice(0, internalCap);
+      if (this._isStale(gen)) return;
       this.setList(itemsToSave);
       this.state.loadedAt = Date.now();
       this._walkCacheSave(key, itemsToSave);
     } catch (e) {
+      if (this._isStale(gen)) return;
       console.warn("MS ensure load failed:", e);
       console.warn("MS roots used:", roots);
       this.setList([]);
     } finally {
-      this.state.loading = false;
-      this._fireChange();
+      if (!this._isStale(gen)) {
+        this.state.loading = false;
+        this._fireChange();
+      }
     }
+  }
+
+  /** A `gen` snapshot is stale when `clearForNewRoots` has bumped the
+   * counter since it was taken. Used at every commit point inside the
+   * orchestrator paths to drop results that belong to the old config. */
+  private _isStale(gen: number): boolean {
+    return gen !== this._loadGeneration;
   }
 
   private async _browse(rootId: string): Promise<MediaSourceItem | null> {

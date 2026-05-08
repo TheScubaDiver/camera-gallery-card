@@ -889,7 +889,7 @@ class CameraGalleryCard extends LitElement {
           for (const src of visibleThumbIds) {
             if (src === selectedSrc) continue;
             const snapId = this._findMatchingSnapshotMediaId(src);
-            if (snapId && !this._ms.urlCache.has(snapId) && !this._msResolveFailed.has(snapId)) {
+            if (snapId && !this._ms.urlCache.has(snapId) && !this._mediaClient.isResolveFailed(snapId)) {
               want.push(snapId);
             }
           }
@@ -900,7 +900,7 @@ class CameraGalleryCard extends LitElement {
           for (const src of visibleThumbIds) {
             if (src === selectedSrc) continue;
             const pairedJpgId = this._ms.pairedThumbs.get(src);
-            if (pairedJpgId && !this._ms.urlCache.has(pairedJpgId) && !this._msResolveFailed.has(pairedJpgId)) {
+            if (pairedJpgId && !this._ms.urlCache.has(pairedJpgId) && !this._mediaClient.isResolveFailed(pairedJpgId)) {
               want.push(pairedJpgId);
             }
           }
@@ -2380,7 +2380,7 @@ class CameraGalleryCard extends LitElement {
 
     // Paired thumbnail: same-stem jpg next to the mp4
     const pairedJpgId = this._ms?.pairedThumbs?.get(it.src);
-    if (pairedJpgId && !this._msResolveFailed.has(pairedJpgId)) {
+    if (pairedJpgId && !this._mediaClient.isResolveFailed(pairedJpgId)) {
       const jpgUrl = this._ms?.urlCache?.get(pairedJpgId) || "";
       if (jpgUrl) {
         const cached = this._posterCache.get(jpgUrl);
@@ -3330,12 +3330,13 @@ class CameraGalleryCard extends LitElement {
       this._viewMode = "media";
     }
 
+    // Roots/frigate_url cache invalidation lives inside MediaSourceClient.load()
+    // now (audit B10). Card still has a per-instance object-detection cache
+    // that's source-aware but not owned by the data layer.
     if (this.config.source_mode === "media" || this.config.source_mode === "combined") {
       const prevKey = prevConfig ? msKeyFromRoots(prevConfig.media_sources) : "";
       const nextKey = msKeyFromRoots(this.config.media_sources);
-
       if (!prevConfig || (sourceChange && prevKey !== nextKey)) {
-        this._mediaClient.clearForNewRoots();
         this._objectCache.clear();
       }
     }
