@@ -41,6 +41,7 @@ import {
   keyFromRoots as msKeyFromRoots,
   MediaSourceClient,
 } from "./data/media-walker";
+import { CombinedSourceClient } from "./data/combined-source";
 import { fnv1aHash } from "./util/hash";
 import { isVideo } from "./util/media-type";
 import {
@@ -359,6 +360,7 @@ class CameraGalleryCard extends LitElement {
       getDtOpts: () => this._dtOpts,
       resolveItemMs: (src) => this._resolveItemMs(src),
     });
+    this._combinedClient = new CombinedSourceClient(this._sensorClient, this._mediaClient);
     this._previewLoadTimer = null;
 
     this._posterQueue = [];
@@ -2627,40 +2629,10 @@ class CameraGalleryCard extends LitElement {
     };
 
     if (mode === "combined") {
-      const entities = this._sensorEntityList();
-      let sensorList = [];
-      // Audit A7: was `this._srcEntityMap || new Map()` which preserved the
-      // map across calls and leaked stale entries when entities or
-      // source_mode changed. Unconditional rebuild matches what the sensor
-      // branch (now in SensorSourceClient.getItems) already does.
-      this._srcEntityMap = new Map();
-      for (const entityId of entities) {
-        const st = this._hass?.states?.[entityId];
-        const raw = st?.attributes?.[ATTR_NAME];
-        if (!raw) continue;
-        let part = [];
-        if (Array.isArray(raw)) {
-          part = raw.map((x) => this._toWebPath(x)).filter(Boolean);
-        } else if (typeof raw === "string") {
-          try {
-            const parsed = JSON.parse(raw);
-            part = Array.isArray(parsed)
-              ? parsed.map((x) => this._toWebPath(x)).filter(Boolean)
-              : [this._toWebPath(raw)].filter(Boolean);
-          } catch (_) {
-            part = [this._toWebPath(raw)].filter(Boolean);
-          }
-        }
-        for (const src of part) {
-          if (!this._srcEntityMap.has(src)) this._srcEntityMap.set(src, entityId);
-        }
-        sensorList.push(...part);
-      }
-      const enrichedSensor = dedupeByRelPath(sensorList).map(enrich);
-      const { items: pairedSensor, pairedThumbs: sensorPaired } = pairSensorItems(enrichedSensor);
-      this._sensorPairedThumbs = sensorPaired;
-      const msItems = dedupeByRelPath(this._msIds()).map(enrich);
-      const merged = dedupeByRelPath([...pairedSensor, ...msItems]);
+      const merged = this._combinedClient.getItems(enrich);
+      // Mirror sensor-side maps for legacy render and delete-gate reads.
+      this._srcEntityMap = new Map(this._sensorClient.getSrcEntityMap());
+      this._sensorPairedThumbs = new Map(this._sensorClient.getSensorPairedThumbs());
       return this._deleted?.size
         ? merged.filter((it) => !this._deleted.has(it.src))
         : merged;
