@@ -1684,10 +1684,24 @@ class CameraGalleryCard extends LitElement {
 
   _toggleLiveFullscreen() {
     const video = this._findLiveVideo();
+    const ua = navigator.userAgent || "";
+    // HA Companion's Android WebView mishandles requestFullscreen on a
+    // custom element (system bar hides but the element doesn't fill the
+    // viewport). The CSS fallback works correctly there. iOS Companion is
+    // unaffected because the video.webkitEnterFullscreen path runs first.
+    const isAndroidWebView = /Android/.test(ua) && (/Home Assistant\//.test(ua) || /; wv\)/.test(ua));
 
     // Uitgang fullscreen
-    if (document.fullscreenElement || document.webkitFullscreenElement) {
-      (document.exitFullscreen || document.webkitExitFullscreen).call(document).catch(() => {});
+    if (document.fullscreenElement || document.webkitFullscreenElement || this._liveFullscreen) {
+      if (document.fullscreenElement || document.webkitFullscreenElement) {
+        (document.exitFullscreen || document.webkitExitFullscreen).call(document).catch(() => {});
+        return;
+      }
+      // CSS-fallback exit
+      this._liveFullscreen = false;
+      this._resetZoom();
+      this.removeAttribute("data-live-fs");
+      this.requestUpdate();
       return;
     }
 
@@ -1697,16 +1711,15 @@ class CameraGalleryCard extends LitElement {
       return;
     }
 
-    // Standard fullscreen API — altijd op 'this' zodat pinch-zoom werkt
-    if (document.fullscreenEnabled) {
+    // Android WebView: skip native API, go to CSS fallback (zie boven)
+    if (!isAndroidWebView && document.fullscreenEnabled) {
       this.requestFullscreen().catch(() => {});
       return;
     }
 
-    // CSS fallback
-    this._liveFullscreen = !this._liveFullscreen;
-    if (!this._liveFullscreen) this._resetZoom();
-    this.toggleAttribute("data-live-fs", this._liveFullscreen);
+    // CSS fallback (Android WebView, of geen native fullscreen support)
+    this._liveFullscreen = true;
+    this.setAttribute("data-live-fs", "");
     this.requestUpdate();
   }
 
