@@ -162,7 +162,6 @@ export const DEFAULT_LIVE_ENABLED = false;
 export const DEFAULT_LIVE_LAYOUT = "single" satisfies LiveLayout;
 export const DEFAULT_MAX_MEDIA = 50;
 export const DEFAULT_OBJECT_FIT = "cover" satisfies ObjectFit;
-export const DEFAULT_PER_ROOT_MIN_LIMIT = 40;
 export const DEFAULT_PREVIEW_CLOSE_ON_TAP_WHEN_GATED = true;
 export const DEFAULT_PREVIEW_POSITION = "top" satisfies PreviewPosition;
 export const DEFAULT_RESOLVE_BATCH = 32;
@@ -171,7 +170,6 @@ export const DEFAULT_THUMB_BAR_POSITION = "bottom" satisfies ThumbBarPosition;
 export const DEFAULT_THUMB_LAYOUT = "horizontal" satisfies ThumbLayout;
 export const DEFAULT_THUMBNAIL_FRAME_PCT = 0; // 0% = first frame, 100% = last frame
 export const DEFAULT_VISIBLE_OBJECT_FILTERS: readonly ObjectFilter[] = [];
-export const DEFAULT_WALK_DEPTH = 6;
 
 // -------- Inline-style fallbacks (used by render(), not styles.ts) --------
 export const STYLE = {

@@ -126,8 +126,8 @@ export class SensorSourceClient {
     this._hass = hass;
   }
 
-  /** Update the cached config. Resets stored maps so a source-mode flip can't
-   * leak stale entries (commit 4 will move this fix into the rebuild path). */
+  /** Update the cached config. The internal `srcEntityMap` is rebuilt on every
+   * `getItems()` call, so source-mode flips don't leak stale entries. */
   load(config: CameraGalleryCardConfig | null): void {
     this._config = config;
   }
@@ -157,14 +157,11 @@ export class SensorSourceClient {
 
   /**
    * Build `CardItem[]` from the configured sensor entities. Side effect:
-   * rebuilds `srcEntityMap` and `sensorPairedThumbs`.
+   * unconditionally rebuilds `srcEntityMap` and `sensorPairedThumbs` — so
+   * a source-mode flip never sees stale entries from a previous call.
    *
    * `enrich` is injected by the card (closes over `_resolveItemMs` so the
    * client can stay framework-free).
-   *
-   * Note: for parity with the legacy code, the combined branch's "preserve
-   * map across calls" semantics are still in place. Commit 4 makes this
-   * unconditional rebuild.
    */
   getItems(enrich: Enrich = DEFAULT_ENRICH): CardItem[] {
     const entities = this.getEntityIds();

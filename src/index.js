@@ -32,11 +32,10 @@ import {
 } from "./data/sensor-source";
 import {
   isMediaSourceId,
-  isRenderable,
   keyFromRoots as msKeyFromRoots,
   MediaSourceClient,
-  walkCacheKey as msWalkCacheKey,
 } from "./data/media-walker";
+import { detectPathFormat } from "./data/path-format-detect";
 import { CombinedSourceClient } from "./data/combined-source";
 import { canDeleteItem, deleteItem } from "./data/delete-service";
 import { fnv1aHash } from "./util/hash";
@@ -238,8 +237,6 @@ class CameraGalleryCard extends LitElement {
     this._zoomPanBaseX = 0;
     this._zoomPanBaseY = 0;
 
-    // Stable bound resolver passed into pure datetime-parsing functions.
-    this.__dtResolveName = (src) => this._sourceNameForParsing(src);
 
     this._onFullscreenChange = () => {
       const isFs = document.fullscreenElement === this || document.webkitFullscreenElement === this;
@@ -555,21 +552,9 @@ class CameraGalleryCard extends LitElement {
     }
     if (payload?.type !== "end") return;
 
-    {
-      // Bypass freshness gate.
-      this._mediaClient.invalidate();
-      // Bypass the persistent walk cache so we do a real media-source walk
-      // instead of replaying stale localStorage data.
-      try {
-        const roots = Array.isArray(this.config?.media_sources)
-          ? this.config.media_sources
-          : [];
-        if (roots.length) {
-          const cacheKey = msWalkCacheKey(msKeyFromRoots(roots));
-          localStorage.removeItem(cacheKey);
-        }
-      } catch (_) {}
-    }
+    // Bypass freshness gate so the next ensureLoaded re-runs calendar
+    // discovery and re-fetches the visible day.
+    this._mediaClient.invalidate();
     this._mediaClient.ensureLoaded();
   }
 
@@ -602,7 +587,7 @@ class CameraGalleryCard extends LitElement {
     });
 
     const allWithDay = withDt.map((x) => ({ dayKey: x.dayKey, src: x.src, dtMs: x.dtMs }));
-    const days = uniqueDays(allWithDay);
+    const days = this._allKnownDays(allWithDay);
     const newestDay = days[0] ?? null;
     const activeDay = this._selectedDay ?? newestDay;
 
@@ -971,22 +956,37 @@ class CameraGalleryCard extends LitElement {
   }
 
   // Options bag for the pure datetime-parsing functions.
-  // Reads config + resolveName each access; cheap allocation, no caching needed.
+  // Reads config each access; cheap allocation, no caching needed.
   get _dtOpts() {
     return {
-      folderFormat: this.config?.folder_datetime_format,
-      filenameFormat: this.config?.filename_datetime_format,
-      resolveName: this.__dtResolveName,
+      pathFormat: this.config?.path_datetime_format ?? "",
     };
+  }
+
+  // Day-picker source. Three contributing layers, merged into one descending list:
+  //   1. Media calendar — days the media client discovered during Phase A.
+  //      For lazy modes (B/C), days appear here BEFORE their files are
+  //      loaded, so the picker is fully populated immediately.
+  //   2. Item-derived days — every loaded item with a dayKey contributes.
+  //      In `combined` mode this folds the sensor-side dayKeys (sensor
+  //      items aren't lazy-loaded; their dates come straight from the
+  //      filename via path_datetime_format) into the picker.
+  //   3. Frigate REST + sensor-only modes — when no calendar exists, we
+  //      fall back to item-derived only.
+  _allKnownDays(itemsWithDay) {
+    const calendarDays = this._mediaClient?.getDays?.() ?? [];
+    if (calendarDays.length === 0) return uniqueDays(itemsWithDay);
+    const merged = new Set(calendarDays);
+    for (const it of itemsWithDay) if (it?.dayKey) merged.add(it.dayKey);
+    return Array.from(merged).sort((a, b) => (a < b ? 1 : a > b ? -1 : 0));
   }
 
   // Resolve the best dtMs we know for a src. Order:
   //   1. Authoritative timestamp attached at the source (e.g., Frigate REST
   //      _loadFrigateApi sets dtMs from start_time).
-  //   2. Frigate event-id epoch parsed from the URI itself (covers walk
-  //      partial-load before the post-walk enrichment runs, plus any path
-  //      that wasn't routed through _ms.list).
-  //   3. User-format parsing of the filename / folder.
+  //   2. Frigate event-id epoch parsed from the URI itself (covers paths that
+  //      didn't pass through the media client's listIndex).
+  //   3. User-format parsing of the path tail (path_datetime_format).
   // Returns null when nothing matches.
   _resolveItemMs(src) {
     const pre = this._mediaClient.getDtMsForId(src);
@@ -1198,9 +1198,15 @@ class CameraGalleryCard extends LitElement {
     const cfg = this.config || {};
     const hass = this._hass;
     const frigateInstalled = !!hass?.config?.components?.includes?.("frigate");
-    const ms = this._ms || {};
+    // Read media-client state directly. The legacy `this._ms` proxy was never
+    // wired on the card, so the diagnostics panel previously showed all zero/—
+    // values regardless of actual state.
+    const ms = this._mediaClient?.state || {};
+    const list = Array.isArray(ms.list) ? ms.list : [];
     const loadedAt = ms.loadedAt || 0;
     const failedAt = ms.frigateApiFailedAt || 0;
+    const calendarDays = ms.calendar?.days?.length ?? 0;
+    const dayCacheSize = ms.dayCache?.size ?? 0;
     const ageS = (ts) => (ts ? Math.round((Date.now() - ts) / 1000) + "s ago" : "—");
     const fmtTs = (ts) => (ts ? new Date(ts).toLocaleTimeString() + " (" + ageS(ts) + ")" : "—");
 
@@ -1232,7 +1238,9 @@ class CameraGalleryCard extends LitElement {
         ["live_layout", cfg.live_layout || "single"],
       ]],
       ["Runtime state", "mdi:pulse", [
-        ["Items in gallery", String((ms.list || []).length), (ms.list || []).length > 0 ? "ok" : "warn"],
+        ["Items in gallery", String(list.length), list.length > 0 ? "ok" : "warn"],
+        ["Calendar days", String(calendarDays), calendarDays > 0 ? "ok" : null],
+        ["Days loaded", String(dayCacheSize)],
         ["Last fetch", fmtTs(loadedAt), loadedAt && (Date.now() - loadedAt < 5 * 60 * 1000) ? "ok" : loadedAt ? "warn" : "bad"],
         ["Direct API", ms.frigateApiFailed ? `failed (${ageS(failedAt)})` : "ok", ms.frigateApiFailed ? "warn" : "ok"],
         ["WS subscribe (frigate/events)", this._frigateEventsUnsub ? "active" : "inactive", this._frigateEventsUnsub ? "ok" : (frigateInstalled ? "warn" : null)],
@@ -3288,7 +3296,7 @@ class CameraGalleryCard extends LitElement {
     });
 
     const allWithDay = withDt.map((x) => ({ dayKey: x.dayKey, src: x.src, dtMs: x.dtMs }));
-    const days = uniqueDays(allWithDay);
+    const days = this._allKnownDays(allWithDay);
     const newestDay = days[0] ?? null;
     const activeDay = this._selectedDay ?? newestDay;
 
@@ -3717,6 +3725,32 @@ class CameraGalleryCard extends LitElement {
       this._scrollThumbIntoView(i);
     }
 
+    // Lazy-load the active day for media/combined modes. The MediaSourceClient
+    // returns immediately when the day is already cached, so this is cheap.
+    // Also prefetch the adjacent days so left/right arrow navigation feels
+    // instant.
+    if (dayChanged || changedProps.has("config")) {
+      const mode = this.config?.source_mode;
+      if (mode === "media" || mode === "combined") {
+        const activeDay = this._selectedDay;
+        const days = this._mediaClient.getDays?.() || [];
+        const ensure = (d) => {
+          if (d) void this._mediaClient.ensureDayLoaded?.(d);
+        };
+        if (activeDay) ensure(activeDay);
+        if (activeDay && days.length) {
+          const i = days.indexOf(activeDay);
+          if (i >= 0) {
+            ensure(days[i - 1]); // newer
+            ensure(days[i + 1]); // older
+          }
+        } else if (days.length) {
+          // No selection yet — load the newest day so first paint isn't empty.
+          ensure(days[0]);
+        }
+      }
+    }
+
     if (changedProps.has("config") && this._previewVideoEl) {
       this._previewVideoEl.autoplay = this.config?.autoplay === true;
       this._previewVideoEl.muted =
@@ -3745,7 +3779,7 @@ class CameraGalleryCard extends LitElement {
       });
 
       const allWithDay = withDt.map((x) => ({ dayKey: x.dayKey, src: x.src, dtMs: x.dtMs }));
-      const days = uniqueDays(allWithDay);
+      const days = this._allKnownDays(allWithDay);
       const newestDay = days[0] ?? null;
       const activeDay = this._selectedDay ?? newestDay;
 
@@ -3874,7 +3908,7 @@ class CameraGalleryCard extends LitElement {
     });
 
     const allWithDay = withDt.map((x) => ({ dayKey: x.dayKey, src: x.src, dtMs: x.dtMs }));
-    const days = uniqueDays(allWithDay);
+    const days = this._allKnownDays(allWithDay);
     const newestDay = days[0] ?? null;
     const activeDay = this._selectedDay ?? newestDay;
 
@@ -7601,12 +7635,8 @@ class CameraGalleryCardEditor extends HTMLElement {
       this._looksLikeFile(this._prettyLabel(s))
     );
 
-    const filenameDatetimeFormat = String(
-      c.filename_datetime_format || ""
-    ).trim();
-
-    const folderDatetimeFormat = String(
-      c.folder_datetime_format || ""
+    const pathDatetimeFormat = String(
+      c.path_datetime_format || ""
     ).trim();
 
     const objectFiltersArr = this._normalizeObjectFilters(
@@ -8085,28 +8115,23 @@ class CameraGalleryCardEditor extends HTMLElement {
               </div>
 
               <div class="row">
-                <div class="lbl">Datetime formats</div>
+                <div class="lbl">Path datetime format</div>
                 <div class="desc">
                   ${svgIcon('mdi:information-outline', 14)}
-                  Configure at least one format so files can be grouped by date. Files with no matching format appear under <strong>Other</strong>.
+                  Single pattern that matches the path tail. Use <code>/</code> to separate directory levels — the deepest directory level is browsed lazily as the user navigates dates, so very large archives stay snappy.
                   Tokens: <code>YYYY</code> <code>MM</code> <code>DD</code> <code>HH</code> <code>mm</code> <code>ss</code>
                 </div>
-                <div style="padding-top:8px;display:flex;flex-direction:column;gap:14px;">
-                  <div>
-                    <div class="lbl">Folder datetime format</div>
-                    <input type="text" class="ed-input" id="folderfmt" placeholder="e.g. YYYY-MM-DD" style="margin-top:4px;" />
-                    <div class="hint" style="margin-top:4px;">
-                      ${svgIcon('mdi:information-outline', 14)}
-                      Matches the folder name in the path. Examples: <code>YYYY-MM-DD</code>, <code>YYYYMMDD</code>, <code>DD-MM-YYYY</code>. Year defaults to current year if omitted.
-                    </div>
+                <div style="padding-top:8px;">
+                  <input type="text" class="ed-input" id="pathfmt" placeholder="e.g. YYYY/MM/DD/HHmmss" />
+                  <div class="row-actions" style="margin-top:6px;">
+                    <button type="button" class="actionbtn" id="detect-pathfmt"${(mediaModeOn || combinedModeOn) ? "" : " disabled"} title="${(mediaModeOn || combinedModeOn) ? "Probe the configured media folder(s) and suggest a format" : "Add a media folder first"}">
+                      ${svgIcon('mdi:magnify-scan', 18)}<span>Detect from media</span>
+                    </button>
+                    <span class="hint" id="detect-pathfmt-status" style="margin-left:8px;align-self:center;"></span>
                   </div>
-                  <div>
-                    <div class="lbl">Filename datetime format</div>
-                    <input type="text" class="ed-input" id="filenamefmt" placeholder="e.g. YYYYMMDD_HHmmss" style="margin-top:4px;" />
-                    <div class="hint" style="margin-top:4px;">
-                      ${svgIcon('mdi:information-outline', 14)}
-                      Matches the filename (without extension). Examples: <code>YYYYMMDD_HHmmss</code>, <code>DD-MM-YYYY_HH-mm-ss</code>, <code>YYYY-MM-DDTHH:mm:ss</code>
-                    </div>
+                  <div class="hint" style="margin-top:4px;">
+                    ${svgIcon('mdi:information-outline', 14)}
+                    Examples: flat <code>RLC_YYYYMMDD_HHmmss.mp4</code> · date folder <code>YYYYMMDD/HHmmss</code> · nested <code>YYYY/MM/DD/HHmmss</code>
                   </div>
                 </div>
               </div>
@@ -10317,8 +10342,7 @@ if (oldPanel && tmp.firstElementChild) {
 
     const entitiesEl = $("entities");
     const mediaEl = $("mediasources");
-    const filenameFmtEl = $("filenamefmt");
-    const folderFmtEl = $("folderfmt");
+    const pathFmtEl = $("pathfmt");
     const delserviceEl = $("delservice");
 
     const thumbEl = $("thumb");
@@ -10332,8 +10356,7 @@ if (oldPanel && tmp.firstElementChild) {
 
     this._setControlValue(entitiesEl, entitiesText);
     this._setControlValue(mediaEl, mediaSourcesText);
-    this._setControlValue(filenameFmtEl, filenameDatetimeFormat);
-    this._setControlValue(folderFmtEl, folderDatetimeFormat);
+    this._setControlValue(pathFmtEl, pathDatetimeFormat);
     this._setControlValue(thumbEl, String(thumbSize));
     this._setControlValue(maxmediaEl, String(maxMedia));
     this._setControlValue(thumbpctEl, thumbFramePct);
@@ -10493,51 +10516,74 @@ if (oldPanel && tmp.firstElementChild) {
       }
     };
 
-    const commitFilenameFormat = (commit = false) => {
-      const raw = String(filenameFmtEl?.value ?? "").trim();
-
-      if (!raw) {
-        const next = { ...this._config };
-        delete next.filename_datetime_format;
-        this._config = this._stripAlwaysTrueKeys(next);
-
-        if (commit) {
-          this._fire();
-          this._scheduleRender();
-        }
-        return;
-      }
-
-      this._config = this._stripAlwaysTrueKeys({
-        ...this._config,
-        filename_datetime_format: raw,
-      });
-
-      if (commit) {
-        this._fire();
-        this._scheduleRender();
-      }
-    };
-
-    filenameFmtEl?.addEventListener("input", () => commitFilenameFormat(false), _sig);
-    filenameFmtEl?.addEventListener("change", () => commitFilenameFormat(true), _sig);
-    filenameFmtEl?.addEventListener("blur", () => commitFilenameFormat(true), _sig);
-
-    const commitFolderFormat = (commit = false) => {
-      const raw = String(folderFmtEl?.value ?? "").trim();
+    const commitPathFormat = (commit = false) => {
+      const raw = String(pathFmtEl?.value ?? "").trim();
       const next = { ...this._config };
-      if (!raw) {
-        delete next.folder_datetime_format;
-      } else {
-        next.folder_datetime_format = raw;
-      }
+      if (!raw) delete next.path_datetime_format;
+      else next.path_datetime_format = raw;
       this._config = this._stripAlwaysTrueKeys(next);
       if (commit) { this._fire(); this._scheduleRender(); }
     };
 
-    folderFmtEl?.addEventListener("input", () => commitFolderFormat(false), _sig);
-    folderFmtEl?.addEventListener("change", () => commitFolderFormat(true), _sig);
-    folderFmtEl?.addEventListener("blur", () => commitFolderFormat(true), _sig);
+    pathFmtEl?.addEventListener("input", () => commitPathFormat(false), _sig);
+    pathFmtEl?.addEventListener("change", () => commitPathFormat(true), _sig);
+    pathFmtEl?.addEventListener("blur", () => commitPathFormat(true), _sig);
+
+    const detectBtn = $("detect-pathfmt");
+    const detectStatus = $("detect-pathfmt-status");
+    detectBtn?.addEventListener(
+      "click",
+      async () => {
+        if (!this._hass || detectBtn.disabled) return;
+        const roots = Array.isArray(this._config?.media_sources)
+          ? this._config.media_sources.filter(Boolean)
+          : [];
+        if (roots.length === 0) {
+          if (detectStatus) detectStatus.textContent = "No media folders configured";
+          return;
+        }
+        // Snapshot the input value before the await so we can detect whether
+        // the user typed something during detection. If they did, we don't
+        // overwrite their work.
+        const valueAtStart = pathFmtEl?.value ?? "";
+        detectBtn.disabled = true;
+        const prevText = detectBtn.querySelector("span")?.textContent || "Detect from media";
+        const span = detectBtn.querySelector("span");
+        if (span) span.textContent = "Detecting…";
+        if (detectStatus) detectStatus.textContent = "";
+        try {
+          const browse = (id) =>
+            this._hass.callWS({ type: "media_source/browse_media", media_content_id: id });
+          const result = await detectPathFormat(roots, browse);
+          if (result.format) {
+            const userTypedDuringDetect = pathFmtEl && pathFmtEl.value !== valueAtStart;
+            if (pathFmtEl && !userTypedDuringDetect) {
+              pathFmtEl.value = result.format;
+              commitPathFormat(true);
+              if (detectStatus) {
+                detectStatus.textContent = `Suggested · ${result.matches}/${result.sampled} matched`;
+              }
+            } else if (detectStatus) {
+              // Surface the suggestion without clobbering the user's edit.
+              detectStatus.textContent = `Suggestion: ${result.format} (kept your edit)`;
+            }
+          } else {
+            if (detectStatus) {
+              detectStatus.textContent = result.sampled
+                ? `No common pattern matched (${result.sampled} samples)`
+                : "Probe found no files";
+            }
+          }
+        } catch (e) {
+          console.warn("path_datetime_format detect failed:", e);
+          if (detectStatus) detectStatus.textContent = "Detect failed (see console)";
+        } finally {
+          if (span) span.textContent = prevText;
+          detectBtn.disabled = false;
+        }
+      },
+      _sig
+    );
 
     this.shadowRoot.querySelectorAll(".seg[data-objfit]").forEach((btn) => {
       btn.addEventListener("click", () => {
@@ -11541,7 +11587,7 @@ if (oldPanel && tmp.firstElementChild) {
         tag === "textarea" ||
         id === "entities" ||
         id === "mediasources" ||
-        id === "filenamefmt" ||
+        id === "pathfmt" ||
         id === "thumb" ||
         id === "maxmedia" ||
         id === "new-filter-name" ||

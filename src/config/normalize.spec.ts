@@ -12,13 +12,13 @@ import {
 const minimalSensor = {
   source_mode: "sensor",
   entities: ["sensor.foo"],
-  folder_datetime_format: "{YYYY}-{MM}-{DD}",
+  path_datetime_format: "YYYY-MM-DD",
 };
 
 const minimalMedia = {
   source_mode: "media",
   media_sources: ["media-source://media_source/local/foo"],
-  folder_datetime_format: "{YYYY}-{MM}-{DD}",
+  path_datetime_format: "YYYY-MM-DD",
 };
 
 describe("normalizeSensorEntities", () => {
@@ -87,6 +87,9 @@ describe("hasLegacyKeys — detect raw input that needs migration", () => {
     expect(hasLegacyKeys({ media_folder_favorites: ["x"] })).toBe(true);
     expect(hasLegacyKeys({ media_folders_fav: ["x"] })).toBe(true);
     expect(hasLegacyKeys({ shell_command: "x" })).toBe(true);
+    expect(hasLegacyKeys({ preview_click_to_open: true })).toBe(true);
+    expect(hasLegacyKeys({ filename_datetime_format: "YYYYMMDD" })).toBe(true);
+    expect(hasLegacyKeys({ folder_datetime_format: "YYYY-MM-DD" })).toBe(true);
   });
 
   it("returns false on canonical input", () => {
@@ -112,7 +115,7 @@ describe("Legacy key migration", () => {
   it("when both `entity` and `entities` present, `entities` wins", () => {
     const { config } = normalizeConfig({
       source_mode: "sensor",
-      folder_datetime_format: "x",
+      path_datetime_format: "YYYY-MM-DD",
       entities: ["sensor.a"],
       entity: "sensor.b",
     });
@@ -122,7 +125,7 @@ describe("Legacy key migration", () => {
   it("migrates `media_source` (singular) → `media_sources`", () => {
     const { config } = normalizeConfig({
       source_mode: "media",
-      folder_datetime_format: "x",
+      path_datetime_format: "YYYY-MM-DD",
       media_source: "frigate/recordings",
     });
     expect(config.media_sources).toEqual(["media-source://frigate/recordings"]);
@@ -131,7 +134,7 @@ describe("Legacy key migration", () => {
   it("migrates `media_folder_favorites` → `media_sources`", () => {
     const { config } = normalizeConfig({
       source_mode: "media",
-      folder_datetime_format: "x",
+      path_datetime_format: "YYYY-MM-DD",
       media_folder_favorites: ["frigate/x"],
     });
     expect(config.media_sources).toEqual(["media-source://frigate/x"]);
@@ -140,7 +143,7 @@ describe("Legacy key migration", () => {
   it("migrates `media_folders_fav` → `media_sources`", () => {
     const { config } = normalizeConfig({
       source_mode: "media",
-      folder_datetime_format: "x",
+      path_datetime_format: "YYYY-MM-DD",
       media_folders_fav: ["frigate/x"],
     });
     expect(config.media_sources).toEqual(["media-source://frigate/x"]);
@@ -162,12 +165,69 @@ describe("Legacy key migration", () => {
     });
     expect(config.delete_service).toBe("ds.new");
   });
+
+  it("migrates `folder_datetime_format` alone → `path_datetime_format`", () => {
+    const { config } = normalizeConfig({
+      source_mode: "sensor",
+      entities: ["sensor.foo"],
+      folder_datetime_format: "YYYY-MM-DD",
+    });
+    expect(config.path_datetime_format).toBe("YYYY-MM-DD");
+    expect(
+      (config as unknown as { folder_datetime_format?: unknown }).folder_datetime_format
+    ).toBeUndefined();
+  });
+
+  it("migrates `filename_datetime_format` alone → `path_datetime_format`", () => {
+    const { config } = normalizeConfig({
+      source_mode: "sensor",
+      entities: ["sensor.foo"],
+      filename_datetime_format: "YYYYMMDD_HHmmss",
+    });
+    expect(config.path_datetime_format).toBe("YYYYMMDD_HHmmss");
+  });
+
+  it("migrates `folder + filename` → joined `path_datetime_format`", () => {
+    const { config } = normalizeConfig({
+      source_mode: "sensor",
+      entities: ["sensor.foo"],
+      folder_datetime_format: "YYYY-MM-DD",
+      filename_datetime_format: "YYYYMMDD_HHmmss",
+    });
+    expect(config.path_datetime_format).toBe("YYYY-MM-DD/YYYYMMDD_HHmmss");
+  });
+
+  it("explicit `path_datetime_format` wins over legacy fields", () => {
+    const { config } = normalizeConfig({
+      source_mode: "sensor",
+      entities: ["sensor.foo"],
+      path_datetime_format: "YYYY/MM/DD/HHmmss",
+      folder_datetime_format: "ignored",
+      filename_datetime_format: "ignored",
+    });
+    expect(config.path_datetime_format).toBe("YYYY/MM/DD/HHmmss");
+  });
+
+  it("legacy datetime keys are removed from the canonical output", () => {
+    const { config } = normalizeConfig({
+      source_mode: "sensor",
+      entities: ["sensor.foo"],
+      folder_datetime_format: "YYYY-MM-DD",
+      filename_datetime_format: "HHmmss",
+    });
+    expect(
+      (config as unknown as { folder_datetime_format?: unknown }).folder_datetime_format
+    ).toBeUndefined();
+    expect(
+      (config as unknown as { filename_datetime_format?: unknown }).filename_datetime_format
+    ).toBeUndefined();
+  });
 });
 
 describe("Cross-field rules", () => {
   it("source_mode auto-infers `media` when only media_sources present", () => {
     const { config } = normalizeConfig({
-      folder_datetime_format: "x",
+      path_datetime_format: "YYYY-MM-DD",
       media_sources: ["frigate/x"],
     });
     expect(config.source_mode).toBe("media");
@@ -175,7 +235,7 @@ describe("Cross-field rules", () => {
 
   it("source_mode auto-infers `sensor` when only entities present", () => {
     const { config } = normalizeConfig({
-      folder_datetime_format: "x",
+      path_datetime_format: "YYYY-MM-DD",
       entities: ["sensor.foo"],
     });
     expect(config.source_mode).toBe("sensor");
@@ -186,21 +246,21 @@ describe("Cross-field rules", () => {
       source_mode: "combined",
       entities: ["sensor.foo"],
       media_sources: ["frigate/x"],
-      folder_datetime_format: "x",
+      path_datetime_format: "YYYY-MM-DD",
     });
     expect(config.source_mode).toBe("combined");
   });
 
   it("sensor mode without entity throws", () => {
-    expect(() => normalizeConfig({ source_mode: "sensor", folder_datetime_format: "x" })).toThrow(
-      /entity.*required.*sensor/
-    );
+    expect(() =>
+      normalizeConfig({ source_mode: "sensor", path_datetime_format: "YYYY-MM-DD" })
+    ).toThrow(/entity.*required.*sensor/);
   });
 
   it("media mode without sources throws", () => {
-    expect(() => normalizeConfig({ source_mode: "media", folder_datetime_format: "x" })).toThrow(
-      /required.*media/
-    );
+    expect(() =>
+      normalizeConfig({ source_mode: "media", path_datetime_format: "YYYY-MM-DD" })
+    ).toThrow(/required.*media/);
   });
 
   it("combined mode without entities throws", () => {
@@ -208,14 +268,14 @@ describe("Cross-field rules", () => {
       normalizeConfig({
         source_mode: "combined",
         media_sources: ["frigate/x"],
-        folder_datetime_format: "x",
+        path_datetime_format: "YYYY-MM-DD",
       })
     ).toThrow(/entity.*required.*combined/);
   });
 
-  it("missing both datetime formats AND no Frigate config throws", () => {
+  it("missing path_datetime_format AND no Frigate config throws", () => {
     expect(() => normalizeConfig({ source_mode: "sensor", entities: ["sensor.foo"] })).toThrow(
-      /folder_datetime_format.*filename_datetime_format/
+      /path_datetime_format/
     );
   });
 
@@ -234,7 +294,7 @@ describe("Delete gating", () => {
     const { config } = normalizeConfig({
       source_mode: "media",
       media_sources: ["frigate/x"],
-      folder_datetime_format: "x",
+      path_datetime_format: "YYYY-MM-DD",
       allow_delete: true,
       delete_service: "shell.delete_file",
     });
@@ -450,7 +510,7 @@ describe("entities accepts loose YAML scalar form", () => {
   it("normalizes a plain `entities: 'sensor.cam'` string into an array", () => {
     const { config } = normalizeConfig({
       source_mode: "sensor",
-      folder_datetime_format: "x",
+      path_datetime_format: "YYYY-MM-DD",
       entities: "sensor.cam",
     });
     expect(config.entities).toEqual(["sensor.cam"]);

@@ -268,38 +268,50 @@ Object filter colors can be assigned per filter type in the editor.
 
 ---
 
-## Filename & path parsing
+## Path datetime format
 
-The card extracts timestamps from filenames and folder paths for sorting, day grouping, preview timestamps, and thumbnail labels.
-
-Example supported formats:
-```
-2026-03-09_12-31-10_person.jpg
-20260309_123110_person.jpg
-clip-1741512345-person.mp4
-```
-
-### Folder-based date format
-
-Some NVR systems (Blue Iris, NAS) store recordings in day-based folders:
-
-```
-/media/recordings/20260314/173154.mp4
-                  └─date─┘ └─time─┘
-```
-
-The card automatically recognises this `YYYYMMDD/HHMMSS` pattern — no extra configuration needed.
-
-A custom format can be set in the editor using these tokens:
+The card extracts timestamps from a single configurable pattern, `path_datetime_format`, that matches the *tail* of each item's path (or media-source URI). The `/` character separates directory levels; the leaf segment matches the filename. The format is required for `media` and `combined` modes (Frigate REST is exempt — it uses event-id timestamps).
 
 | Token | Meaning |
 |------|------|
-| YYYY | Year |
-| MM | Month |
-| DD | Day |
-| HH | Hour |
-| mm | Minutes |
-| ss | Seconds |
+| YYYY | 4-digit year |
+| YY | 2-digit year (pivots at 2000) |
+| MM | 2-digit month |
+| DD | 2-digit day |
+| HH | 2-digit hour (24h) |
+| mm | 2-digit minute |
+| ss | 2-digit second |
+
+### Layouts
+
+The same knob handles three real-world archive shapes — and for nested archives the walker discovers the date tree without browsing inside day folders, then loads each day's files only when the user navigates to it. Very large archives (thousands of days) stay snappy.
+
+**A. Flat folder — all files in one directory**
+```
+/media/cam/RLC_20260502_050106.mp4
+            └────date────┘└─time─┘
+path_datetime_format: RLC_YYYYMMDD_HHmmss.mp4
+```
+
+The literal extension is optional — leave it off and the format matches as a substring of the filename, useful when timestamps are surrounded by other tokens (`RLC-520A-front_00_20260502050106.mp4` matches `YYYYMMDDHHmmss`).
+
+**B. Date-named folder — recordings inside daily folders**
+```
+/media/recordings/20260502/173154.mp4
+                  └─date─┘ └─time─┘
+path_datetime_format: YYYYMMDD/HHmmss
+```
+
+If the filenames carry no time tokens, write just `YYYYMMDD` — the card uses the folder name as the dayKey and shows files in their natural order.
+
+**C. Nested folders — year/month/day/file**
+```
+/media/cam/Front/2026/04/30/RLC_20260430131245.mp4
+                 └y─┘└m┘└d┘ └─────filename─────┘
+path_datetime_format: YYYY/MM/DD/RLC_YYYYMMDDHHmmss.mp4
+```
+
+(Reolink/FTP shape — see [issue #99](https://github.com/TheScubaDiver/camera-gallery-card/issues/99).)
 
 ---
 

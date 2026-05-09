@@ -34,6 +34,11 @@ export function isFrigateRoot(uri: string | null | undefined): boolean {
  * integration. Use this when deciding whether path-based datetime formats
  * are required: Frigate items get their time from event-ids, so the format
  * fields are optional in Frigate-only setups.
+ *
+ * Caveat: Frigate **recordings** roots (e.g. `media-source://frigate/<inst>/recordings/...`)
+ * don't carry event-ids in their URIs — items there have no auto-extractable
+ * timestamp. Treat those as needing a `path_datetime_format` even though
+ * they technically point at Frigate. See {@link isFrigateRecordingsRoot}.
  */
 export function hasFrigateConfig(config: {
   frigate_url?: string | null | undefined;
@@ -41,7 +46,15 @@ export function hasFrigateConfig(config: {
 }): boolean {
   if ((config.frigate_url ?? "").trim()) return true;
   const roots = config.media_sources ?? [];
-  return roots.some(isFrigateRoot);
+  return roots.some((r) => isFrigateRoot(r) && !isFrigateRecordingsRoot(r));
+}
+
+/** `true` for Frigate recordings roots whose URIs have no event-id. These
+ * need `path_datetime_format` to extract per-item timestamps. */
+export function isFrigateRecordingsRoot(uri: string | null | undefined): boolean {
+  const s = String(uri ?? "");
+  if (!isFrigateRoot(s)) return false;
+  return /\/recordings(\/|$)/.test(s);
 }
 
 /**

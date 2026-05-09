@@ -1,34 +1,29 @@
 /**
- * Media-source data path. Owns the recursive `media_source/browse_media`
- * walk, the per-root browse TTL cache, the resolve queue, the persistent
- * walk cache (localStorage), the Frigate REST direct path, and Frigate
- * snapshot pairing.
+ * Media-source data path. Owns the calendar discovery + day-on-demand
+ * walker, the per-root browse TTL cache, the resolve queue, persistent
+ * calendar/day localStorage caches, the Frigate REST direct path, and
+ * Frigate snapshot pairing.
  *
  * Lifecycle parallel to {@link SensorSourceClient}:
  *   - constructor — wire the `onChange` callback the card uses for
  *     `requestUpdate()`, plus optional `getDtOpts` / `resolveItemMs`
  *     callbacks the snapshot-pair logic needs.
  *   - `setHass(hass)` — called from every hass setter.
- *   - `load(config)` — called from setConfig; preserves the legacy reset
- *     semantics (the actual cache-invalidation-on-roots-change fix lands
- *     in the next commit).
- *   - `ensureLoaded()` — public orchestrator; runs Frigate REST or
- *     recursive walk depending on config.
+ *   - `load(config)` — called from setConfig; invalidates caches when
+ *     roots / `frigate_url` / `path_datetime_format` change.
+ *   - `ensureLoaded()` — orchestrator: runs Frigate REST when configured,
+ *     otherwise the calendar walker.
+ *   - `ensureDayLoaded(dayKey)` — Phase B; coalesces concurrent calls.
  *
- * The `state` field is the same shape as the legacy `_ms` object on the
- * card so call sites that read `this._ms.urlCache.get(id)`, `.list`,
- * `.pairedThumbs`, etc. keep working through a thin getter proxy on the
- * card. That's a transitional shape — once the card stops poking `_ms`
- * directly (final cleanup commit), the field becomes private.
+ * `state` is consumed by `_buildDiagnostics()` in the card (read-only).
+ * No other external readers — the legacy `this._ms` proxy never existed.
  */
 
 import {
   DEFAULT_BROWSE_TIMEOUT_MS,
   DEFAULT_FRIGATE_API_LIMIT,
   DEFAULT_MAX_MEDIA,
-  DEFAULT_PER_ROOT_MIN_LIMIT,
   DEFAULT_RESOLVE_BATCH,
-  DEFAULT_WALK_DEPTH,
   FRIGATE_API_RETRY_AFTER_MS,
   FRIGATE_SNAPSHOT_MATCH_WINDOW_MS,
   MS_RESOLVE_FAILURE_TTL_MS,
@@ -37,7 +32,6 @@ import type { CameraGalleryCardConfig } from "../config/normalize";
 import type { CardItem } from "../types/media-item";
 import type { HomeAssistant } from "../types/hass";
 import type { MediaSourceItem } from "../types/media-source";
-import { fnv1aHash } from "../util/hash";
 import {
   FRIGATE_SNAPSHOTS_ROOT,
   fetchFrigateEvents,
@@ -45,8 +39,17 @@ import {
   isFrigateRoot,
   mapFrigateEventToItem,
 } from "../util/frigate";
+import { fnv1aHash } from "../util/hash";
 import { dayKeyFromMs, type DatetimeOptions, dtMsFromSrc, extractDayKey } from "./datetime-parsing";
+import {
+  type BrowseFn,
+  type Calendar,
+  type CalendarEntry,
+  discoverTree,
+  loadDay,
+} from "./media-tree";
 import { dedupeByRelPath, pairMediaSourceThumbnails } from "./pairing";
+import { parsePathFormat } from "./path-format";
 
 export type Enrich = (src: string) => CardItem;
 const DEFAULT_ENRICH: Enrich = (src) => ({ src });
@@ -66,8 +69,9 @@ export interface FrigateSnapshot extends MsItem {
   dayKey?: string | null;
 }
 
-/** Internal `_ms` shape — kept compatible with the legacy field for now. */
-export interface MediaSourceState {
+/** Internal state shape. The card reads `list`/`loadedAt`/`calendar`/etc. via the
+ * `state` getter for diagnostics; no other external reads. */
+interface MediaSourceState {
   key: string;
   list: MsItem[];
   listIndex: Map<string, MsItem>;
@@ -78,6 +82,12 @@ export interface MediaSourceState {
   urlCache: Map<string, string>;
   frigateApiFailed?: boolean;
   frigateApiFailedAt?: number;
+  /** Calendar discovered for the current roots+format. Empty when Frigate
+   * REST path is in use or no path-format is configured. */
+  calendar: Calendar;
+  /** Per-day item lists. Layout A: populated entirely on initial load.
+   * Layouts B/C: populated lazily as the user navigates dates. */
+  dayCache: Map<string, MsItem[]>;
 }
 
 export interface MediaSourceClientOptions {
@@ -89,39 +99,7 @@ export interface MediaSourceClientOptions {
   resolveItemMs?: ((src: string) => number | null) | undefined;
 }
 
-const DEFAULT_GET_DT_OPTS = (): DatetimeOptions => ({ resolveName: (s) => s });
-
-/** Convert raw `media_source/browse_media` child to the card's `MsItem`. */
-function toMsItem(x: MediaSourceItem | undefined): MsItem | null {
-  if (!x?.media_content_id) return null;
-  const id = String(x.media_content_id);
-  if (!id) return null;
-  const item: MsItem = {
-    id,
-    title: String(x.title ?? ""),
-    cls: String(x.media_class ?? ""),
-    mime: String(x.media_content_type ?? ""),
-    thumb: String(x.thumbnail ?? ""),
-  };
-  const ms = isFrigateRoot(id) ? frigateEventIdMs(id) : null;
-  if (ms !== null) item.dtMs = ms;
-  return item;
-}
-
-/** Match the legacy `_msIsRenderable` — a video/image-shaped child that
- * the gallery should display, even when `can_play` is false (some sources
- * lie about playability). */
-export function isRenderable(mime: unknown, mediaClass: unknown, title: unknown): boolean {
-  const t = String(title ?? "").toLowerCase();
-  const m = String(mime ?? "").toLowerCase();
-  const c = String(mediaClass ?? "").toLowerCase();
-  if (m.startsWith("image/")) return true;
-  if (m.startsWith("video/")) return true;
-  if (/\.(jpg|jpeg|png|webp|gif)$/i.test(t)) return true;
-  if (/\.(mp4|webm|mov|m4v)$/i.test(t)) return true;
-  if (c === "image" || c === "video") return true;
-  return false;
-}
+const DEFAULT_GET_DT_OPTS = (): DatetimeOptions => ({ pathFormat: "" });
 
 /** `true` for any media-source URI (`media-source://…`). */
 export function isMediaSourceId(v: unknown): boolean {
@@ -129,7 +107,7 @@ export function isMediaSourceId(v: unknown): boolean {
 }
 
 /** Canonical key for a multi-root config. Order-independent (sorted) so the
- * walk-cache key stays stable when the user re-orders YAML. */
+ * cache key stays stable when the user re-orders YAML. */
 export function keyFromRoots(rootsArr: readonly string[] | null | undefined): string {
   const roots = Array.isArray(rootsArr) ? rootsArr : [];
   if (!roots.length) return "";
@@ -139,25 +117,105 @@ export function keyFromRoots(rootsArr: readonly string[] | null | undefined): st
     .join(" | ");
 }
 
-/** Persistent localStorage key for a walk cache entry. Versioned (`mswalk3`)
- * — bump when the on-disk shape changes. FNV1a keeps it short. */
-export function walkCacheKey(key: string): string {
-  return "cgc_mswalk3_" + fnv1aHash(key);
-}
-
-const WALK_CACHE_MAX_AGE_MS = 30 * 60 * 1000;
-const WALK_CACHE_REFRESH_AFTER_MS = 5 * 60 * 1000;
 const ENSURE_LOADED_FRESHNESS_MS = 30_000;
 const BROWSE_CACHE_TTL_MS = 60 * 60 * 1000;
-const WALK_BATCH = 20;
 const RESOLVE_TIMEOUT_MS = 12_000;
+
+/**
+ * Sentinel bucket key for items that don't match the configured format.
+ * They still show in the gallery (legacy parity — when no day is selected
+ * they render alongside dated items), but the day-picker excludes this key
+ * via `getDays()`.
+ */
+const UNDATED_BUCKET = "__cgc_undated__";
+
+// ─── Persistent calendar + day caches ─────────────────────────────────
+// Calendar entries are tiny (folder names + ids) so we hold them long.
+// Per-day file lists are larger and shorter-lived.
+const CALENDAR_CACHE_TTL_MS = 6 * 60 * 60 * 1000; // 6h
+const CALENDAR_CACHE_REFRESH_AFTER_MS = 60 * 60 * 1000; // 1h
+const DAY_CACHE_TTL_MS = 30 * 60 * 1000; // 30m
+const DAY_CACHE_REFRESH_AFTER_MS = 5 * 60 * 1000; // 5m
+
+interface PersistedCalendarEntry {
+  leafId: string;
+  leafName: string;
+  dayKey: string;
+}
+interface PersistedCalendar {
+  ts: number;
+  byDay: Array<[string, PersistedCalendarEntry[]]>;
+  days: string[];
+}
+interface PersistedDay {
+  ts: number;
+  items: MsItem[];
+}
+
+function saveCalendarToStorage(key: string, calendar: Calendar): void {
+  try {
+    const persistable: PersistedCalendar = {
+      ts: Date.now(),
+      byDay: Array.from(calendar.byDay.entries()).map(
+        ([dayKey, entries]) => [dayKey, entries.map((e) => ({ ...e }))] as const
+      ) as PersistedCalendar["byDay"],
+      days: [...calendar.days],
+    };
+    localStorage.setItem(key, JSON.stringify(persistable));
+  } catch {
+    /* quota or unavailable storage — silent */
+  }
+}
+
+function loadCalendarFromStorage(key: string): { calendar: Calendar; ts: number } | null {
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return null;
+    const entry = JSON.parse(raw) as PersistedCalendar | null;
+    if (!entry || !Array.isArray(entry.byDay) || !Array.isArray(entry.days)) return null;
+    if (Date.now() - (entry.ts ?? 0) > CALENDAR_CACHE_TTL_MS) return null;
+    const byDay = new Map<string, readonly CalendarEntry[]>();
+    for (const [dayKey, entries] of entry.byDay) {
+      if (typeof dayKey !== "string" || !Array.isArray(entries)) continue;
+      byDay.set(
+        dayKey,
+        entries.filter((e): e is CalendarEntry => !!e?.leafId)
+      );
+    }
+    return { calendar: { byDay, days: entry.days }, ts: entry.ts };
+  } catch {
+    return null;
+  }
+}
+
+function saveDayToStorage(key: string, items: readonly MsItem[]): void {
+  try {
+    const persistable: PersistedDay = { ts: Date.now(), items: [...items] };
+    localStorage.setItem(key, JSON.stringify(persistable));
+  } catch {
+    /* quota or unavailable storage — silent */
+  }
+}
+
+function loadDayFromStorage(key: string): { items: MsItem[]; ts: number } | null {
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return null;
+    const entry = JSON.parse(raw) as PersistedDay | null;
+    if (!entry || !Array.isArray(entry.items)) return null;
+    if (Date.now() - (entry.ts ?? 0) > DAY_CACHE_TTL_MS) return null;
+    return { items: entry.items, ts: entry.ts };
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Stateful media-source client. See module docstring.
  */
 export class MediaSourceClient {
-  /** Same shape as the legacy `_ms` field. Public for transitional reads
-   * from the card; will become private after the final cleanup commit. */
+  /** Internal state. Read by `_buildDiagnostics()` for the diagnostics panel;
+   * mutated only by methods on this class. */
   readonly state: MediaSourceState = makeEmptyState();
   resolveInFlight = false;
   readonly resolveQueued: Set<string> = new Set();
@@ -190,6 +248,13 @@ export class MediaSourceClient {
   private _prevRootsKey = "";
   /** Previous `frigate_url` snapshot used by `load()` to detect changes. */
   private _prevFrigateUrl = "";
+  /** Previous `path_datetime_format` snapshot used by `load()` to detect changes.
+   * Format-only changes also invalidate item caches because the parsed
+   * `dtMs` / `dayKey` for items can shift. */
+  private _prevPathFormat = "";
+  /** In-flight `loadDay` promises, keyed by dayKey. Coalesces concurrent
+   * `ensureDayLoaded(dayKey)` calls onto one browse round. */
+  private readonly _dayInFlight: Map<string, Promise<void>> = new Map();
 
   constructor(opts: MediaSourceClientOptions = {}) {
     this._onChange = opts.onChange;
@@ -212,10 +277,16 @@ export class MediaSourceClient {
     this._config = config;
     const nextRootsKey = keyFromRoots(config?.media_sources ?? []);
     const nextFrigateUrl = String(config?.frigate_url ?? "");
-    if (nextRootsKey !== this._prevRootsKey || nextFrigateUrl !== this._prevFrigateUrl) {
+    const nextPathFormat = String(config?.path_datetime_format ?? "");
+    if (
+      nextRootsKey !== this._prevRootsKey ||
+      nextFrigateUrl !== this._prevFrigateUrl ||
+      nextPathFormat !== this._prevPathFormat
+    ) {
       this.clearForNewRoots();
       this._prevRootsKey = nextRootsKey;
       this._prevFrigateUrl = nextFrigateUrl;
+      this._prevPathFormat = nextPathFormat;
     }
   }
 
@@ -233,6 +304,13 @@ export class MediaSourceClient {
     this.frigateSnapshots = [];
     this.snapshotCache.clear();
     this.browseTtlCache.clear();
+    // Calendar-walker caches must follow the same generation. Without this,
+    // a concurrent ensureDayLoaded() from the prior generation would coalesce
+    // onto a stale promise and the new config sees an empty day for one
+    // render cycle (review finding A1).
+    this.state.calendar = { byDay: new Map(), days: [] };
+    this.state.dayCache = new Map();
+    this._dayInFlight.clear();
   }
 
   /** Drop the resolve-failed latch (e.g. on a new tile-reveal pass — gives
@@ -490,7 +568,7 @@ export class MediaSourceClient {
       return;
     }
 
-    await this._loadWalkPath(roots, config);
+    await this._loadCalendarPath(roots, config);
   }
 
   private async _loadFrigateApiPath(
@@ -573,7 +651,7 @@ export class MediaSourceClient {
     return items;
   }
 
-  private async _loadWalkPath(
+  private async _loadCalendarPath(
     roots: readonly string[],
     config: CameraGalleryCardConfig
   ): Promise<void> {
@@ -583,92 +661,139 @@ export class MediaSourceClient {
     const fresh = sameKey && now - (this.state.loadedAt ?? 0) < ENSURE_LOADED_FRESHNESS_MS;
     if (this.state.loading || fresh) return;
 
+    const fmt = parsePathFormat(config.path_datetime_format ?? "");
+    if (!fmt) {
+      // Validation in normalize.ts requires `path_datetime_format` for media
+      // mode (unless Frigate REST handles it). Reaching here means a Frigate
+      // root with no REST URL — surface an empty list rather than spin.
+      this.state.calendar = { byDay: new Map(), days: [] };
+      this.state.dayCache = new Map();
+      this.setList([]);
+      return;
+    }
+
     if (!sameKey) {
       this.state.key = key;
       this.setList([]);
       this.state.roots = roots.slice();
       this.state.urlCache = new Map();
       this.resolveFailed = new Map();
+      this.state.dayCache = new Map();
     }
 
-    // Serve from persistent walk cache instantly, then refresh in background if stale.
-    const walkedCache = this._walkCacheLoad(key);
-    if (walkedCache && walkedCache.length > 0) {
-      this.setList(walkedCache);
-      this._fireChange();
-      try {
-        const raw = localStorage.getItem(walkCacheKey(key));
-        const entry = raw ? (JSON.parse(raw) as { ts?: number } | null) : null;
-        const cacheTs = entry?.ts ?? 0;
-        this.state.loadedAt = cacheTs;
-        if (Date.now() - cacheTs > WALK_CACHE_REFRESH_AFTER_MS) {
-          setTimeout(() => void this.ensureLoaded(), 0);
-        }
-      } catch {
-        this.state.loadedAt = 0;
-        setTimeout(() => void this.ensureLoaded(), 0);
-      }
-      return;
-    }
-
-    // Synchronous before any await — closes the de-dup window (audit B1 / R5).
     this.state.loading = true;
     const gen = this._loadGeneration;
+    const browseFn: BrowseFn = (id) => this._browse(id);
+
+    // Persistent calendar fast-path: serve a cached calendar instantly so the
+    // day-picker populates without waiting for the network. Only useful for
+    // lazy layouts (B/C) — layout A's items are eager and aren't keyed by
+    // day in the calendar, so we always re-discover for `directoryDepth = 0`.
+    const calCacheKey = this._calendarCacheKey(roots, fmt);
+    const cachedCal = calCacheKey ? loadCalendarFromStorage(calCacheKey) : null;
+    const cacheEligible = fmt.directoryDepth >= 1;
+    let calendarFresh = false;
+    if (cachedCal && cacheEligible) {
+      this.state.calendar = cachedCal.calendar;
+      this._fireChange();
+      calendarFresh = Date.now() - cachedCal.ts < CALENDAR_CACHE_REFRESH_AFTER_MS;
+    }
 
     try {
-      const visibleCap = config.max_media ?? DEFAULT_MAX_MEDIA;
-      const internalCap = Math.min(2000, Math.max(visibleCap * 4, 400));
-      const walkLimitTotal = Math.min(4000, Math.max(internalCap * 2, 800));
-      const perRootLimit = Math.max(
-        DEFAULT_PER_ROOT_MIN_LIMIT,
-        Math.ceil(walkLimitTotal / roots.length)
-      );
-
-      const flat: MediaSourceItem[] = [];
-      const rootResults = await Promise.all(
-        roots.map(async (root): Promise<MediaSourceItem[]> => {
-          try {
-            const rootStr = String(root);
-            const isLocalRoot = rootStr.includes("media_source/local/");
-            const depthLimit = isFrigateRoot(rootStr)
-              ? 3
-              : isLocalRoot
-                ? Math.min(6, DEFAULT_WALK_DEPTH)
-                : DEFAULT_WALK_DEPTH;
-
-            const onProgress =
-              roots.length === 1
-                ? (partial: MediaSourceItem[]): void => {
-                    if (this._isStale(gen)) return;
-                    if (partial.length >= 1) {
-                      const items = partial
-                        .map((x) => toMsItem(x))
-                        .filter((x): x is MsItem => x !== null)
-                        .slice(0, internalCap);
-                      this.setList(items);
-                      this._fireChange();
-                    }
-                  }
-                : null;
-
-            return await this._walkIter(rootStr, perRootLimit, depthLimit, onProgress);
-          } catch (e) {
-            console.warn("MS root failed:", root, e);
-            return [];
+      let discovery: Awaited<ReturnType<typeof discoverTree>>;
+      if (calendarFresh && cachedCal) {
+        // Use the cached calendar; skip Phase A. Always lazy here because
+        // we gated `calendarFresh` on `directoryDepth >= 1`.
+        discovery = { isLazy: true, calendar: cachedCal.calendar, eagerItems: [] };
+      } else {
+        discovery = await discoverTree(roots, fmt, browseFn, {
+          isStale: () => this._isStale(gen),
+        });
+        if (this._isStale(gen)) return;
+        // Drop empty short-circuit entries (`dayCache.set(dayKey, [])` from
+        // sensor-only days OR from days that were missing in a stale cached
+        // calendar) — the new calendar may now contain those days, and the
+        // empty cache would otherwise prevent ensureDayLoaded from re-fetching.
+        if (cachedCal) {
+          for (const [dayKey, items] of this.state.dayCache.entries()) {
+            if (items.length === 0 && discovery.calendar.byDay.has(dayKey)) {
+              this.state.dayCache.delete(dayKey);
+            }
           }
-        })
-      );
-      if (this._isStale(gen)) return;
-      flat.push(...rootResults.flat());
+        }
+        this.state.calendar = discovery.calendar;
+        if (calCacheKey && cacheEligible) {
+          saveCalendarToStorage(calCacheKey, discovery.calendar);
+        }
+      }
 
+      if (!discovery.isLazy) {
+        // Layout A — eager. Bucket items by dayKey for O(1) picker filtering.
+        // Items that don't match the format land under a sentinel bucket so
+        // they still appear in the gallery — preserves legacy parity where
+        // undated items rendered (just at the end of the list).
+        const byDayItems = new Map<string, MsItem[]>();
+        for (const item of discovery.eagerItems) {
+          const dayKey = item.dtMs !== undefined ? dayKeyFromMs(item.dtMs) : null;
+          const bucket = dayKey ?? UNDATED_BUCKET;
+          if (!byDayItems.has(bucket)) byDayItems.set(bucket, []);
+          byDayItems.get(bucket)!.push(item);
+        }
+        this.state.dayCache = byDayItems;
+        this._refreshList();
+      } else {
+        // Layouts B/C — lazy. Auto-load the most-recent day so the gallery
+        // isn't empty on first render. Older days load on user navigation.
+        const newest = discovery.calendar.days[0];
+        if (newest) {
+          // Snapshot the calendar so a concurrent config change can't make
+          // _loadDayInternal write empty results for a day from the OLD
+          // calendar (review finding A6).
+          await this._loadDayInternal(newest, discovery.calendar, fmt, browseFn, gen);
+        }
+        if (this._isStale(gen)) return;
+        this._refreshList();
+      }
+
+      // Frigate snapshot index — only when a Frigate root is configured.
+      // The snapshot pairing (`findMatchingSnapshotMediaId`) needs this index
+      // independent of `path_datetime_format`. Frigate's snapshots root is a
+      // shallow tree organised as `<root>/<camera_name>/<event-id>.jpg`, so
+      // we browse the root, then descend ONE level into each per-camera
+      // subdir to enumerate the actual snapshot files. (Browsing only the
+      // root would index camera-name folders rather than image IDs and
+      // every `findMatchingSnapshotMediaId` lookup would miss.)
       if (roots.some(isFrigateRoot)) {
         try {
           const dtOpts = this._getDtOpts();
-          const snapshotItems = await this._walkIter(
-            FRIGATE_SNAPSHOTS_ROOT,
-            Math.min(400, Math.max(visibleCap * 6, 120)),
-            3
+          const snapshotRoot = await browseFn(FRIGATE_SNAPSHOTS_ROOT);
+          const topChildren = Array.isArray(snapshotRoot?.children) ? snapshotRoot.children : [];
+          const snapshotItems: MediaSourceItem[] = [];
+          // Bounded fan-out so an over-large camera count doesn't stall the
+          // gallery's first paint behind dozens of browse calls.
+          const MAX_SNAPSHOT_DESCENT = 32;
+          const descendTargets: string[] = [];
+          for (const top of topChildren) {
+            if (!top?.media_content_id) continue;
+            if (top.can_expand) {
+              if (descendTargets.length < MAX_SNAPSHOT_DESCENT) {
+                descendTargets.push(String(top.media_content_id));
+              }
+            } else {
+              snapshotItems.push(top);
+            }
+          }
+          const subResults = await Promise.all(
+            descendTargets.map(async (id) => {
+              try {
+                const sub = await browseFn(id);
+                return Array.isArray(sub?.children) ? sub.children : [];
+              } catch {
+                return [];
+              }
+            })
           );
+          for (const arr of subResults) snapshotItems.push(...arr);
           this.frigateSnapshots = snapshotItems
             .map((x): FrigateSnapshot | null => {
               if (!x?.media_content_id) return null;
@@ -700,26 +825,7 @@ export class MediaSourceClient {
         this.frigateSnapshots = [];
       }
 
-      const dtOpts = this._getDtOpts();
-      let items = flat.map((x) => toMsItem(x)).filter((x): x is MsItem => x !== null);
-      items = dedupeByRelPath(items) as MsItem[];
-
-      items.sort((a, b) => {
-        const am = a.dtMs ?? dtMsFromSrc(a.id, dtOpts);
-        const bm = b.dtMs ?? dtMsFromSrc(b.id, dtOpts);
-        const aOk = Number.isFinite(am);
-        const bOk = Number.isFinite(bm);
-        if (aOk && bOk && bm !== am) return (bm as number) - (am as number);
-        if (aOk && !bOk) return -1;
-        if (!aOk && bOk) return 1;
-        return a.title < b.title ? 1 : a.title > b.title ? -1 : 0;
-      });
-
-      const itemsToSave = items.slice(0, internalCap);
-      if (this._isStale(gen)) return;
-      this.setList(itemsToSave);
       this.state.loadedAt = Date.now();
-      this._walkCacheSave(key, itemsToSave);
     } catch (e) {
       if (this._isStale(gen)) return;
       console.warn("MS ensure load failed:", e);
@@ -731,6 +837,121 @@ export class MediaSourceClient {
         this._fireChange();
       }
     }
+  }
+
+  /**
+   * Public Phase-B trigger. Browses the day-leaf folders for `dayKey` and
+   * caches the resulting items. Coalesces concurrent calls for the same
+   * day. No-op if the day is already cached.
+   */
+  async ensureDayLoaded(dayKey: string): Promise<void> {
+    if (!dayKey) return;
+    if (this.state.dayCache.has(dayKey)) return;
+    const inFlight = this._dayInFlight.get(dayKey);
+    if (inFlight) return inFlight;
+    const config = this._config;
+    if (!config) return;
+    const fmt = parsePathFormat(config.path_datetime_format ?? "");
+    if (!fmt) return;
+    const browseFn: BrowseFn = (id) => this._browse(id);
+    const gen = this._loadGeneration;
+    // Snapshot the calendar at call time so a concurrent config-change that
+    // swaps `state.calendar` mid-flight can't make us write an empty list
+    // for a day that exists only in the OLD calendar (review finding A6).
+    const calendar = this.state.calendar;
+    const promise = this._loadDayInternal(dayKey, calendar, fmt, browseFn, gen);
+    this._dayInFlight.set(dayKey, promise);
+    try {
+      await promise;
+    } finally {
+      this._dayInFlight.delete(dayKey);
+    }
+  }
+
+  private async _loadDayInternal(
+    dayKey: string,
+    calendar: Calendar,
+    fmt: ReturnType<typeof parsePathFormat>,
+    browseFn: BrowseFn,
+    gen: number
+  ): Promise<void> {
+    if (!fmt) return;
+    // Sensor-only days in combined mode reach this method (the picker shows
+    // them, the card calls ensureDayLoaded on every selection). Short-circuit
+    // when the calendar has no leaves for the day — no browse, no cache write,
+    // no localStorage clutter.
+    if (!calendar.byDay.has(dayKey)) {
+      this.state.dayCache.set(dayKey, []);
+      return;
+    }
+    // Persistent-cache fast path: serve cached items immediately, then
+    // refresh in the background if the entry is older than refresh-after.
+    const cacheKey = this._dayCacheKey(dayKey);
+    const cached = cacheKey ? loadDayFromStorage(cacheKey) : null;
+    if (cached) {
+      this.state.dayCache.set(dayKey, cached.items);
+      this._refreshList();
+      this._fireChange();
+      if (Date.now() - cached.ts < DAY_CACHE_REFRESH_AFTER_MS) return;
+    }
+    const items = await loadDay(calendar, dayKey, fmt, browseFn, {
+      isStale: () => this._isStale(gen),
+    });
+    if (this._isStale(gen)) return;
+    this.state.dayCache.set(dayKey, items);
+    if (cacheKey) saveDayToStorage(cacheKey, items);
+    this._refreshList();
+    this._fireChange();
+  }
+
+  /** Canonical signature of a path-format. Both `_dayCacheKey` and
+   * `_calendarCacheKey` derive their hash from this so the two caches stay
+   * keyed in lock-step (a trailing-slash variant in YAML doesn't orphan one
+   * cache while reusing the other). */
+  private _formatSignature(fmt: ReturnType<typeof parsePathFormat>): string {
+    if (!fmt) return "";
+    return fmt.segments.map((s) => s.raw).join("/");
+  }
+
+  /** Compute the localStorage key for a given dayKey under the active config. */
+  private _dayCacheKey(dayKey: string): string | null {
+    const config = this._config;
+    if (!config) return null;
+    const rootsKey = keyFromRoots(config.media_sources ?? []);
+    const fmtSig = this._formatSignature(parsePathFormat(config.path_datetime_format ?? ""));
+    if (!rootsKey || !fmtSig || !dayKey) return null;
+    return `cgc_msday1_${fnv1aHash(`${rootsKey}|${fmtSig}|${dayKey}`)}`;
+  }
+
+  /** Compute the localStorage key for the calendar under a given roots+format pair. */
+  private _calendarCacheKey(
+    roots: readonly string[],
+    fmt: ReturnType<typeof parsePathFormat>
+  ): string | null {
+    const rootsKey = keyFromRoots(roots);
+    const fmtSig = this._formatSignature(fmt);
+    if (!rootsKey || !fmtSig) return null;
+    return `cgc_mscal1_${fnv1aHash(`${rootsKey}|${fmtSig}`)}`;
+  }
+
+  /** Flatten `dayCache` into `state.list` (sorted descending by dtMs).
+   * Called whenever a day is loaded so the existing render path sees the
+   * latest items. */
+  private _refreshList(): void {
+    const flat: MsItem[] = [];
+    for (const arr of this.state.dayCache.values()) flat.push(...arr);
+    flat.sort((a, b) => {
+      const am = a.dtMs ?? 0;
+      const bm = b.dtMs ?? 0;
+      if (bm !== am) return bm - am;
+      return a.title < b.title ? 1 : a.title > b.title ? -1 : 0;
+    });
+    this.setList(dedupeByRelPath(flat) as MsItem[]);
+  }
+
+  /** All discovered dayKeys in descending order. Mirrors `Calendar.days`. */
+  getDays(): readonly string[] {
+    return this.state.calendar.days;
   }
 
   /** A `gen` snapshot is stale when `clearForNewRoots` has bumped the
@@ -752,106 +973,6 @@ export class MediaSourceClient {
     )) as MediaSourceItem;
     this.browseTtlCache.set(rootId, { ts: Date.now(), data });
     return data;
-  }
-
-  /**
-   * Recursive walk with depth + per-root limits. LIFO stack so date-named
-   * folders like "2026-04-28" get popped newest-first.
-   */
-  private async _walkIter(
-    rootId: string,
-    limit: number,
-    depthLimit: number,
-    onProgress: ((partial: MediaSourceItem[]) => void) | null = null
-  ): Promise<MediaSourceItem[]> {
-    const out: MediaSourceItem[] = [];
-    const stack: { depth: number; id: string }[] = [{ depth: 0, id: rootId }];
-
-    while (stack.length && out.length < limit) {
-      const prevCount = out.length;
-      const batch: { depth: number; id: string }[] = [];
-      while (stack.length && batch.length < WALK_BATCH) {
-        const item = stack.pop();
-        if (item && item.depth <= depthLimit) batch.push(item);
-      }
-      if (!batch.length) break;
-
-      const results = await Promise.all(
-        batch.map(async ({ depth, id }) => {
-          try {
-            return { depth, node: await this._browse(id) };
-          } catch {
-            return { depth, node: null };
-          }
-        })
-      );
-
-      for (const { depth, node } of results) {
-        if (!node) continue;
-        const children: readonly MediaSourceItem[] = Array.isArray(node.children)
-          ? node.children
-          : [];
-
-        if (!children.length) {
-          if (node.media_content_id) {
-            const ok =
-              !!node.can_play ||
-              isRenderable(node.media_content_type, node.media_class, node.title);
-            if (ok && out.length < limit) out.push(node);
-          }
-          continue;
-        }
-
-        const dirsRev: { depth: number; id: string }[] = [];
-        for (let i = children.length - 1; i >= 0; i--) {
-          if (out.length >= limit) break;
-          const ch = children[i];
-          const mid = String(ch?.media_content_id ?? "");
-          if (!mid) continue;
-
-          const canExpand = !!ch?.can_expand;
-          const canPlay = !!ch?.can_play;
-          const cls = String(ch?.media_class ?? "").toLowerCase();
-
-          if (canExpand || (!canPlay && cls === "directory")) {
-            dirsRev.push({ depth: depth + 1, id: mid });
-          } else if (canPlay || isRenderable(ch?.media_content_type, ch?.media_class, ch?.title)) {
-            if (ch) out.push(ch);
-          }
-        }
-        // Reverse-push so the alphabetically-LAST directory ends up on top
-        // of the LIFO stack and is popped first. Date-named folders thus
-        // traverse today before yesterday.
-        for (let i = dirsRev.length - 1; i >= 0; i--) {
-          const entry = dirsRev[i];
-          if (entry) stack.push(entry);
-        }
-      }
-
-      if (onProgress && out.length > prevCount) onProgress([...out]);
-    }
-
-    return out;
-  }
-
-  private _walkCacheSave(key: string, list: readonly MsItem[]): void {
-    try {
-      localStorage.setItem(walkCacheKey(key), JSON.stringify({ ts: Date.now(), list }));
-    } catch {
-      // Quota or unavailable storage — silent. Card still works without persistent cache.
-    }
-  }
-
-  private _walkCacheLoad(key: string, maxAgeMs: number = WALK_CACHE_MAX_AGE_MS): MsItem[] | null {
-    try {
-      const raw = localStorage.getItem(walkCacheKey(key));
-      if (!raw) return null;
-      const entry = JSON.parse(raw) as { list?: unknown; ts?: number } | null;
-      if (!Array.isArray(entry?.list) || Date.now() - (entry?.ts ?? 0) > maxAgeMs) return null;
-      return entry.list as MsItem[];
-    } catch {
-      return null;
-    }
   }
 
   private async _wsWithTimeout(payload: object, timeoutMs: number): Promise<unknown> {
@@ -881,5 +1002,7 @@ function makeEmptyState(): MediaSourceState {
     loading: false,
     roots: [],
     urlCache: new Map(),
+    calendar: { byDay: new Map(), days: [] },
+    dayCache: new Map(),
   };
 }

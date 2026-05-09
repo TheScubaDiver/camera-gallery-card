@@ -150,8 +150,10 @@ export const cameraGalleryCardConfigStruct = type({
   frigate_url: optional(string()),
 
   // ─── Datetime parsing ──────────────────────────────────────
-  filename_datetime_format: defaulted(string(), ""),
-  folder_datetime_format: defaulted(string(), ""),
+  // Single format that matches the path tail. `/`-separated segments map
+  // to directory levels with the leaf segment matching the filename
+  // (e.g. `YYYY/MM/DD/HHmmss`). Replaces the legacy folder+filename pair.
+  path_datetime_format: defaulted(string(), ""),
 
   // ─── Playback ──────────────────────────────────────────────
   autoplay: defaulted(boolean(), DEFAULT_AUTOPLAY),

@@ -7,63 +7,28 @@ import {
   dtMsFromSrc,
   extractDateTimeKey,
   extractDayKey,
-  parseDateFromFilename,
-  parseFolderFileDatetime,
   parseRawDateFields,
   uniqueDays,
 } from "./datetime-parsing";
 import type { DatetimeOptions } from "./datetime-parsing";
 
-const identity = (s: string): string => s;
+const opts = (pathFormat = ""): DatetimeOptions => ({ pathFormat });
 
-const opts = (overrides: Partial<DatetimeOptions> = {}): DatetimeOptions => ({
-  resolveName: identity,
-  ...overrides,
-});
-
-describe("Null contract — no formats configured means no date", () => {
-  it("dtMsFromSrc returns null when neither format is configured", () => {
-    expect(dtMsFromSrc("camera_2024-01-15_12-30-45.jpg", opts())).toBeNull();
+describe("Null contract — no path_datetime_format means no date", () => {
+  it("dtMsFromSrc returns null when pathFormat is empty", () => {
+    expect(dtMsFromSrc("camera_2024-01-15_12-30-45.jpg", opts(""))).toBeNull();
   });
 
-  it("extractDayKey returns null when neither format is configured", () => {
-    expect(extractDayKey("20240115_123045.jpg", opts())).toBeNull();
+  it("extractDayKey returns null when pathFormat is empty", () => {
+    expect(extractDayKey("20240115_123045.jpg", opts(""))).toBeNull();
   });
 
-  it("extractDateTimeKey returns null when neither format is configured", () => {
-    expect(extractDateTimeKey("some_1700000000_file.jpg", opts())).toBeNull();
-  });
-});
-
-describe("Date overflow rejected (Feb 31 → null)", () => {
-  it("parseFolderFileDatetime rejects Feb 31", () => {
-    const result = parseFolderFileDatetime("camera/2024-02-31/file.jpg", {
-      folderFormat: "YYYY-MM-DD",
-    });
-    expect(result).toBeNull();
+  it("extractDateTimeKey returns null when pathFormat is empty", () => {
+    expect(extractDateTimeKey("some_1700000000_file.jpg", opts(""))).toBeNull();
   });
 
-  it("parseDateFromFilename rejects Feb 31", () => {
-    const result = parseDateFromFilename(
-      "camera-20240231-event.jpg",
-      opts({ filenameFormat: "YYYYMMDD" })
-    );
-    expect(result).toBeNull();
-  });
-
-  it("parseFolderFileDatetime accepts a real Feb 29 in a leap year", () => {
-    const result = parseFolderFileDatetime("camera/2024-02-29/file.jpg", {
-      folderFormat: "YYYY-MM-DD",
-    });
-    expect(result).not.toBeNull();
-    expect(result?.dayKey).toBe("2024-02-29");
-  });
-
-  it("parseFolderFileDatetime rejects Feb 29 in a non-leap year", () => {
-    const result = parseFolderFileDatetime("camera/2023-02-29/file.jpg", {
-      folderFormat: "YYYY-MM-DD",
-    });
-    expect(result).toBeNull();
+  it("returns null when the format compiles but doesn't match the path", () => {
+    expect(dtMsFromSrc("garbage", opts("YYYY/MM/DD/HHmmss"))).toBeNull();
   });
 });
 
@@ -125,74 +90,65 @@ describe("Local-time round-trip invariant", () => {
   });
 });
 
-describe("Explicit folder format — parseFolderFileDatetime", () => {
-  it("extracts date from folder path with YYYY-MM-DD format", () => {
-    const r = parseFolderFileDatetime("camera/2024-01-15/clip.mp4", {
-      folderFormat: "YYYY-MM-DD",
-    });
-    expect(r?.dayKey).toBe("2024-01-15");
+describe("Calendar correctness", () => {
+  it("rejects Feb 31 from a path-format match", () => {
+    expect(dtMsFromSrc("/cam/2024-02-31/clip.mp4", opts("YYYY-MM-DD"))).toBeNull();
   });
 
-  it("combines folder date with filename time when filenameFormat is set", () => {
-    const r = parseFolderFileDatetime("camera/2024-01-15/123045.mp4", {
-      folderFormat: "YYYY-MM-DD",
-      filenameFormat: "HHmmss",
-    });
-    expect(r?.dtKey).toBe("2024-01-15T12:30:45");
+  it("rejects Feb 29 in a non-leap year", () => {
+    expect(dtMsFromSrc("/cam/2023-02-29/clip.mp4", opts("YYYY-MM-DD"))).toBeNull();
   });
 
-  it("returns null when folder does not match folderFormat", () => {
-    expect(
-      parseFolderFileDatetime("camera/no-date-here/clip.mp4", { folderFormat: "YYYY-MM-DD" })
-    ).toBeNull();
+  it("accepts Feb 29 in a leap year", () => {
+    const r = dtMsFromSrc("/cam/2024-02-29/clip.mp4", opts("YYYY-MM-DD"));
+    expect(r).toBe(new Date(2024, 1, 29, 0, 0, 0).getTime());
   });
 });
 
-describe("Explicit filename format — parseDateFromFilename", () => {
-  it("extracts date+time from filename with YYYYMMDD_HHmmss format", () => {
-    const r = parseDateFromFilename(
-      "cam_20240115_123045.mp4",
-      opts({ filenameFormat: "YYYYMMDD_HHmmss" })
-    );
-    expect(r?.dayKey).toBe("2024-01-15");
-    expect(r?.dtKey).toBe("2024-01-15T12:30:45");
-  });
-
-  it("returns null when filename does not match filenameFormat", () => {
+describe("Three layouts via path_datetime_format", () => {
+  it("layout A — flat folder, full filename match with extension", () => {
     expect(
-      parseDateFromFilename("unrelated-name.jpg", opts({ filenameFormat: "YYYYMMDD" }))
-    ).toBeNull();
+      extractDateTimeKey("/local/cam/RLC_20260502_050106.mp4", opts("RLC_YYYYMMDD_HHmmss.mp4"))
+    ).toBe("2026-05-02T05:01:06");
   });
 
-  it("returns null when filenameFormat is not configured", () => {
-    expect(parseDateFromFilename("cam_20240115_123045.mp4", opts())).toBeNull();
+  it("layout A — substring filename match (issue #99 user's filename shape)", () => {
+    expect(
+      extractDateTimeKey("/local/cam/RLC-520A-front_00_20260502050106.mp4", opts("YYYYMMDDHHmmss"))
+    ).toBe("2026-05-02T05:01:06");
+  });
+
+  it("layout B — date folder + time-named file", () => {
+    expect(extractDayKey("/local/cam/20260502/120030.mp4", opts("YYYYMMDD/HHmmss"))).toBe(
+      "2026-05-02"
+    );
+  });
+
+  it("layout C — nested YYYY/MM/DD plus filename with time (issue #99 reproducer)", () => {
+    const ms = dtMsFromSrc(
+      "media-source://media_source/local/Cams/Front/2026/04/30/RLC-520A-front_00_20260430131245.mp4",
+      opts("YYYY/MM/DD/RLC-520A-front_00_YYYYMMDDHHmmss.mp4")
+    );
+    expect(ms).toBe(new Date(2026, 3, 30, 13, 12, 45).getTime());
+  });
+
+  it("layout C with substring leaf — only date folders carry structure", () => {
+    expect(
+      extractDayKey(
+        "media-source://media_source/local/Cams/Front/2026/04/30/anything.mp4",
+        opts("YYYY/MM/DD")
+      )
+    ).toBe("2026-04-30");
   });
 });
 
-describe("End-to-end: extractDayKey / extractDateTimeKey", () => {
-  it("extractDayKey uses folderFormat when configured", () => {
-    expect(extractDayKey("cam/2024-01-15/clip.mp4", opts({ folderFormat: "YYYY-MM-DD" }))).toBe(
-      "2024-01-15"
-    );
-  });
-
-  it("extractDateTimeKey uses filenameFormat when configured", () => {
-    expect(
-      extractDateTimeKey("cam_20240115_123045.mp4", opts({ filenameFormat: "YYYYMMDD_HHmmss" }))
-    ).toBe("2024-01-15T12:30:45");
-  });
-
-  it("extractDayKey returns null when no format is configured", () => {
-    expect(extractDayKey("snapshot_20240115_evt.jpg", opts())).toBeNull();
-  });
-
-  it("folderFormat takes priority over filenameFormat for date", () => {
-    const r = dtMsFromSrc(
-      "media/2023-12-31/cam_20240115.jpg",
-      opts({ folderFormat: "YYYY-MM-DD", filenameFormat: "YYYYMMDD" })
-    );
-    const expected = new Date(2023, 11, 31, 0, 0, 0).getTime();
-    expect(r).toBe(expected);
+describe("Format string is cached on repeated calls", () => {
+  it("repeated calls return the same result without recompiling", () => {
+    const fmt = "YYYY/MM/DD/HHmmss";
+    const a = dtMsFromSrc("/x/2026/01/15/120030.mp4", opts(fmt));
+    const b = dtMsFromSrc("/x/2026/01/15/120030.mp4", opts(fmt));
+    expect(a).toBe(b);
+    expect(a).not.toBeNull();
   });
 });
 
