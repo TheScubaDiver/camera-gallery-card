@@ -6,7 +6,7 @@ import { canDeleteItem, deleteItem } from "./delete-service";
 
 type Config = Pick<
   CameraGalleryCardConfig,
-  "source_mode" | "allow_delete" | "delete_service" | "delete_confirm"
+  "source_mode" | "allow_delete" | "delete_service" | "delete_confirm" | "debug_enabled"
 >;
 
 const cfg = (overrides: Partial<Config> = {}): Config =>
@@ -15,6 +15,7 @@ const cfg = (overrides: Partial<Config> = {}): Config =>
     allow_delete: true,
     delete_service: "shell_command.delete_clip",
     delete_confirm: false,
+    debug_enabled: false,
     ...overrides,
   }) as Config;
 

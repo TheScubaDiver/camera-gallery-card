@@ -3584,6 +3584,21 @@ class CameraGalleryCard extends LitElement {
     this._mediaClient.load(this.config);
     this._startMediaPoll();
 
+    // Diagnostic for the source-mode-flip delete bug (PR #100 review).
+    // Logs the post-normalize delete-relevant state on every setConfig so
+    // a media↔sensor↔combined flip cycle leaves a clear breadcrumb trail.
+    // Remove once the bug is confirmed fixed.
+    if (nextConfig.debug_enabled === true) {
+      console.info("[cgc] setConfig", {
+        prev_source_mode: prevConfig?.source_mode ?? null,
+        source_mode: nextConfig.source_mode,
+        allow_delete: nextConfig.allow_delete,
+        allow_bulk_delete: nextConfig.allow_bulk_delete,
+        delete_service: nextConfig.delete_service,
+        entities: nextConfig.entities,
+      });
+    }
+
     const { changedKeys, isSourceChange: sourceChange, isUiOnly: uiOnlyChange } =
       configDiff(prevConfig, nextConfig);
 
