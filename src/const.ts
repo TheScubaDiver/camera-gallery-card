@@ -136,6 +136,27 @@ export const DELETE_PREFIX_NORMALIZED = ((): string => {
 export const DEFAULT_DELETE_SERVICE = "";
 export const DEFAULT_FRIGATE_API_LIMIT = 500;
 export const FRIGATE_API_RETRY_AFTER_MS = 5 * 60 * 1000;
+
+/**
+ * Time window for fuzzy-matching a Frigate snapshot to a video clip.
+ *
+ * Snapshots are produced ~1s after the trigger frame; clips start ~5s
+ * earlier. The 15s window is wide enough to absorb that natural drift
+ * plus container restart skew, narrow enough to avoid mis-pairing two
+ * separate events on a busy doorbell camera.
+ */
+export const FRIGATE_SNAPSHOT_MATCH_WINDOW_MS = 15_000;
+
+/**
+ * Time-to-live for a media-source resolve failure. After this elapses,
+ * the next `queueResolve` for that ID re-attempts the resolve.
+ *
+ * 60s lets transient failures (DNS blip, gateway 502, container restart)
+ * recover within a session without re-entry from the user. Shorter and
+ * we'd thrash the WS on a real outage; longer and a recovered network
+ * leaves the gallery showing broken thumbnails until the user reloads.
+ */
+export const MS_RESOLVE_FAILURE_TTL_MS = 60_000;
 export const DEFAULT_LIVE_AUTO_MUTED = true;
 export const DEFAULT_LIVE_ENABLED = false;
 export const DEFAULT_LIVE_LAYOUT = "single" satisfies LiveLayout;

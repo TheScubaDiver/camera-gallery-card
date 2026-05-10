@@ -8,7 +8,6 @@ import {
   dayKeyFromMs,
   dtKeyFromMs,
   dtMsFromSrc,
-  extractDayKey,
   uniqueDays,
 } from "./data/datetime-parsing";
 import { configDiff } from "./config/diff";
@@ -23,22 +22,30 @@ import {
   objectIcon,
   sensorTextForFilter,
 } from "./data/object-filters";
-import {
-  dedupeByRelPath,
-  pairMediaSourceThumbnails,
-  pairSensorItems,
-} from "./data/pairing";
+import { dedupeByRelPath } from "./data/pairing";
 import { FavoritesStore } from "./data/favorites";
+import {
+  parseServiceParts,
+  SensorSourceClient,
+  toFsPath,
+  toWebPath,
+} from "./data/sensor-source";
+import {
+  isMediaSourceId,
+  isRenderable,
+  keyFromRoots as msKeyFromRoots,
+  MediaSourceClient,
+  walkCacheKey as msWalkCacheKey,
+} from "./data/media-walker";
+import { CombinedSourceClient } from "./data/combined-source";
+import { canDeleteItem, deleteItem } from "./data/delete-service";
 import { fnv1aHash } from "./util/hash";
 import { isVideo } from "./util/media-type";
 import {
-  FRIGATE_SNAPSHOTS_ROOT,
   FRIGATE_URI_PREFIX,
-  fetchFrigateEvents,
   frigateEventIdMs,
   hasFrigateConfig,
   isFrigateRoot,
-  mapFrigateEventToItem,
 } from "./util/frigate";
 import {
   formatDateTime,
@@ -48,33 +55,25 @@ import {
   resolveLocale,
 } from "./util/locale";
 import {
-  ATTR_NAME,
   AVAILABLE_OBJECT_FILTERS,
   DEFAULT_ALLOW_BULK_DELETE,
   DEFAULT_ALLOW_DELETE,
   DEFAULT_AUTOMUTED,
   DEFAULT_AUTOPLAY,
   DEFAULT_BAR_OPACITY,
-  DEFAULT_BROWSE_TIMEOUT_MS,
   DEFAULT_CLEAN_MODE,
   DEFAULT_DELETE_CONFIRM,
   DEFAULT_DELETE_SERVICE,
-  DELETE_PREFIX_NORMALIZED,
-  DEFAULT_FRIGATE_API_LIMIT,
-  FRIGATE_API_RETRY_AFTER_MS,
   DEFAULT_LIVE_AUTO_MUTED,
   DEFAULT_LIVE_ENABLED,
   DEFAULT_MAX_MEDIA,
-  DEFAULT_PER_ROOT_MIN_LIMIT,
   DEFAULT_PREVIEW_CLOSE_ON_TAP_WHEN_GATED,
   DEFAULT_PREVIEW_POSITION,
-  DEFAULT_RESOLVE_BATCH,
   DEFAULT_SOURCE_MODE,
   DEFAULT_THUMB_BAR_POSITION,
   DEFAULT_THUMB_LAYOUT,
   DEFAULT_THUMBNAIL_FRAME_PCT,
   DEFAULT_VISIBLE_OBJECT_FILTERS,
-  DEFAULT_WALK_DEPTH,
   MAX_VISIBLE_OBJECT_FILTERS,
   PREVIEW_WIDTH,
   SENSOR_POSTER_CONCURRENCY,
@@ -181,14 +180,11 @@ class CameraGalleryCard extends LitElement {
     this._filterFavorites = false;
     this._pendingScrollToI = null;
     this._posterCache = new Map();
-    this._msBrowseTtlCache = new Map();
     this._posterPending = new Set();
     // URLs that returned 404 / failed to decode / timed out. Skipped by
     // _enqueuePoster, _drainPosterQueue, and _ensurePoster so a single bad
     // file doesn't spam the network and console on every render.
     this._posterFailed = new Set();
-    this._snapshotCache = new Map();
-    this._frigateSnapshots = [];
     // Unsubscribe callback for HA WS Frigate-event-push subscription.
     // null = not subscribed, function = active subscription.
     this._frigateEventsUnsub = null;
@@ -208,8 +204,7 @@ class CameraGalleryCard extends LitElement {
     this._pillsHovered = false;
     this._pillsTimer = null;
     this._pillsHideActive = false;
-    this._srcEntityMap = new Map();
-    this._sensorPairedThumbs = new Map();
+    this._sensorClient = new SensorSourceClient();
     this._favorites = new FavoritesStore({ onChange: () => this.requestUpdate() });
     this._suppressNextThumbClick = false;
     this._swipeStartX = 0;
@@ -354,17 +349,12 @@ class CameraGalleryCard extends LitElement {
       this._applyZoom();
     };
 
-    this._ms = {
-      key: "",
-      list: [],
-      loadedAt: 0,
-      loading: false,
-      roots: [],
-      urlCache: new Map(),
-    };
-    this._msResolveInFlight = false;
-    this._msResolveQueued = new Set();
-    this._msResolveFailed = new Set();
+    this._mediaClient = new MediaSourceClient({
+      onChange: () => this.requestUpdate(),
+      getDtOpts: () => this._dtOpts,
+      resolveItemMs: (src) => this._resolveItemMs(src),
+    });
+    this._combinedClient = new CombinedSourceClient(this._sensorClient, this._mediaClient);
     this._previewLoadTimer = null;
 
     this._posterQueue = [];
@@ -380,10 +370,10 @@ class CameraGalleryCard extends LitElement {
   _startMediaPoll() {
     this._stopMediaPoll();
     if (this.config?.source_mode !== "media" && this.config?.source_mode !== "combined") return;
-    this._msEnsureLoaded();
+    this._mediaClient.ensureLoaded();
     this._mediaPollInterval = setInterval(() => {
-      this._ms.loadedAt = 0;
-      this._msEnsureLoaded();
+      this._mediaClient.invalidate();
+      this._mediaClient.ensureLoaded();
     }, 30_000);
   }
 
@@ -457,6 +447,8 @@ class CameraGalleryCard extends LitElement {
     const firstHass = !this._hass;
     const oldHass = this._hass;
     this._hass = hass;
+    this._sensorClient.setHass(hass);
+    this._mediaClient.setHass(hass);
 
     if (firstHass) {
       if (this.config?.start_mode === "live" && this._hasLiveConfig()) {
@@ -472,7 +464,7 @@ class CameraGalleryCard extends LitElement {
     if (this._liveCard) this._liveCard.hass = hass;
 
     // Only re-render when an entity we actually display has changed state
-    const sensorIds = this._sensorEntityList();
+    const sensorIds = this._sensorClient.getEntityIds();
     const cameraIds = Array.isArray(this.config?.live_camera_entities)
       ? this.config.live_camera_entities
       : [];
@@ -535,10 +527,21 @@ class CameraGalleryCard extends LitElement {
   }
 
   _unsubscribeFrigateEvents() {
-    if (this._frigateEventsUnsub) {
-      try { this._frigateEventsUnsub(); } catch (_) {}
-      this._frigateEventsUnsub = null;
-    }
+    if (!this._frigateEventsUnsub) return;
+    const fn = this._frigateEventsUnsub;
+    // Null the field before invoking so a re-entry (disconnectedCallback fires
+    // twice on rapid lovelace re-renders) skips the duplicate unsubscribe.
+    this._frigateEventsUnsub = null;
+    try {
+      const result = fn();
+      // home-assistant-js-websocket's UnsubscribeFunc returns a Promise.
+      // After an HA WS reconnect the server has forgotten the subscription
+      // ID, so the resulting promise rejects with `not_found`. That's
+      // expected — swallow it so the user doesn't see "Uncaught in promise".
+      if (result && typeof result.then === "function") {
+        result.catch(() => {});
+      }
+    } catch (_) {}
   }
 
   _onFrigateEventPush(data) {
@@ -552,9 +555,9 @@ class CameraGalleryCard extends LitElement {
     }
     if (payload?.type !== "end") return;
 
-    if (this._ms) {
+    {
       // Bypass freshness gate.
-      this._ms.loadedAt = 0;
+      this._mediaClient.invalidate();
       // Bypass the persistent walk cache so we do a real media-source walk
       // instead of replaying stale localStorage data.
       try {
@@ -562,12 +565,12 @@ class CameraGalleryCard extends LitElement {
           ? this.config.media_sources
           : [];
         if (roots.length) {
-          const cacheKey = this._msWalkCacheKey(this._msKeyFromRoots(roots));
+          const cacheKey = msWalkCacheKey(msKeyFromRoots(roots));
           localStorage.removeItem(cacheKey);
         }
       } catch (_) {}
     }
-    this._msEnsureLoaded();
+    this._mediaClient.ensureLoaded();
   }
 
   // ─── Generic helpers ───────────────────────────────────────────────
@@ -632,16 +635,16 @@ class CameraGalleryCard extends LitElement {
     this._syncCurrentMedia(selected);
 
     let selectedUrl = selected;
-    if (this._isMediaSourceId(selected)) {
-      selectedUrl = this._ms?.urlCache?.get(selected) || "";
+    if (isMediaSourceId(selected)) {
+      selectedUrl = this._mediaClient.getUrlCache().get(selected) || "";
     }
 
     let selectedMime = "";
     let selectedCls = "";
     let selectedTitle = "";
 
-    if (usingMediaSource && this._isMediaSourceId(selected)) {
-      const meta = this._msMetaById(selected);
+    if (usingMediaSource && isMediaSourceId(selected)) {
+      const meta = this._mediaClient.getMetaById(selected);
       selectedMime = meta.mime;
       selectedCls = meta.cls;
       selectedTitle = meta.title;
@@ -654,7 +657,7 @@ class CameraGalleryCard extends LitElement {
     const previewGated = !!this.config?.clean_mode;
     const previewOpen = !previewGated || !!this._previewOpen;
     const selectedNeedsResolve =
-      !!selected && usingMediaSource && this._isMediaSourceId(selected);
+      !!selected && usingMediaSource && isMediaSourceId(selected);
     const selectedHasUrl = !!selected && (!selectedNeedsResolve || !!selectedUrl);
 
     const mediaKey = JSON.stringify({
@@ -767,7 +770,12 @@ class CameraGalleryCard extends LitElement {
         ? this.config.auto_muted === true
         : true;
 
-    video.autoplay = shouldAutoplay;
+    // Don't use the `autoplay` attribute — when the browser starts an
+    // internal play() because of `autoplay=true` and we then change `src`,
+    // the internal play() promise rejects with `aborted by the user agent`
+    // and surfaces as `Uncaught (in promise) DOMException`. We start
+    // playback explicitly via `canplay` below and own the .catch.
+    video.autoplay = false;
     video.muted = shouldMute;
 
     if (video.src !== selectedUrl) {
@@ -849,7 +857,7 @@ class CameraGalleryCard extends LitElement {
       ? filtered
           .slice(0, thumbRenderLimit)
           .map((x) => String(x?.src || ""))
-          .filter((src) => src && this._isMediaSourceId(src))
+          .filter((src) => src && isMediaSourceId(src))
       : [];
 
     const key = JSON.stringify({
@@ -860,8 +868,8 @@ class CameraGalleryCard extends LitElement {
 
     const selectedNeedsResolve = usingMediaSource
       && selectedSrc
-      && this._isMediaSourceId(selectedSrc)
-      && !this._ms.urlCache.has(selectedSrc);
+      && isMediaSourceId(selectedSrc)
+      && !this._mediaClient.getUrlCache().has(selectedSrc);
 
     if (this._prefetchKey === key && !selectedNeedsResolve) return;
     this._prefetchKey = key;
@@ -873,7 +881,7 @@ class CameraGalleryCard extends LitElement {
         const want = [];
 
         // Selected clip first (needed for preview)
-        if (selectedSrc && this._isMediaSourceId(selectedSrc)) {
+        if (selectedSrc && isMediaSourceId(selectedSrc)) {
           want.push(selectedSrc);
         }
 
@@ -882,19 +890,19 @@ class CameraGalleryCard extends LitElement {
         if (hasFrigateConfig(this.config)) {
           for (const src of visibleThumbIds) {
             if (src === selectedSrc) continue;
-            const snapId = this._findMatchingSnapshotMediaId(src);
-            if (snapId && !this._ms.urlCache.has(snapId) && !this._msResolveFailed.has(snapId)) {
+            const snapId = this._mediaClient.findMatchingSnapshotMediaId(src);
+            if (snapId && !this._mediaClient.getUrlCache().has(snapId) && !this._mediaClient.isResolveFailed(snapId)) {
               want.push(snapId);
             }
           }
         }
 
         // Paired jpg thumbnails: resolve jpg before video so thumbnail is ready first
-        if (this._ms?.pairedThumbs?.size) {
+        if (this._mediaClient.getPairedThumbs().size) {
           for (const src of visibleThumbIds) {
             if (src === selectedSrc) continue;
-            const pairedJpgId = this._ms.pairedThumbs.get(src);
-            if (pairedJpgId && !this._ms.urlCache.has(pairedJpgId) && !this._msResolveFailed.has(pairedJpgId)) {
+            const pairedJpgId = this._mediaClient.getPairedThumbs().get(src);
+            if (pairedJpgId && !this._mediaClient.getUrlCache().has(pairedJpgId) && !this._mediaClient.isResolveFailed(pairedJpgId)) {
               want.push(pairedJpgId);
             }
           }
@@ -905,7 +913,7 @@ class CameraGalleryCard extends LitElement {
         }
 
         if (want.length) {
-          this._msQueueResolve(want);
+          this._mediaClient.queueResolve(want);
         }
       }
 
@@ -941,7 +949,7 @@ class CameraGalleryCard extends LitElement {
     const mode = this.config?.source_mode;
     if (mode !== "sensor" && mode !== "combined") return false;
     if (!this.config?.allow_delete || !this.config?.allow_bulk_delete) return false;
-    return !!this._serviceParts();
+    return !!parseServiceParts(this.config?.delete_service);
   }
 
   _friendlyCameraName(entityId) {
@@ -981,8 +989,8 @@ class CameraGalleryCard extends LitElement {
   //   3. User-format parsing of the filename / folder.
   // Returns null when nothing matches.
   _resolveItemMs(src) {
-    const pre = this._ms?.listIndex?.get(src)?.dtMs;
-    if (typeof pre === "number" && Number.isFinite(pre)) return pre;
+    const pre = this._mediaClient.getDtMsForId(src);
+    if (pre !== null) return pre;
     const fid = frigateEventIdMs(src);
     if (typeof fid === "number" && Number.isFinite(fid)) return fid;
     const parsed = dtMsFromSrc(src, this._dtOpts);
@@ -1094,17 +1102,6 @@ class CameraGalleryCard extends LitElement {
 
   _isLiveActive() {
     return this._hasLiveConfig() && this._viewMode === "live";
-  }
-
-  _sensorEntityList() {
-    return Array.isArray(this.config?.entities) ? this.config.entities : [];
-  }
-
-  _serviceParts() {
-    const full = String(this.config?.delete_service || "");
-    const [domain, service] = full.split(".");
-    if (!domain || !service) return null;
-    return { domain, service };
   }
 
   // ─── Live helpers ─────────────────────────────────────────────────
@@ -1361,6 +1358,16 @@ class CameraGalleryCard extends LitElement {
       return this._liveCard;
     }
 
+    // De-dup concurrent calls for the same URL. Without this, every Lit
+    // `updated()` cycle that runs before the WS handshake completes spawns
+    // a fresh PC + WS. The cleanup below then closes the previous in-flight
+    // PC, surfacing as `DOMException: Peer connection is closed` from the
+    // earlier call's `onopen`. Single in-flight promise per URL fixes both
+    // the noise and the cascade.
+    if (this._liveCardPending?.key === key) {
+      return this._liveCardPending.promise;
+    }
+
     // Sluit bestaande peer connection en WebSocket als die er zijn
     if (this._rtcWebSocket) {
       try { this._rtcWebSocket.close(); } catch (_) {}
@@ -1371,6 +1378,16 @@ class CameraGalleryCard extends LitElement {
       this._rtcPeerConnection = null;
     }
 
+    const promise = this._ensureLiveCardFromUrlImpl(url, key);
+    this._liveCardPending = { key, promise };
+    try {
+      return await promise;
+    } finally {
+      if (this._liveCardPending?.key === key) this._liveCardPending = null;
+    }
+  }
+
+  async _ensureLiveCardFromUrlImpl(url, key) {
     const video = document.createElement("video");
     video.autoplay = true;
     video.muted = true;
@@ -1392,10 +1409,11 @@ class CameraGalleryCard extends LitElement {
 
       // Gebruik HA ingebouwde go2rtc (auth/sign_path) of externe go2rtc instantie
       const go2rtcBase = this._getGo2rtcUrl();
-      let ws;
+      let wsUrl;
+      let pathLabel;
       if (go2rtcBase) {
-        const wsUrl = go2rtcBase.replace(/^http/, "ws") + "/api/webrtc?src=" + encodeURIComponent(url);
-        ws = new WebSocket(wsUrl);
+        wsUrl = go2rtcBase.replace(/^http/, "ws") + "/api/webrtc?src=" + encodeURIComponent(url);
+        pathLabel = "external go2rtc";
       } else {
         const now = Date.now();
         if (!this._signedWsPath || now - this._signedWsPathTs > 25_000) {
@@ -1403,13 +1421,42 @@ class CameraGalleryCard extends LitElement {
           this._signedWsPath = signed.path;
           this._signedWsPathTs = now;
         }
-        const wsUrl = "ws" + this._hass.hassUrl(this._signedWsPath).substring(4) + "&url=" + encodeURIComponent(url);
-        ws = new WebSocket(wsUrl);
+        wsUrl = "ws" + this._hass.hassUrl(this._signedWsPath).substring(4) + "&url=" + encodeURIComponent(url);
+        pathLabel = "AlexxIT/WebRTC integration";
       }
+
+      // Mixed-content: the page is HTTPS but the configured go2rtc URL is HTTP.
+      // Browsers silently block this and only fire `onerror` with no detail —
+      // surface the diagnosis here so the user knows what to fix.
+      if (
+        typeof location !== "undefined" &&
+        location.protocol === "https:" &&
+        wsUrl.startsWith("ws://")
+      ) {
+        throw new Error(
+          `Mixed content blocked: page is HTTPS but live_go2rtc_url uses http://. ` +
+          `Either configure go2rtc behind a TLS reverse proxy (https://) or ` +
+          `serve the dashboard from http://. URL: ${go2rtcBase}`
+        );
+      }
+
+      const ws = new WebSocket(wsUrl);
       this._rtcWebSocket = ws;
 
       await new Promise((resolve, reject) => {
-        const timeout = setTimeout(() => reject(new Error("go2rtc WS timeout")), 10000);
+        // `onerror` fires without detail before `onclose`; track the most
+        // recent close code so the rejection can include it.
+        let lastCloseCode = null;
+        const failPrefix = `${pathLabel} WS`;
+        const fail = (suffix) =>
+          reject(
+            new Error(
+              `${failPrefix} ${suffix}` +
+              (lastCloseCode !== null ? ` (close code ${lastCloseCode})` : "") +
+              ` — url: ${wsUrl.replace(/authSig=[^&]+/, "authSig=…")}`
+            )
+          );
+        const timeout = setTimeout(() => fail("timeout after 10s"), 10000);
 
         ws.onopen = async () => {
           try {
@@ -1430,13 +1477,16 @@ class CameraGalleryCard extends LitElement {
               pc.addIceCandidate({ candidate: msg.value, sdpMid: "0" }).catch(() => {});
             } else if (msg.type === "error") {
               clearTimeout(timeout);
-              reject(new Error("go2rtc error: " + msg.value));
+              reject(new Error(`${pathLabel} reported: ${msg.value}`));
             }
           } catch (err) { reject(err); }
         };
 
-        ws.onerror = (e) => { clearTimeout(timeout); reject(new Error("go2rtc WS error")); };
-        ws.onclose = (e) => { if (e.code !== 1000) { clearTimeout(timeout); reject(new Error("go2rtc WS closed: " + e.code)); } };
+        ws.onerror = () => { clearTimeout(timeout); fail("error"); };
+        ws.onclose = (e) => {
+          lastCloseCode = e.code;
+          if (e.code !== 1000) { clearTimeout(timeout); fail("closed"); }
+        };
       });
 
       // Stuur ICE candidates door naar go2rtc
@@ -2410,14 +2460,14 @@ class CameraGalleryCard extends LitElement {
     if (!item?.src) return;
 
     const usingMediaSource = this.config?.source_mode === "media" || this.config?.source_mode === "combined";
-    const isMs = usingMediaSource && this._isMediaSourceId(item.src);
+    const isMs = usingMediaSource && isMediaSourceId(item.src);
 
     let url = item.src;
     if (isMs) {
-      url = this._ms?.urlCache?.get(item.src) || "";
+      url = this._mediaClient.getUrlCache().get(item.src) || "";
       if (!url) {
         try {
-          url = await this._msResolve(item.src);
+          url = await this._mediaClient.resolve(item.src);
         } catch (_) {}
       }
     }
@@ -2448,7 +2498,7 @@ class CameraGalleryCard extends LitElement {
 
   _isFrigateMediaItem(src) {
     return (
-      this._isMediaSourceId(src) &&
+      isMediaSourceId(src) &&
       isFrigateRoot(src)
     );
   }
@@ -2631,12 +2681,11 @@ class CameraGalleryCard extends LitElement {
   }
 
   _thumbCanDelete(item) {
-    if (!item?.src) return false;
-    const mode = this.config?.source_mode;
-    if (mode !== "sensor" && mode !== "combined") return false;
-    if (mode === "combined" && !this._srcEntityMap?.has(item.src)) return false;
-    if (!this.config?.allow_delete) return false;
-    return !!this._serviceParts();
+    return canDeleteItem({
+      src: item?.src,
+      config: this.config,
+      srcEntityMap: this._sensorClient.getSrcEntityMap(),
+    });
   }
 
   _thumbCanDownload(item) {
@@ -2650,36 +2699,23 @@ class CameraGalleryCard extends LitElement {
   // ─── Media / delete / download ────────────────────────────────────
 
   async _deleteSingle(src) {
-    const mode = this.config?.source_mode;
-    if (mode !== "sensor" && mode !== "combined") return;
-    if (mode === "combined" && !this._srcEntityMap?.has(src)) return;
-    if (!this.config?.allow_delete) return;
+    const ok = await deleteItem({
+      hass: this._hass,
+      src,
+      config: this.config,
+      srcEntityMap: this._sensorClient.getSrcEntityMap(),
+    });
+    if (!ok) return;
 
-    const sp = this._serviceParts();
-    if (!sp) return;
+    this._deleted.add(src);
+    this._selectedSet?.delete?.(src);
 
-    const fsPath = this._toFsPath(src);
-    const prefix = DELETE_PREFIX_NORMALIZED;
-
-    if (!fsPath || !fsPath.startsWith(prefix)) return;
-
-    if (this.config?.delete_confirm) {
-      const ok = window.confirm("Are you sure you want to delete this file?");
-      if (!ok) return;
+    const rawItems = this._items();
+    if (!rawItems.length) {
+      this._selectedIndex = 0;
     }
 
-    try {
-      await this._hass.callService(sp.domain, sp.service, { path: fsPath });
-      this._deleted.add(src);
-      this._selectedSet?.delete?.(src);
-
-      const rawItems = this._items();
-      if (!rawItems.length) {
-        this._selectedIndex = 0;
-      }
-
-      this.requestUpdate();
-    } catch (_) {}
+    this.requestUpdate();
   }
 
   async _downloadSrc(urlOrPath) {
@@ -2714,97 +2750,6 @@ class CameraGalleryCard extends LitElement {
     }
   }
 
-  _isMediaSourceId(v) {
-    return String(v || "").startsWith("media-source://");
-  }
-
-  _toFsPath(src) {
-    if (!src) return "";
-    let clean = String(src).trim();
-    clean = clean.split("?")[0].split("#")[0];
-    try {
-      if (clean.startsWith("http://") || clean.startsWith("https://")) {
-        clean = new URL(clean).pathname;
-      }
-    } catch (_) {}
-    try {
-      clean = decodeURIComponent(clean);
-    } catch (_) {}
-    if (clean.startsWith("/local/")) {
-      return "/config/www/" + clean.slice("/local/".length);
-    }
-    if (clean.startsWith("/config/www/")) return clean;
-    return "";
-  }
-
-
-  _findMatchingSnapshotMediaId(videoId) {
-    const src = String(videoId || "").trim();
-    if (!src) return "";
-
-    if (this._snapshotCache.has(src)) {
-      return this._snapshotCache.get(src);
-    }
-
-    const videoName = (src.split("/").pop() || "").toLowerCase();
-    const videoStem = videoName.replace(/\.(mp4|webm|mov|m4v)$/i, "");
-
-    if (!videoStem) {
-      this._snapshotCache.set(src, "");
-      return "";
-    }
-
-    const snapshots = Array.isArray(this._frigateSnapshots)
-      ? this._frigateSnapshots
-      : [];
-
-    if (!snapshots.length) {
-      this._snapshotCache.set(src, "");
-      return "";
-    }
-
-    let match = snapshots.find((snap) => {
-      const snapName =
-        String(snap?.id || "").split("/").pop()?.toLowerCase() || "";
-      const snapStem = snapName.replace(/\.(jpg|jpeg|png|webp)$/i, "");
-      return snapStem === videoStem;
-    });
-
-    if (!match) {
-      match = snapshots.find((snap) =>
-        String(snap?.id || "").toLowerCase().includes(videoStem)
-      );
-    }
-
-    if (!match) {
-      const videoMs = this._resolveItemMs(src);
-
-      if (Number.isFinite(videoMs)) {
-        let best = null;
-        let bestDiff = Infinity;
-
-        for (const snap of snapshots) {
-          const snapMs = Number(snap?.dtMs);
-          if (!Number.isFinite(snapMs)) continue;
-
-          const diff = Math.abs(snapMs - videoMs);
-          if (diff < bestDiff) {
-            best = snap;
-            bestDiff = diff;
-          }
-        }
-
-        if (best && bestDiff <= 15000) {
-          match = best;
-        }
-      }
-    }
-
-    const result = match?.id || "";
-    this._snapshotCache.set(src, result);
-    return result;
-  }
-
   _queueSnapshotResolveForVisibleThumbs(items) {
     if (!Array.isArray(items) || !items.length) return;
     if (!hasFrigateConfig(this.config)) return;
@@ -2813,25 +2758,15 @@ class CameraGalleryCard extends LitElement {
 
     for (const it of items) {
       const src = String(it?.src || "");
-      if (!src || !this._isMediaSourceId(src)) continue;
+      if (!src || !isMediaSourceId(src)) continue;
 
-      const snapshotId = this._findMatchingSnapshotMediaId(src);
+      const snapshotId = this._mediaClient.findMatchingSnapshotMediaId(src);
       if (snapshotId) snapshotIds.push(snapshotId);
     }
 
     if (snapshotIds.length) {
-      this._msQueueResolve(snapshotIds);
+      this._mediaClient.queueResolve(snapshotIds);
     }
-  }
-
-  _toWebPath(p) {
-    if (!p) return "";
-    const v = String(p).trim();
-    if (v.startsWith("/config/www/")) {
-      return "/local/" + v.slice("/config/www/".length);
-    }
-    if (v === "/config/www") return "/local";
-    return v;
   }
 
   // ─── Poster helpers ───────────────────────────────────────────────
@@ -2840,31 +2775,31 @@ class CameraGalleryCard extends LitElement {
   // Side effects: enqueues poster capture / snapshot resolution when needed.
   _resolveVideoPoster(it, isMs, thumbUrl, tThumb, selectedUrl) {
     if (!isMs) {
-      const pairedJpg = this._sensorPairedThumbs?.get(it.src);
+      const pairedJpg = this._sensorClient.getSensorPairedThumbs().get(it.src);
       if (pairedJpg) return this._posterCache.get(pairedJpg) || "";
       return this._posterCache.get(it.src) || "";
     }
 
     if (hasFrigateConfig(this.config)) {
-      const snapshotId = this._findMatchingSnapshotMediaId(it.src);
+      const snapshotId = this._mediaClient.findMatchingSnapshotMediaId(it.src);
       if (snapshotId) {
-        const snapshotUrl = this._ms?.urlCache?.get(snapshotId) || "";
+        const snapshotUrl = this._mediaClient.getUrlCache().get(snapshotId) || "";
         if (snapshotUrl) return snapshotUrl;
-        this._msQueueResolve([snapshotId]);
+        this._mediaClient.queueResolve([snapshotId]);
       }
     }
 
     // Paired thumbnail: same-stem jpg next to the mp4
-    const pairedJpgId = this._ms?.pairedThumbs?.get(it.src);
-    if (pairedJpgId && !this._msResolveFailed.has(pairedJpgId)) {
-      const jpgUrl = this._ms?.urlCache?.get(pairedJpgId) || "";
+    const pairedJpgId = this._mediaClient.getPairedThumbs().get(it.src);
+    if (pairedJpgId && !this._mediaClient.isResolveFailed(pairedJpgId)) {
+      const jpgUrl = this._mediaClient.getUrlCache().get(pairedJpgId) || "";
       if (jpgUrl) {
         const cached = this._posterCache.get(jpgUrl);
         if (cached) return cached;
         this._enqueuePoster(jpgUrl);
         return "";
       }
-      this._msQueueResolve([pairedJpgId]);
+      this._mediaClient.queueResolve([pairedJpgId]);
       return "";
     }
 
@@ -3066,486 +3001,6 @@ class CameraGalleryCard extends LitElement {
     }
   }
 
-  // ─── Media source ─────────────────────────────────────────────────
-
-  async _msBrowse(rootId) {
-    const cached = this._msBrowseTtlCache.get(rootId);
-    if (cached && Date.now() - cached.ts < 60 * 60 * 1000) return cached.data;
-    const data = await this._wsWithTimeout({
-      type: "media_source/browse_media",
-      media_content_id: rootId,
-    }, DEFAULT_BROWSE_TIMEOUT_MS);
-    this._msBrowseTtlCache.set(rootId, { ts: Date.now(), data });
-    return data;
-  }
-
-  async _msEnsureLoaded() {
-    const roots = Array.isArray(this.config?.media_sources)
-      ? this.config.media_sources
-      : [];
-
-    if (!roots.length) return;
-
-    // === FRIGATE HTTP API PATH ===
-    // The failed flag latches per-key; honor it only within the retry-cooldown
-    // window so a transient error (DNS blip, container restart) doesn't disable
-    // the direct path for the rest of the session.
-    const failedRecently =
-      this._ms.frigateApiFailed &&
-      Date.now() - (this._ms.frigateApiFailedAt || 0) < FRIGATE_API_RETRY_AFTER_MS;
-    if (this.config?.frigate_url && roots.some(isFrigateRoot) && !failedRecently) {
-      const cap = (this.config?.max_media ?? DEFAULT_MAX_MEDIA);
-      const key = `frigate_api:${this.config.frigate_url}:${cap}`;
-      const sameKey = this._ms.key === key;
-      const fresh = sameKey && Date.now() - (this._ms.loadedAt || 0) < 30_000;
-      if (this._ms.loading || fresh) return;
-
-      if (!sameKey) {
-        this._ms.key = key;
-        this._msSetList([]);
-        this._ms.urlCache = new Map();
-        this._msResolveFailed = new Set();
-        this._ms.frigateApiFailed = false;
-        this._ms.frigateApiFailedAt = 0;
-      }
-
-      this._ms.loading = true;
-      try {
-        const items = await this._msLoadFrigateApi();
-        if (items === null) {
-          this._ms.frigateApiFailed = true;
-          this._ms.frigateApiFailedAt = Date.now();
-          this._ms.loading = false;
-          setTimeout(() => this._msEnsureLoaded(), 0);
-          return;
-        }
-        this._msSetList(items.slice(0, cap));
-        this._ms.loadedAt = Date.now();
-      } catch (e) {
-        console.warn("CGC Frigate API load failed:", e);
-        this._ms.frigateApiFailed = true;
-        this._ms.frigateApiFailedAt = Date.now();
-        this._msSetList([]);
-      } finally {
-        this._ms.loading = false;
-        this.requestUpdate();
-      }
-      return;
-    }
-    // === EINDE FRIGATE HTTP API PATH ===
-
-    const now = Date.now();
-    const key = this._msKeyFromRoots(roots);
-    const sameKey = this._ms.key === key;
-    const fresh = sameKey && now - (this._ms.loadedAt || 0) < 30_000;
-
-    if (this._ms.loading || fresh) return;
-
-    if (!sameKey) {
-      this._ms.key = key;
-      this._msSetList([]);
-      this._ms.roots = roots.slice();
-      this._ms.urlCache = new Map();
-      this._msResolveFailed = new Set();
-    }
-
-    // Serve from persistent walk cache instantly, then refresh in background if stale
-    const walkedCache = this._msWalkCacheLoad(key);
-    if (walkedCache && walkedCache.length > 0) {
-      this._msSetList(walkedCache);
-      this.requestUpdate();
-      // Use the cache's own timestamp so the freshness check works correctly
-      try {
-        const raw = localStorage.getItem(this._msWalkCacheKey(key));
-        const entry = raw ? JSON.parse(raw) : null;
-        const cacheTs = entry?.ts || 0;
-        this._ms.loadedAt = cacheTs;
-        // If cache is older than 5 minutes, let the next _msEnsureLoaded call do a background refresh
-        if (Date.now() - cacheTs > 5 * 60 * 1000) {
-          setTimeout(() => this._msEnsureLoaded(), 0);
-        }
-      } catch (_) {
-        this._ms.loadedAt = 0;
-        setTimeout(() => this._msEnsureLoaded(), 0);
-      }
-      return;
-    }
-
-    this._ms.loading = true;
-
-    try {
-      const visibleCap = (this.config?.max_media ?? DEFAULT_MAX_MEDIA);
-
-      const internalCap = Math.min(2000, Math.max(visibleCap * 4, 400));
-
-      const walkLimitTotal = Math.min(4000, Math.max(internalCap * 2, 800));
-      const perRootLimit = Math.max(
-        DEFAULT_PER_ROOT_MIN_LIMIT,
-        Math.ceil(walkLimitTotal / roots.length)
-      );
-
-      const flat = [];
-
-      const rootResults = await Promise.all(
-        roots.map(async (root) => {
-          try {
-            const rootStr = String(root);
-            const isLocalRoot = rootStr.includes("media_source/local/");
-            const depthLimit = isFrigateRoot(rootStr)
-              ? 3
-              : isLocalRoot
-                ? Math.min(6, DEFAULT_WALK_DEPTH)
-                : DEFAULT_WALK_DEPTH;
-
-            // For single-root: progressively show first items while the rest loads
-            const onProgress = roots.length === 1
-              ? (partial) => {
-                  if (partial.length >= 1) {
-                    this._msSetList(partial
-                      .filter((x) => !!x?.media_content_id)
-                      .map((x) => ({
-                        cls: String(x.media_class || ""),
-                        id: String(x.media_content_id || ""),
-                        mime: String(x.mime_type || ""),
-                        title: String(x.title || ""),
-                        thumb: String(x.thumbnail || ""),
-                      }))
-                      .filter((x) => !!x.id)
-                      .slice(0, internalCap));
-                    this.requestUpdate();
-                  }
-                }
-              : null;
-
-            return await this._msWalkIter(root, perRootLimit, depthLimit, onProgress);
-          } catch (e) {
-            console.warn("MS root failed:", root, e);
-            return [];
-          }
-        })
-      );
-      flat.push(...rootResults.flat());
-
-      if (roots.some(isFrigateRoot)) {
-        try {
-          const snapshotRoot = FRIGATE_SNAPSHOTS_ROOT;
-          const snapshotItems = await this._msWalkIter(
-            snapshotRoot,
-            Math.min(400, Math.max(visibleCap * 6, 120)),
-            3
-          );
-
-          this._frigateSnapshots = snapshotItems
-            .filter((x) => !!x?.media_content_id)
-            .map((x) => {
-              const id = String(x.media_content_id || "");
-              const title = String(x.title || "");
-              const dtMsAttached = frigateEventIdMs(id);
-              const dtMs = dtMsAttached ?? dtMsFromSrc(title || id, this._dtOpts);
-              const dayKey = Number.isFinite(dtMs)
-                ? dayKeyFromMs(dtMs)
-                : extractDayKey(title || id, this._dtOpts);
-              return {
-                id,
-                title,
-                mime: String(x.mime_type || ""),
-                cls: String(x.media_class || ""),
-                thumb: String(x.thumbnail || ""),
-                dtMs,
-                dayKey,
-              };
-            })
-            .filter((x) => !!x.id);
-        } catch (e) {
-          console.warn("Frigate snapshots load failed:", e);
-          this._frigateSnapshots = [];
-        }
-      } else {
-        this._frigateSnapshots = [];
-      }
-
-      let items = flat
-        .filter((x) => !!x?.media_content_id)
-        .map((x) => {
-          const id = String(x.media_content_id || "");
-          const out = {
-            cls: String(x.media_class || ""),
-            id,
-            mime: String(x.mime_type || ""),
-            title: String(x.title || ""),
-            thumb: String(x.thumbnail || ""),
-          };
-          // Frigate event-id epoch is on the URI itself — attach so the
-          // gallery can use it without re-parsing.
-          const ms = isFrigateRoot(id) ? frigateEventIdMs(id) : null;
-          if (ms !== null) out.dtMs = ms;
-          return out;
-        })
-        .filter((x) => !!x.id);
-
-      items = dedupeByRelPath(items);
-
-      items.sort((a, b) => {
-        const am = a.dtMs ?? dtMsFromSrc(a.id, this._dtOpts);
-        const bm = b.dtMs ?? dtMsFromSrc(b.id, this._dtOpts);
-        const aOk = Number.isFinite(am);
-        const bOk = Number.isFinite(bm);
-        if (aOk && bOk && bm !== am) return bm - am;
-        if (aOk && !bOk) return -1;
-        if (!aOk && bOk) return 1;
-        return a.title < b.title ? 1 : a.title > b.title ? -1 : 0;
-      });
-
-      const itemsToSave = items.slice(0, internalCap);
-      this._msSetList(itemsToSave);
-      this._ms.loadedAt = Date.now();
-      this._msWalkCacheSave(key, itemsToSave);
-    } catch (e) {
-      console.warn("MS ensure load failed:", e);
-      console.warn("MS roots used:", roots);
-      this._msSetList([]);
-    } finally {
-      this._ms.loading = false;
-      this.requestUpdate();
-    }
-  }
-
-  async _msLoadFrigateApi() {
-    let base = String(this.config?.frigate_url || "")
-      .trim()
-      .replace(/\/+$/, "");
-    if (!base) return null;
-    if (!/^https?:\/\//i.test(base)) base = "http://" + base;
-
-    const limit = Math.min(
-      DEFAULT_FRIGATE_API_LIMIT,
-      Math.max((this.config?.max_media ?? DEFAULT_MAX_MEDIA) * 2, 100)
-    );
-
-    // Direct fetch — requires Frigate to allow CORS from the HA origin.
-    // For standalone Docker: add a reverse proxy (nginx/Caddy) with Access-Control-Allow-Origin header.
-    const events = await fetchFrigateEvents(base, limit);
-    if (!events) return null;
-
-    const items = [];
-    for (const ev of events) {
-      const mapped = mapFrigateEventToItem(ev, base);
-      if (!mapped) continue;
-      this._ms.urlCache.set(mapped.item.id, mapped.clipUrl);
-      items.push(mapped.item);
-    }
-    return items;
-  }
-
-  _msWalkCacheKey(key) {
-    let h = 2166136261;
-    for (let i = 0; i < key.length; i++) {
-      h ^= key.charCodeAt(i);
-      h = Math.imul(h, 16777619) >>> 0;
-    }
-    return "cgc_mswalk3_" + h.toString(36);
-  }
-
-  _msWalkCacheSave(key, list) {
-    try {
-      localStorage.setItem(this._msWalkCacheKey(key), JSON.stringify({ ts: Date.now(), list }));
-    } catch (_) {}
-  }
-
-  _msWalkCacheLoad(key, maxAgeMs = 30 * 60 * 1000) {
-    try {
-      const raw = localStorage.getItem(this._msWalkCacheKey(key));
-      if (!raw) return null;
-      const entry = JSON.parse(raw);
-      if (!Array.isArray(entry?.list) || Date.now() - entry.ts > maxAgeMs) return null;
-      return entry.list;
-    } catch (_) { return null; }
-  }
-
-  _msIds() {
-    return Array.isArray(this._ms?.list) ? this._ms.list.map((x) => x.id) : [];
-  }
-
-  _msIsRenderable(mime, mediaClass, title) {
-    const t = String(title || "").toLowerCase();
-    const m = String(mime || "").toLowerCase();
-    const c = String(mediaClass || "").toLowerCase();
-
-    if (m.startsWith("image/")) return true;
-    if (m.startsWith("video/")) return true;
-    if (/\.(jpg|jpeg|png|webp|gif)$/i.test(t)) return true;
-    if (/\.(mp4|webm|mov|m4v)$/i.test(t)) return true;
-    if (c === "image" || c === "video") return true;
-
-    return false;
-  }
-
-  _msKeyFromRoots(rootsArr) {
-    const roots = Array.isArray(rootsArr) ? rootsArr : [];
-    if (!roots.length) return "";
-    return roots
-      .slice()
-      .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))
-      .join(" | ");
-  }
-
-  _msSetList(items) {
-    const { items: paired, pairedThumbs } = pairMediaSourceThumbnails(Array.isArray(items) ? [...items] : []);
-    this._ms.list = paired;
-    this._ms.listIndex = new Map(paired.map((x) => [x.id, x]));
-    this._ms.pairedThumbs = pairedThumbs;
-  }
-
-  _msMetaById(id) {
-    const it = this._ms?.listIndex?.get(id);
-    if (!it) return { cls: "", mime: "", title: "", thumb: "" };
-    return { cls: it.cls || "", mime: it.mime || "", title: it.title || "", thumb: it.thumb || "" };
-  }
-
-  _msQueueResolve(ids) {
-    for (const id of ids || []) {
-      if (!id || this._ms.urlCache.has(id) || this._msResolveFailed.has(id)) continue;
-      this._msResolveQueued.add(id);
-    }
-    if (this._msResolveInFlight) return;
-
-    this._msResolveInFlight = true;
-
-    (async () => {
-      try {
-        while (this._msResolveQueued.size) {
-          const chunk = Array.from(this._msResolveQueued).slice(
-            0,
-            DEFAULT_RESOLVE_BATCH
-          );
-          chunk.forEach((x) => this._msResolveQueued.delete(x));
-
-          await Promise.allSettled(chunk.map((id) => this._msResolve(id)));
-          this.requestUpdate();
-        }
-      } finally {
-        this._msResolveInFlight = false;
-      }
-    })().catch(() => {
-      this._msResolveInFlight = false;
-    });
-  }
-
-  async _msResolve(mediaId) {
-    const cached = this._ms?.urlCache?.get(mediaId);
-    if (cached) return cached;
-
-    let r;
-    try {
-      r = await this._wsWithTimeout(
-        {
-          type: "media_source/resolve_media",
-          media_content_id: mediaId,
-          expires: 60 * 60,
-        },
-        12000
-      );
-    } catch (_) {
-      this._msResolveFailed.add(mediaId);
-      return "";
-    }
-
-    const url = r?.url ? String(r.url) : "";
-    if (url) {
-      this._ms.urlCache.set(mediaId, url);
-      this.requestUpdate();
-    } else {
-      this._msResolveFailed.add(mediaId);
-    }
-    return url;
-  }
-
-  _msTitleById(id) {
-    return this._ms?.listIndex?.get(id)?.title || "";
-  }
-
-  async _msWalkIter(rootId, limit, depthLimit, onProgress = null) {
-    const BATCH = 20;
-    const out = [];
-    const stack = [{ depth: 0, id: rootId }];
-
-    while (stack.length && out.length < limit) {
-      const prevCount = out.length;
-
-      // Pop a batch and browse in parallel
-      const batch = [];
-      while (stack.length && batch.length < BATCH) {
-        const item = stack.pop();
-        if (item && item.depth <= depthLimit) batch.push(item);
-      }
-      if (!batch.length) break;
-
-      const results = await Promise.all(
-        batch.map(async ({ depth, id }) => {
-          try {
-            return { depth, node: await this._msBrowse(id) };
-          } catch (_) {
-            return { depth, node: null };
-          }
-        })
-      );
-
-      for (const { depth, node } of results) {
-        if (!node) continue;
-
-        const children = Array.isArray(node?.children) ? node.children : [];
-
-        if (!children.length) {
-          if (node?.media_content_id) {
-            const ok = !!node?.can_play || this._msIsRenderable(
-              node?.mime_type,
-              node?.media_class,
-              node?.title
-            );
-            if (ok && out.length < limit) out.push(node);
-          }
-          continue;
-        }
-
-        const dirsRev = [];
-        for (let i = children.length - 1; i >= 0; i--) {
-          if (out.length >= limit) break;
-
-          const ch = children[i];
-          const mid = String(ch?.media_content_id || "");
-          if (!mid) continue;
-
-          const canExpand = !!ch?.can_expand;
-          const canPlay = !!ch?.can_play;
-          const cls = String(ch?.media_class || "").toLowerCase();
-
-          if (canExpand || (!canPlay && cls === "directory")) {
-            dirsRev.push({ depth: depth + 1, id: mid });
-          } else if (canPlay || this._msIsRenderable(ch?.mime_type, ch?.media_class, ch?.title)) {
-            out.push(ch);
-          }
-        }
-        // Push subdirectories so the alphabetically-LAST one ends up on top
-        // of the LIFO stack and is popped first. For date-named folders like
-        // "2026-04-28" / "2026-04-29", this traverses today before yesterday
-        // — without it, the per-root limit can be exhausted on older folders
-        // before today's folder is ever visited.
-        for (let i = dirsRev.length - 1; i >= 0; i--) stack.push(dirsRev[i]);
-      }
-
-      if (onProgress && out.length > prevCount) onProgress([...out]);
-    }
-
-    return out;
-  }
-
-  _wsWithTimeout(payload, timeoutMs = DEFAULT_BROWSE_TIMEOUT_MS) {
-    const p = this._hass.callWS(payload);
-    const t = new Promise((_, rej) =>
-      setTimeout(() => rej(new Error(`WS timeout: ${payload?.type}`)), timeoutMs)
-    );
-    return Promise.race([p, t]);
-  }
 
   /**
    * @typedef {{ src: string, dtMs?: number }} CardItem
@@ -3569,93 +3024,23 @@ class CameraGalleryCard extends LitElement {
     };
 
     if (mode === "combined") {
-      const entities = this._sensorEntityList();
-      let sensorList = [];
-      this._srcEntityMap = this._srcEntityMap || new Map();
-      for (const entityId of entities) {
-        const st = this._hass?.states?.[entityId];
-        const raw = st?.attributes?.[ATTR_NAME];
-        if (!raw) continue;
-        let part = [];
-        if (Array.isArray(raw)) {
-          part = raw.map((x) => this._toWebPath(x)).filter(Boolean);
-        } else if (typeof raw === "string") {
-          try {
-            const parsed = JSON.parse(raw);
-            part = Array.isArray(parsed)
-              ? parsed.map((x) => this._toWebPath(x)).filter(Boolean)
-              : [this._toWebPath(raw)].filter(Boolean);
-          } catch (_) {
-            part = [this._toWebPath(raw)].filter(Boolean);
-          }
-        }
-        for (const src of part) {
-          if (!this._srcEntityMap.has(src)) this._srcEntityMap.set(src, entityId);
-        }
-        sensorList.push(...part);
-      }
-      const enrichedSensor = dedupeByRelPath(sensorList).map(enrich);
-      const { items: pairedSensor, pairedThumbs: sensorPaired } = pairSensorItems(enrichedSensor);
-      this._sensorPairedThumbs = sensorPaired;
-      const msItems = dedupeByRelPath(this._msIds()).map(enrich);
-      const merged = dedupeByRelPath([...pairedSensor, ...msItems]);
+      const merged = this._combinedClient.getItems(enrich);
       return this._deleted?.size
         ? merged.filter((it) => !this._deleted.has(it.src))
         : merged;
     }
 
     if (usingMediaSource) {
-      const ids = dedupeByRelPath(this._msIds()).map(enrich);
+      const ids = dedupeByRelPath(this._mediaClient.getIds()).map(enrich);
       return this._deleted?.size ? ids.filter((it) => !this._deleted.has(it.src)) : ids;
     }
 
-    const entities = this._sensorEntityList();
-    if (!entities.length) return [];
-
-    let list = [];
-    this._srcEntityMap = new Map();
-
-    for (const entityId of entities) {
-      const st = this._hass?.states?.[entityId];
-      const raw = st?.attributes?.[ATTR_NAME];
-      if (!raw) continue;
-
-      let part = [];
-
-      if (Array.isArray(raw)) {
-        part = raw.map((x) => this._toWebPath(x)).filter(Boolean);
-      } else if (typeof raw === "string") {
-        try {
-          const parsed = JSON.parse(raw);
-          if (Array.isArray(parsed)) {
-            part = parsed.map((x) => this._toWebPath(x)).filter(Boolean);
-          } else {
-            part = [this._toWebPath(raw)].filter(Boolean);
-          }
-        } catch (_) {
-          part = [this._toWebPath(raw)].filter(Boolean);
-        }
-      }
-
-      for (const src of part) {
-        if (!this._srcEntityMap.has(src)) {
-          this._srcEntityMap.set(src, entityId);
-        }
-      }
-
-      list.push(...part);
-    }
-
-    list = dedupeByRelPath(list);
-
-    if (this._deleted?.size) {
-      list = list.filter((src) => !this._deleted.has(src));
-    }
-
-    const enriched = list.map(enrich);
-    const { items: paired, pairedThumbs } = pairSensorItems(enriched);
-    this._sensorPairedThumbs = pairedThumbs;
-    return paired;
+    // Sensor (and the implicit fall-through default) — delegate.
+    // Render-side reads of srcEntityMap / sensorPairedThumbs route through
+    // `this._sensorClient.getSrcEntityMap()` and `getSensorPairedThumbs()`
+    // directly; no mirror-back needed.
+    const items = this._sensorClient.getItems(enrich);
+    return this._deleted?.size ? items.filter((it) => !this._deleted.has(it.src)) : items;
   }
 
   _isVideoSmart(urlOrTitle, mime, cls) {
@@ -3750,8 +3135,8 @@ class CameraGalleryCard extends LitElement {
   }
 
   _sourceNameForParsing(src) {
-    if (!this._isMediaSourceId(src)) return String(src || "");
-    const t = this._msTitleById(src);
+    if (!isMediaSourceId(src)) return String(src || "");
+    const t = this._mediaClient.getTitleById(src);
     return t || String(src || "");
   }
 
@@ -3806,8 +3191,8 @@ class CameraGalleryCard extends LitElement {
   }
 
   _isVideoForSrc(src) {
-    if (this._isMediaSourceId(src)) {
-      const meta = this._msMetaById(src);
+    if (isMediaSourceId(src)) {
+      const meta = this._mediaClient.getMetaById(src);
       return this._isVideoSmart(meta.title || src, meta.mime, meta.cls);
     }
     return isVideo(src);
@@ -3830,7 +3215,7 @@ class CameraGalleryCard extends LitElement {
     if (!active.length) return true;
 
     if (this.config?.source_mode === "sensor") {
-      const sourceEntity = this._srcEntityMap?.get(src) || "";
+      const sourceEntity = this._sensorClient.getSrcEntityMap().get(src) || "";
       const sensorStateObj = sourceEntity
         ? this._hass?.states?.[sourceEntity]
         : null;
@@ -3860,11 +3245,11 @@ class CameraGalleryCard extends LitElement {
       
       let sourceText = "";
       if (this.config?.source_mode === "sensor") {
-        const sourceEntity = this._srcEntityMap?.get(src) || "";
+        const sourceEntity = this._sensorClient.getSrcEntityMap().get(src) || "";
         const sensorStateObj = sourceEntity ? this._hass?.states?.[sourceEntity] : null;
         sourceText = [itemFilenameForFilter(src), sensorTextForFilter(sourceEntity, sensorStateObj)].join(" ");
       } else {
-        const meta = this._msMetaById(src);
+        const meta = this._mediaClient.getMetaById(src);
         sourceText = [meta?.title, src].join(" ");
       }
       sourceText = sourceText.toLowerCase();
@@ -3992,7 +3377,7 @@ class CameraGalleryCard extends LitElement {
     if (mode !== "sensor" && mode !== "combined") return;
     if (!this.config?.allow_delete || !this.config?.allow_bulk_delete) return;
 
-    const sp = this._serviceParts();
+    const sp = parseServiceParts(this.config?.delete_service);
     if (!sp) return;
 
     const prefix = DELETE_PREFIX_NORMALIZED;
@@ -4007,7 +3392,7 @@ class CameraGalleryCard extends LitElement {
     }
 
     for (const src of srcs) {
-      const fsPath = this._toFsPath(src);
+      const fsPath = toFsPath(src);
       if (!fsPath || !fsPath.startsWith(prefix)) continue;
 
       try {
@@ -4208,6 +3593,8 @@ class CameraGalleryCard extends LitElement {
     this.config = nextConfig;
     this._customIcons = customIcons;
     this._favorites.load(this.config);
+    this._sensorClient.load(this.config);
+    this._mediaClient.load(this.config);
     this._startMediaPoll();
 
     const { changedKeys, isSourceChange: sourceChange, isUiOnly: uiOnlyChange } =
@@ -4305,22 +3692,13 @@ class CameraGalleryCard extends LitElement {
       this._viewMode = "media";
     }
 
+    // Roots/frigate_url cache invalidation lives inside MediaSourceClient.load()
+    // now (audit B10). Card still has a per-instance object-detection cache
+    // that's source-aware but not owned by the data layer.
     if (this.config.source_mode === "media" || this.config.source_mode === "combined") {
-      const prevKey = prevConfig
-        ? this._msKeyFromRoots(prevConfig.media_sources)
-        : "";
-      const nextKey = this._msKeyFromRoots(this.config.media_sources);
-
+      const prevKey = prevConfig ? msKeyFromRoots(prevConfig.media_sources) : "";
+      const nextKey = msKeyFromRoots(this.config.media_sources);
       if (!prevConfig || (sourceChange && prevKey !== nextKey)) {
-        this._ms.key = "";
-        this._msSetList([]);
-        this._ms.loadedAt = 0;
-        this._ms.loading = false;
-        this._ms.roots = [];
-        this._ms.urlCache = new Map();
-        this._msResolveFailed = new Set();
-        this._frigateSnapshots = [];
-        this._snapshotCache = new Map();
         this._objectCache.clear();
       }
     }
@@ -4339,7 +3717,7 @@ class CameraGalleryCard extends LitElement {
       this._pendingScrollToI = null;
       this._resetThumbScrollToStart();
       this._revealedThumbs.clear();
-      this._msResolveFailed = new Set();
+      this._mediaClient.clearResolveFailed();
       if (this._thumbObserver) {
         this._thumbObserver.disconnect();
         this._thumbObserver = null;
@@ -4457,7 +3835,7 @@ class CameraGalleryCard extends LitElement {
               }
               // Viewport-aware poster prioritization: enqueue only when visible
               if (isSensor && key && isVideo(key)) {
-                const pairedJpg = this._sensorPairedThumbs?.get(key);
+                const pairedJpg = this._sensorClient.getSensorPairedThumbs().get(key);
                 this._enqueuePoster(pairedJpg || key);
               }
             }
@@ -4487,7 +3865,7 @@ class CameraGalleryCard extends LitElement {
     const visibleObjectFilters = this._getVisibleObjectFilters();
 
     if (!rawItems.length) {
-      if (usingMediaSource && this._ms?.loading) {
+      if (usingMediaSource && this._mediaClient.isLoading()) {
         return html`<div class="empty">Loading media…</div>`;
       }
       return html`<div class="empty">No media found.</div>`;
@@ -4553,15 +3931,15 @@ class CameraGalleryCard extends LitElement {
         : [];
 
     let selectedUrl = selected;
-    if (this._isMediaSourceId(selected)) {
-      selectedUrl = this._ms.urlCache.get(selected) || "";
+    if (isMediaSourceId(selected)) {
+      selectedUrl = this._mediaClient.getUrlCache().get(selected) || "";
     }
 
     let selectedMime = "";
     let selectedCls = "";
     let selectedTitle = "";
-    if (usingMediaSource && this._isMediaSourceId(selected)) {
-      const meta = this._msMetaById(selected);
+    if (usingMediaSource && isMediaSourceId(selected)) {
+      const meta = this._mediaClient.getMetaById(selected);
       selectedMime = meta.mime;
       selectedCls = meta.cls;
       selectedTitle = meta.title;
@@ -4579,7 +3957,7 @@ class CameraGalleryCard extends LitElement {
     const canNext = dayIdx > 0;
     const isToday = currentForNav === newestDay;
 
-    const sp = this._serviceParts();
+    const sp = parseServiceParts(this.config?.delete_service);
 
     const canDelete =
       (this.config?.source_mode === "sensor" || this.config?.source_mode === "combined") &&
@@ -4601,7 +3979,7 @@ class CameraGalleryCard extends LitElement {
     const previewAtBottom = this.config?.preview_position === "bottom";
 
     const selectedNeedsResolve =
-      !!selected && usingMediaSource && this._isMediaSourceId(selected);
+      !!selected && usingMediaSource && isMediaSourceId(selected);
     const selectedHasUrl = !!selected && (!selectedNeedsResolve || !!selectedUrl);
 
     const showLiveToggle = this._hasLiveConfig();
@@ -4916,17 +4294,17 @@ class CameraGalleryCard extends LitElement {
                   ${thumbs.map((it) => {
                     const isOn = it.i === idx && !isLive;
                     const isSel = this._selectedSet?.has(it.src);
-                    const isMs = usingMediaSource && this._isMediaSourceId(it.src);
+                    const isMs = usingMediaSource && isMediaSourceId(it.src);
 
                     let thumbUrl = it.src;
-                    if (isMs) thumbUrl = this._ms.urlCache.get(it.src) || "";
+                    if (isMs) thumbUrl = this._mediaClient.getUrlCache().get(it.src) || "";
 
                     let tMime = "";
                     let tCls = "";
                     let tTitle = "";
                     let tThumb = "";
                     if (isMs) {
-                      const meta = this._msMetaById(it.src);
+                      const meta = this._mediaClient.getMetaById(it.src);
                       tMime = meta.mime;
                       tCls = meta.cls;
                       tTitle = meta.title;
