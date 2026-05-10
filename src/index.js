@@ -692,8 +692,14 @@ class CameraGalleryCard extends LitElement {
     this._posterQueued.add(key);
     this._posterQueue.push(key);
 
+    // Cap by dropping the OLDEST entries (front of array). The naïve
+    // `length = …` truncate dropped from the END — i.e. the just-pushed
+    // item — and leaked `_posterQueued` state, so subsequent calls
+    // early-returned and the thumb was never generated.
     if (this._posterQueue.length > SENSOR_POSTER_QUEUE_LIMIT) {
-      this._posterQueue.length = SENSOR_POSTER_QUEUE_LIMIT;
+      const overflow = this._posterQueue.length - SENSOR_POSTER_QUEUE_LIMIT;
+      const dropped = this._posterQueue.splice(0, overflow);
+      for (const k of dropped) this._posterQueued.delete(k);
     }
 
     this._drainPosterQueue();
@@ -2855,7 +2861,10 @@ class CameraGalleryCard extends LitElement {
         }
       };
 
-      timeout = setTimeout(() => fail(new Error("poster timeout")), 3000);
+      // 10s — large MP4s with the moov atom at the end (common for hardware
+      // encoders) need extra time to expose metadata, even with
+      // `preload=metadata`. 3s was too tight on slow-disk HA hosts.
+      timeout = setTimeout(() => fail(new Error("poster timeout")), 10000);
       v.addEventListener(
         "error",
         () => {
@@ -2956,6 +2965,15 @@ class CameraGalleryCard extends LitElement {
   async _ensurePoster(src) {
     if (!src || this._posterCache.has(src) || this._posterPending.has(src)) return;
     if (this._posterFailed.has(src)) return;
+
+    // Fast-path for Frigate-served thumbnail URLs: HA's frontend cookie auth
+    // already covers `/api/frigate/...`, so an <img src> element can fetch it
+    // straight without the Bearer-fetch + base64 dance below.
+    if (/^\/api\/frigate\//.test(src)) {
+      this._posterCache.set(src, src);
+      this.requestUpdate();
+      return;
+    }
 
     const cached = this._lsThumbGet(src);
     if (cached) {
