@@ -254,6 +254,20 @@ class CameraGalleryCard extends LitElement {
       this.requestUpdate();
     };
 
+    // Pause the 30s media poll when the tab is hidden (background browser tab,
+    // phone screen off, etc.) — saves both bandwidth and battery. On return
+    // we force one immediate refresh so the gallery is current.
+    this._onVisibilityChange = () => {
+      if (document.hidden) {
+        this._stopMediaPoll();
+      } else {
+        // Force-fresh on return from hidden — the cached state could be
+        // ENSURE_LOADED_FRESHNESS_MS (30s) stale or worse.
+        this._mediaClient?.invalidate?.();
+        this._startMediaPoll();
+      }
+    };
+
     this._onZoomTouchStart = (e) => {
       if (!this._isLiveActive() && !this._previewOpen) return;
       if (this._isGridLayout()) return;
@@ -388,6 +402,7 @@ class CameraGalleryCard extends LitElement {
     super.connectedCallback();
     document.addEventListener("fullscreenchange", this._onFullscreenChange);
     document.addEventListener("webkitfullscreenchange", this._onFullscreenChange);
+    document.addEventListener("visibilitychange", this._onVisibilityChange);
     this.addEventListener('touchstart', this._onZoomTouchStart, { passive: false });
     this.addEventListener('touchmove', this._onZoomTouchMove, { passive: false });
     this.addEventListener('touchend', this._onZoomTouchEnd);
@@ -409,6 +424,7 @@ class CameraGalleryCard extends LitElement {
 
     document.removeEventListener("fullscreenchange", this._onFullscreenChange);
     document.removeEventListener("webkitfullscreenchange", this._onFullscreenChange);
+    document.removeEventListener("visibilitychange", this._onVisibilityChange);
     this.removeEventListener('touchstart', this._onZoomTouchStart);
     this.removeEventListener('touchmove', this._onZoomTouchMove);
     this.removeEventListener('touchend', this._onZoomTouchEnd);
@@ -3825,7 +3841,8 @@ class CameraGalleryCard extends LitElement {
       this._thumbObserver = new IntersectionObserver(
         (entries) => {
           let changed = false;
-          const isSensor = this.config?.source_mode === "sensor" || this.config?.source_mode === "combined";
+          const usingSensor = this.config?.source_mode === "sensor" || this.config?.source_mode === "combined";
+          const usingMedia = this.config?.source_mode === "media" || this.config?.source_mode === "combined";
           for (const entry of entries) {
             if (entry.isIntersecting) {
               const key = entry.target.dataset.lazySrc;
@@ -3834,9 +3851,19 @@ class CameraGalleryCard extends LitElement {
                 changed = true;
               }
               // Viewport-aware poster prioritization: enqueue only when visible
-              if (isSensor && key && isVideo(key)) {
+              if (usingSensor && key && isVideo(key)) {
                 const pairedJpg = this._sensorClient.getSensorPairedThumbs().get(key);
                 this._enqueuePoster(pairedJpg || key);
+              }
+              // Media-source items: also lazy. Use the meta thumb URL when
+              // the resolved URL hasn't arrived yet — observer fires once
+              // per tile, so no risk of double-enqueue.
+              if (usingMedia && key && isMediaSourceId(key)) {
+                const meta = this._mediaClient.getMetaById(key);
+                const fallback = meta?.thumb || "";
+                if (fallback && !this._posterCache.has(fallback)) {
+                  this._enqueuePoster(fallback);
+                }
               }
             }
           }
@@ -4321,20 +4348,19 @@ class CameraGalleryCard extends LitElement {
                       ? this._resolveVideoPoster(it, isMs, thumbUrl, tThumb, selectedUrl)
                       : thumbUrl;
                     // For unresolved MS images, use the browse_media thumbnail as fallback
-                    // so the thumbnail appears immediately while the full URL is still resolving
+                    // so the thumbnail appears once the IntersectionObserver fires for it.
+                    // The observer drives the actual enqueue — render no longer kicks it.
                     if (!isVid && !poster && isMs && tThumb) {
                       poster = this._posterCache.get(tThumb) || "";
-                      if (!poster) this._enqueuePoster(tThumb);
                     }
 
                     const needsResolve = isMs;
                     const hasUrl = !needsResolve || !!thumbUrl || !!tThumb || !!poster;
-                    // For media source: show as soon as poster is ready — no observer gate needed
-                    // because we eagerly resolve all visible items. For sensor mode: keep lazy
-                    // reveal via IntersectionObserver to avoid loading off-screen video frames.
-                    const showImg = isMs
-                      ? (hasUrl && !!poster)
-                      : (this._revealedThumbs.has(it.src) && hasUrl && !!poster);
+                    // Lazy reveal for both modes — IntersectionObserver gates poster
+                    // generation to only the visible (or about-to-be-visible) tiles.
+                    // Without this, a 50-item gallery loads 50 video metadata blocks
+                    // up front even though the user only sees ~10.
+                    const showImg = this._revealedThumbs.has(it.src) && hasUrl && !!poster;
 
                     const tTime = Number.isFinite(it.dtMs)
                       ? formatTimeFromMs(it.dtMs, this._hass?.locale)
