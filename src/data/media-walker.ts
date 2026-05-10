@@ -206,17 +206,37 @@ function saveDayToStorage(key: string, items: readonly MsItem[]): void {
  * `setTimeout(0)` on hosts that don't ship it (older Safari).
  */
 type IdleCb = (cb: () => void, opts?: { timeout: number }) => unknown;
+/** Pending deferred writes, keyed by storage key. Last-write-wins inside
+ * the idle window — if the same day is reloaded before the idle callback
+ * fires, the stale snapshot gets dropped. Bounds the write burst when
+ * the user navigates many days quickly. */
+const deferredWrites: Map<string, readonly MsItem[]> = new Map();
+let deferredFlushScheduled = false;
+
+const flushDeferred = (): void => {
+  deferredFlushScheduled = false;
+  for (const [key, snapshot] of deferredWrites) {
+    saveDayToStorage(key, snapshot);
+  }
+  deferredWrites.clear();
+};
+
 const deferLsWrite = (key: string, items: readonly MsItem[]): void => {
-  const snapshot: readonly MsItem[] = items.slice();
-  const fn = (): void => saveDayToStorage(key, snapshot);
+  // Deep-clone the items so a later in-place mutation (e.g. a re-sort
+  // of the same `dayCache.set` array on background refresh) doesn't
+  // poison the snapshot we'll persist.
+  const snapshot: readonly MsItem[] = items.map((it) => ({ ...it }));
+  deferredWrites.set(key, snapshot);
+  if (deferredFlushScheduled) return;
+  deferredFlushScheduled = true;
   const ric: IdleCb | undefined =
     typeof globalThis !== "undefined"
       ? (globalThis as { requestIdleCallback?: IdleCb }).requestIdleCallback
       : undefined;
   if (typeof ric === "function") {
-    ric(fn, { timeout: 1000 });
+    ric(flushDeferred, { timeout: 1000 });
   } else {
-    setTimeout(fn, 0);
+    setTimeout(flushDeferred, 0);
   }
 };
 
@@ -290,7 +310,11 @@ export class MediaSourceClient {
   /** Cached compiled `path_datetime_format`. `parsePathFormat` builds a
    * regex for every segment, so this stays around until the config string
    * actually changes. Cleared in `load()` on path-format change. */
-  private _compiledPathFormat: PathFormat | null = null;
+  /** Cached compiled `path_datetime_format`. `undefined` means "not yet
+   * computed"; `null` means "computed and the format was empty/invalid".
+   * Without this distinction, every hot-path call would re-parse `""`
+   * because `if (this._compiledPathFormat)` is falsy for `null`. */
+  private _compiledPathFormat: PathFormat | null | undefined = undefined;
   /** In-flight `loadDay` promises, keyed by dayKey. Coalesces concurrent
    * `ensureDayLoaded(dayKey)` calls onto one browse round. */
   private readonly _dayInFlight: Map<string, Promise<void>> = new Map();
@@ -326,7 +350,7 @@ export class MediaSourceClient {
       this._prevRootsKey = nextRootsKey;
       this._prevFrigateUrl = nextFrigateUrl;
       this._prevPathFormat = nextPathFormat;
-      this._compiledPathFormat = null;
+      this._compiledPathFormat = undefined;
     }
   }
 
@@ -336,7 +360,7 @@ export class MediaSourceClient {
    * from a parse — multiple regex compilations per navigation event
    * without this cache. */
   private _getCompiledPathFormat(): PathFormat | null {
-    if (this._compiledPathFormat) return this._compiledPathFormat;
+    if (this._compiledPathFormat !== undefined) return this._compiledPathFormat;
     const raw = this._config?.path_datetime_format ?? "";
     this._compiledPathFormat = parsePathFormat(raw);
     return this._compiledPathFormat;
@@ -635,7 +659,7 @@ export class MediaSourceClient {
       return;
     }
 
-    await this._loadCalendarPath(roots, config);
+    await this._loadCalendarPath(roots);
   }
 
   private async _loadFrigateApiPath(
@@ -718,10 +742,7 @@ export class MediaSourceClient {
     return items;
   }
 
-  private async _loadCalendarPath(
-    roots: readonly string[],
-    config: CameraGalleryCardConfig
-  ): Promise<void> {
+  private async _loadCalendarPath(roots: readonly string[]): Promise<void> {
     const now = Date.now();
     const key = keyFromRoots(roots);
     const sameKey = this.state.key === key;
@@ -855,6 +876,11 @@ export class MediaSourceClient {
       const snapshots = await snapshotsPromise;
       if (this._isStale(gen)) return;
       this.frigateSnapshots = snapshots;
+      // The cached-calendar fast path may have fired a `_fireChange` while
+      // `frigateSnapshots` was still `[]`, prompting a render that wrote
+      // empty pairings into `snapshotCache`. Reset it now that the real
+      // snapshot list has arrived so the next pairing lookup re-resolves.
+      this.snapshotCache.clear();
 
       this.state.loadedAt = Date.now();
     } catch (e) {
@@ -1104,7 +1130,13 @@ export class MediaSourceClient {
 
   private async _browse(rootId: string): Promise<MediaSourceItem | null> {
     const cached = this.browseTtlCache.get(rootId);
-    if (cached && Date.now() - cached.ts < BROWSE_CACHE_TTL_MS) return cached.data;
+    if (cached && Date.now() - cached.ts < BROWSE_CACHE_TTL_MS) {
+      // LRU bump: relocate to end so eviction (below) targets the
+      // genuinely-coldest entry.
+      this.browseTtlCache.delete(rootId);
+      this.browseTtlCache.set(rootId, cached);
+      return cached.data;
+    }
     const data = (await this._wsWithTimeout(
       {
         type: "media_source/browse_media",
@@ -1112,6 +1144,16 @@ export class MediaSourceClient {
       },
       DEFAULT_BROWSE_TIMEOUT_MS
     )) as MediaSourceItem;
+    // Cap session memory: each entry holds a full `MediaSourceItem`
+    // tree (folder children). For long-lived dashboards walking many
+    // roots, the unbounded map drifts up over hours. 256 entries is
+    // generous for any plausible use; eviction follows insertion order
+    // (oldest first) since `_browse` always uses delete-then-set above.
+    const BROWSE_CACHE_MAX = 256;
+    if (this.browseTtlCache.size >= BROWSE_CACHE_MAX) {
+      const firstKey = this.browseTtlCache.keys().next().value;
+      if (firstKey !== undefined) this.browseTtlCache.delete(firstKey);
+    }
     this.browseTtlCache.set(rootId, { ts: Date.now(), data });
     return data;
   }

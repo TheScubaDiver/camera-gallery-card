@@ -70,7 +70,17 @@ export const BAR_OPACITY_MIN = 0;
 export const BAR_OPACITY_MAX = 100;
 
 // -------- Sensor poster generation --------
-export const SENSOR_POSTER_CONCURRENCY = 8;
+//
+// Frame capture is CPU-bound (canvas decode + `toBlob`). On a 16-core
+// host we want more parallelism than on a 4-core SBC. `hardwareConcurrency`
+// is the closest proxy to "how many decodes can plausibly run in parallel
+// without trashing the main thread"; clamp into a reasonable [4, 16]
+// range so headless / outlier values don't blow up.
+const HC: number =
+  typeof navigator !== "undefined" && Number.isFinite(navigator.hardwareConcurrency as number)
+    ? (navigator.hardwareConcurrency as number)
+    : 4;
+export const SENSOR_POSTER_CONCURRENCY = Math.min(16, Math.max(4, HC));
 export const SENSOR_POSTER_QUEUE_LIMIT = 100;
 
 // -------- Long-press gestures --------

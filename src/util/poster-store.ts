@@ -18,6 +18,20 @@
  * exotic frame contexts) every method silently no-ops — the in-memory
  * cache still works for the lifetime of the page, just not across
  * reloads. That's an acceptable degradation for a thumbnail cache.
+ *
+ * Resilience:
+ *   - `onblocked` (another tab holding an older DB version open) is no
+ *     longer fatal. We log and let IDB keep trying — the open will
+ *     succeed once the blocking tab closes. The in-memory mirror keeps
+ *     working in the meantime.
+ *   - Failed `set/touch/delete` reset `_initPromise` so the next call
+ *     re-attempts the open. Covers connections that close mid-session
+ *     (bfcache restore, version-change abort).
+ *
+ * Write coalescing: bursts of poster captures are batched into a single
+ * `readwrite` transaction (`set()` queues the record and triggers a
+ * microtask flush). Versus one transaction per `set`, this halves the
+ * IDB transaction overhead during cold-load fan-out.
  */
 
 const DB_NAME = "cgc-cache";
@@ -64,17 +78,38 @@ function openDb(): Promise<IDBDatabase> {
     };
     req.onsuccess = (): void => resolve(req.result);
     req.onerror = (): void => reject(req.error ?? new Error("IDB open failed"));
-    req.onblocked = (): void => reject(new Error("IDB open blocked"));
+    // Don't reject on `blocked` — another tab holds an older version
+    // open. Once it closes, IDB fires `onsuccess`. Logging keeps the
+    // case visible without disabling the store.
+    req.onblocked = (): void => {
+      try {
+        console.info("posterStore: IDB upgrade blocked by another tab; will retry once it closes.");
+      } catch {
+        /* noop */
+      }
+    };
   });
+}
+
+interface PendingWrite {
+  key: string;
+  blob: Blob;
+  ts: number;
 }
 
 export class PosterStore {
   private _db: IDBDatabase | null = null;
   private _initPromise: Promise<void> | null = null;
   private _available = true;
+  /** Pending `set` records, flushed in one transaction on the next
+   * microtask. Keyed by `key` so duplicate sets within a tick collapse
+   * into one write (last-wins). */
+  private _writeQueue: Map<string, PendingWrite> = new Map();
+  private _writeFlushScheduled = false;
 
   /** Open the DB (idempotent). Always resolves; if IDB is unavailable
-   * `_available` flips to false and every subsequent call is a no-op. */
+   * `_available` flips to false. Connections that close mid-session
+   * cause subsequent calls to clear `_initPromise` and retry. */
   init(): Promise<void> {
     if (this._initPromise) return this._initPromise;
     this._initPromise = (async (): Promise<void> => {
@@ -83,7 +118,24 @@ export class PosterStore {
         return;
       }
       try {
-        this._db = await openDb();
+        const db = await openDb();
+        // If the version changes from another tab, our connection is
+        // about to close — drop the cached promise so the next call
+        // re-opens cleanly.
+        db.onversionchange = (): void => {
+          try {
+            db.close();
+          } catch {
+            /* noop */
+          }
+          this._db = null;
+          this._initPromise = null;
+        };
+        db.onclose = (): void => {
+          this._db = null;
+          this._initPromise = null;
+        };
+        this._db = db;
       } catch {
         this._available = false;
         this._db = null;
@@ -99,6 +151,15 @@ export class PosterStore {
     return this._available && this._db !== null;
   }
 
+  /** Reset the init state so the next op tries to re-open. Used by the
+   * recovery path after a transaction throws `InvalidStateError` (the
+   * connection went stale, e.g. after a bfcache restore). */
+  private _resetInit(): void {
+    this._db = null;
+    this._initPromise = null;
+    this._available = true; // give it another chance
+  }
+
   /** Read every record. Used to prewarm the in-memory mirror at startup. */
   async readAll(): Promise<PosterRecord[]> {
     await this.init();
@@ -109,21 +170,52 @@ export class PosterStore {
       const all = await awaitRequest(store.getAll() as IDBRequest<PosterRecord[]>);
       return Array.isArray(all) ? all : [];
     } catch {
+      this._resetInit();
       return [];
     }
   }
 
-  /** Write a single record. Fire-and-forget; errors swallowed so the
-   * caller's render path never blocks on IDB. */
+  /** Write a single record. Coalesces with concurrent `set` calls on
+   * the next microtask into one `readwrite` transaction. Fire-and-forget
+   * — the returned promise resolves once the batched flush completes
+   * (or fails silently). */
   async set(key: string, blob: Blob): Promise<void> {
     await this.init();
     if (!this.isAvailable() || !this._db) return;
+    this._writeQueue.set(key, { key, blob, ts: Date.now() });
+    this._scheduleFlush();
+  }
+
+  private _scheduleFlush(): void {
+    if (this._writeFlushScheduled) return;
+    this._writeFlushScheduled = true;
+    queueMicrotask(() => {
+      this._writeFlushScheduled = false;
+      void this._flushWrites();
+    });
+  }
+
+  private async _flushWrites(): Promise<void> {
+    if (this._writeQueue.size === 0) return;
+    if (!this.isAvailable() || !this._db) {
+      this._writeQueue.clear();
+      return;
+    }
+    const pending = Array.from(this._writeQueue.values());
+    this._writeQueue.clear();
     try {
       const tx = this._db.transaction(STORE_NAME, "readwrite");
       const store = tx.objectStore(STORE_NAME);
-      await awaitRequest(store.put({ key, blob, ts: Date.now() }));
+      for (const rec of pending) {
+        store.put(rec);
+      }
+      await new Promise<void>((resolve, reject) => {
+        tx.oncomplete = (): void => resolve();
+        tx.onerror = (): void => reject(tx.error ?? new Error("tx failed"));
+        tx.onabort = (): void => reject(tx.error ?? new Error("tx aborted"));
+      });
     } catch {
-      /* silent */
+      this._resetInit();
     }
   }
 
@@ -143,19 +235,22 @@ export class PosterStore {
       existing.ts = Date.now();
       await awaitRequest(store.put(existing));
     } catch {
-      /* silent */
+      this._resetInit();
     }
   }
 
   async delete(key: string): Promise<void> {
     await this.init();
     if (!this.isAvailable() || !this._db) return;
+    // If a flush is in flight or pending for this key, drop it first
+    // so we don't write-then-delete racily.
+    this._writeQueue.delete(key);
     try {
       const tx = this._db.transaction(STORE_NAME, "readwrite");
       const store = tx.objectStore(STORE_NAME);
       await awaitRequest(store.delete(key));
     } catch {
-      /* silent */
+      this._resetInit();
     }
   }
 
@@ -186,7 +281,7 @@ export class PosterStore {
         cursorReq.onerror = (): void => reject(cursorReq.error ?? new Error("cursor failed"));
       });
     } catch {
-      /* silent */
+      this._resetInit();
     }
   }
 }

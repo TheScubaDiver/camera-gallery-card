@@ -198,6 +198,21 @@ export async function collectMediaSamples(
   return samples;
 }
 
+/** Lazy-populated parse cache for the candidate list. `parsePathFormat`
+ * compiles a fresh regex per segment, and `scoreSamples` is called once
+ * per detect run (potentially many times per session via the editor's
+ * scoreboard). Without this cache, every run pays 32 regex compilations.
+ * Map-of-string-to-PathFormat-or-null so we can also memoize parse
+ * failures alongside successes. */
+const PARSED_CANDIDATES: Map<string, PathFormat | null> = new Map();
+function parsedCandidate(cand: string): PathFormat | null {
+  const cached = PARSED_CANDIDATES.get(cand);
+  if (cached !== undefined) return cached;
+  const fmt = parsePathFormat(cand);
+  PARSED_CANDIDATES.set(cand, fmt);
+  return fmt;
+}
+
 /**
  * Score `samples` against the curated candidate formats and pick the best.
  * Pure — caller controls how samples were collected (media-source browse,
@@ -213,7 +228,7 @@ export function scoreSamples(samples: readonly string[]): DetectResult {
   // see which patterns *almost* worked.
   const allScored: Array<{ format: string; matches: number }> = [];
   for (const cand of CANDIDATES) {
-    const fmt = parsePathFormat(cand);
+    const fmt = parsedCandidate(cand);
     if (!fmt) {
       allScored.push({ format: cand, matches: 0 });
       continue;

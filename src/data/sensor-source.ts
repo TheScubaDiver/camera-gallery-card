@@ -231,10 +231,17 @@ export class SensorSourceClient {
     const { items: paired, pairedThumbs } = pairSensorItems(enriched);
     this._sensorPairedThumbs = pairedThumbs;
     this._lastAttrRefs = nextRefs;
+    // Skip the onChange call when the rebuild produced an item list
+    // identical to the previous one (entity removed but the remaining
+    // sensors covered the same files; entity reordered without content
+    // change). Saves a card-side `requestUpdate()` cycle on the path
+    // where the entity-set changes but the rendered items don't.
+    const prev = this._lastItems;
+    const sameAsPrev =
+      prev.length === paired.length &&
+      paired.every((it, i) => it.src === prev[i]?.src && it.dtMs === prev[i]?.dtMs);
     this._lastItems = paired;
-    // Fire onChange only when items actually rebuilt — prevents the render
-    // storm that would otherwise queue requestUpdate() during updated().
-    if (this._onChange) this._onChange();
+    if (!sameAsPrev && this._onChange) this._onChange();
     return paired;
   }
 
