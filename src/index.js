@@ -260,11 +260,19 @@ class CameraGalleryCard extends LitElement {
     this._onVisibilityChange = () => {
       if (document.hidden) {
         this._stopMediaPoll();
+        this._perfCounters.visibilityHidden++;
+        if (this.config?.debug_enabled === true) {
+          console.info("[cgc] visibility: hidden, poll paused");
+        }
       } else {
         // Force-fresh on return from hidden — the cached state could be
         // ENSURE_LOADED_FRESHNESS_MS (30s) stale or worse.
         this._mediaClient?.invalidate?.();
         this._startMediaPoll();
+        this._perfCounters.visibilityVisible++;
+        if (this.config?.debug_enabled === true) {
+          console.info("[cgc] visibility: visible, poll resumed");
+        }
       }
     };
 
@@ -379,6 +387,21 @@ class CameraGalleryCard extends LitElement {
     this._thumbObserver = null;
     this._thumbObserverRoot = null;
     this._observedThumbs = new WeakSet();
+
+    // Perf counters surfaced in the Diagnostics modal when debug_enabled.
+    // Lets users (and reviewers) verify the lazy-load + visibility pause
+    // are doing what they should: high observer share = lazy is working;
+    // visibility hidden/visible bumps = poll-pause is firing.
+    this._perfCounters = {
+      thumbsRevealed: 0,
+      postersEnqueued: 0,
+      postersEnqueuedFromObserver: 0,
+      pollsStarted: 0,
+      pollsStopped: 0,
+      visibilityHidden: 0,
+      visibilityVisible: 0,
+      sessionStartedAt: Date.now(),
+    };
   }
 
   _startMediaPoll() {
@@ -389,12 +412,14 @@ class CameraGalleryCard extends LitElement {
       this._mediaClient.invalidate();
       this._mediaClient.ensureLoaded();
     }, 30_000);
+    if (this._perfCounters) this._perfCounters.pollsStarted++;
   }
 
   _stopMediaPoll() {
     if (this._mediaPollInterval) {
       clearInterval(this._mediaPollInterval);
       this._mediaPollInterval = null;
+      if (this._perfCounters) this._perfCounters.pollsStopped++;
     }
   }
 
@@ -696,7 +721,7 @@ class CameraGalleryCard extends LitElement {
     this._ensurePreviewVideoHostPlayback(selectedUrl);
   }
 
-  _enqueuePoster(src) {
+  _enqueuePoster(src, source = "?") {
     const key = String(src || "").trim();
     if (!key) return;
     if (this._posterCache.has(key)) return;
@@ -707,6 +732,11 @@ class CameraGalleryCard extends LitElement {
 
     this._posterQueued.add(key);
     this._posterQueue.push(key);
+    this._perfCounters.postersEnqueued++;
+    if (source === "observer") this._perfCounters.postersEnqueuedFromObserver++;
+    if (this.config?.debug_enabled === true) {
+      console.info(`[cgc] poster enqueue (${source}):`, key.length > 80 ? key.slice(0, 77) + "…" : key);
+    }
 
     if (this._posterQueue.length > SENSOR_POSTER_QUEUE_LIMIT) {
       this._posterQueue.length = SENSOR_POSTER_QUEUE_LIMIT;
@@ -756,7 +786,7 @@ class CameraGalleryCard extends LitElement {
       const src = String(it?.src || "");
       if (!src) continue;
       if (!isVideo(src)) continue;
-      this._enqueuePoster(src);
+      this._enqueuePoster(src, "queue-sensor-work");
     }
   }
 
@@ -814,7 +844,7 @@ class CameraGalleryCard extends LitElement {
         // Enqueue poster pas na laden: voorkomt dat de capture de preview-verbinding blokkeert
         const urlForPoster = selectedUrl;
         video.addEventListener("canplay", () => {
-          if (!this._posterCache.has(urlForPoster)) this._enqueuePoster(urlForPoster);
+          if (!this._posterCache.has(urlForPoster)) this._enqueuePoster(urlForPoster, "preview-canplay");
         }, { once: true });
       }
 
@@ -1255,6 +1285,24 @@ class CameraGalleryCard extends LitElement {
         ["Live card mounted", this._liveCard ? "yes" : "no", this._liveCard ? "ok" : (cfg.live_enabled ? "warn" : null)],
         ["Live layout override", this._liveLayoutOverride || "—"],
       ]],
+      ["Perf counters (this session)", "mdi:gauge", (() => {
+        const pc = this._perfCounters || {};
+        const sessionMs = Date.now() - (pc.sessionStartedAt || Date.now());
+        const sessionMin = Math.max(1, Math.round(sessionMs / 60000));
+        const observerShare =
+          pc.postersEnqueued > 0
+            ? `${Math.round((pc.postersEnqueuedFromObserver / pc.postersEnqueued) * 100)}%`
+            : "—";
+        return [
+          ["Session length", `${sessionMin} min`],
+          ["Tiles revealed (visible)", String(pc.thumbsRevealed || 0)],
+          ["Posters enqueued (total)", String(pc.postersEnqueued || 0)],
+          ["Posters enqueued from observer", `${pc.postersEnqueuedFromObserver || 0} (${observerShare})`],
+          ["Polls started / stopped", `${pc.pollsStarted || 0} / ${pc.pollsStopped || 0}`],
+          ["Visibility hidden / visible", `${pc.visibilityHidden || 0} / ${pc.visibilityVisible || 0}`],
+          ["Poll currently active", this._mediaPollInterval ? "yes" : "no", this._mediaPollInterval ? "ok" : null],
+        ];
+      })()],
       ["Live cameras", "mdi:cctv", (() => {
         const cams = Array.isArray(cfg.live_camera_entities) ? cfg.live_camera_entities : [];
         if (!cams.length) return [["(no cameras configured)", "—"]];
@@ -2812,7 +2860,7 @@ class CameraGalleryCard extends LitElement {
       if (jpgUrl) {
         const cached = this._posterCache.get(jpgUrl);
         if (cached) return cached;
-        this._enqueuePoster(jpgUrl);
+        this._enqueuePoster(jpgUrl, "resolve-paired-jpg");
         return "";
       }
       this._mediaClient.queueResolve([pairedJpgId]);
@@ -2834,7 +2882,7 @@ class CameraGalleryCard extends LitElement {
       const cached = this._posterCache.get(url);
       if (cached) return cached;
       const skipForPreview = previewOwnsSelectedPoster && url === selectedUrl;
-      if (!skipForPreview) this._enqueuePoster(url);
+      if (!skipForPreview) this._enqueuePoster(url, "resolve-video-poster");
       return "";
     }
     return "";
@@ -3848,12 +3896,16 @@ class CameraGalleryCard extends LitElement {
               const key = entry.target.dataset.lazySrc;
               if (key && !this._revealedThumbs.has(key)) {
                 this._revealedThumbs.add(key);
+                this._perfCounters.thumbsRevealed++;
+                if (this.config?.debug_enabled === true) {
+                  console.info("[cgc] tile reveal:", key.length > 80 ? key.slice(0, 77) + "…" : key);
+                }
                 changed = true;
               }
               // Viewport-aware poster prioritization: enqueue only when visible
               if (usingSensor && key && isVideo(key)) {
                 const pairedJpg = this._sensorClient.getSensorPairedThumbs().get(key);
-                this._enqueuePoster(pairedJpg || key);
+                this._enqueuePoster(pairedJpg || key, "observer");
               }
               // Media-source items: also lazy. Use the meta thumb URL when
               // the resolved URL hasn't arrived yet — observer fires once
@@ -3862,7 +3914,7 @@ class CameraGalleryCard extends LitElement {
                 const meta = this._mediaClient.getMetaById(key);
                 const fallback = meta?.thumb || "";
                 if (fallback && !this._posterCache.has(fallback)) {
-                  this._enqueuePoster(fallback);
+                  this._enqueuePoster(fallback, "observer");
                 }
               }
             }
