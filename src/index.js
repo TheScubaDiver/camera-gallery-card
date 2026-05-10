@@ -412,6 +412,13 @@ class CameraGalleryCard extends LitElement {
     // lifecycle is owned here: revoke on overwrite / delete / clear.
     //   Map<lsKey, { blob: Blob; url: string | null }>
     this._posterMirror = null;
+    // Promise that resolves once the IDB prewarm has populated
+    // `_posterMirror`. `_ensurePoster` awaits this before deciding
+    // whether to fetch — without it, the render→enqueue→fetch race
+    // beats `posterStore.readAll()` on cold loads (cmd-r) and we
+    // re-download blobs that are already cached.
+    this._prewarmReadyPromise = null;
+    this._prewarmDone = false;
 
     this._revealedThumbs = new Set();
     this._thumbObserver = null;
@@ -3306,21 +3313,28 @@ class CameraGalleryCard extends LitElement {
   // just nothing crosses page reloads. That's acceptable for thumbnails.
   _prewarmPosterLs() {
     if (!this._posterMirror) this._posterMirror = new Map();
-    posterStore
+    // Single shared promise — `_ensurePoster` and the render branch
+    // both observe it. Resolves regardless of success so awaits never
+    // hang on storage failures.
+    this._prewarmReadyPromise = posterStore
       .readAll()
       .then((records) => {
-        if (!this._posterMirror) return;
-        // In-flight captures during prewarm have already populated their
-        // entries — preserve those (fresh > disk).
-        for (const rec of records) {
-          if (this._posterMirror.has(rec.key)) continue;
-          this._posterMirror.set(rec.key, { blob: rec.blob, url: null });
+        if (this._posterMirror) {
+          // In-flight captures during prewarm have already populated
+          // their entries — preserve those (fresh > disk).
+          for (const rec of records) {
+            if (this._posterMirror.has(rec.key)) continue;
+            this._posterMirror.set(rec.key, { blob: rec.blob, url: null });
+          }
         }
-        // Pull freshly-warmed posters into view without waiting for the
-        // next hass push.
-        this.requestUpdate();
       })
-      .catch(() => {});
+      .catch(() => {})
+      .finally(() => {
+        this._prewarmDone = true;
+        // Pull freshly-warmed posters into view without waiting for
+        // the next hass push.
+        this.requestUpdate();
+      });
     // Trim disk store so it never exceeds the cap. Best-effort.
     posterStore.evictExcess(500).catch(() => {});
   }
@@ -3437,6 +3451,19 @@ class CameraGalleryCard extends LitElement {
     if (!src || this._posterCache.has(src) || this._posterPending.has(src)) return;
     if (this._isPosterHardFailed(src)) return;
     if (this._isPosterCoolingDown(src)) return;
+
+    // Wait for the IDB prewarm to land before checking cache. On cmd-r
+    // the render that triggered this call sees an empty mirror because
+    // `posterStore.readAll()` is async — without the await we'd race
+    // the network and re-download blobs that are already on disk.
+    if (this._prewarmReadyPromise && !this._prewarmDone) {
+      await this._prewarmReadyPromise;
+      // State may have changed during the await (selection moved,
+      // failure recorded by another path, cache populated by prewarm).
+      if (this._posterCache.has(src)) return;
+      if (this._isPosterHardFailed(src)) return;
+      if (this._isPosterCoolingDown(src)) return;
+    }
 
     const cached = this._lsThumbGet(src);
     if (cached) {
@@ -5026,7 +5053,7 @@ class CameraGalleryCard extends LitElement {
                             ? html`<div class="tph broken" aria-hidden="true">
                                 <ha-icon icon="mdi:image-broken-variant"></ha-icon>
                               </div>`
-                            : isVid && !this._hasServerThumbForVideo(it, isMs, tThumb)
+                            : isVid && this._prewarmDone && !this._hasServerThumbForVideo(it, isMs, tThumb)
                               ? html`<div class="tph video-placeholder" aria-hidden="true">
                                   <ha-icon icon="mdi:movie-outline"></ha-icon>
                                 </div>`
