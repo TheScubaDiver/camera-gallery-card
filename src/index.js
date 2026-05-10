@@ -412,6 +412,16 @@ class CameraGalleryCard extends LitElement {
     // lifecycle is owned here: revoke on overwrite / delete / clear.
     //   Map<lsKey, { blob: Blob; url: string | null }>
     this._posterMirror = null;
+    // For media-source items, HA's `media_source/resolve_media` returns
+    // a *signed* URL that varies every session (expires:60*60). Hashing
+    // that URL as our IDB key meant yesterday's captured frame was
+    // unreachable today — the key changed even though the underlying
+    // file didn't. This Map records "when you enqueue/fetch THIS url,
+    // persist the blob under THAT stable key (mediaId)". Lookups in
+    // `_lsThumbGet`/`_lsThumbSet`/`_ensurePoster` go through it; falls
+    // back to the URL itself when no stable key is provided (sensor
+    // mode and other paths where the URL IS the stable identifier).
+    this._posterStableKeys = new Map();
     // Promise that resolves once the IDB prewarm has populated
     // `_posterMirror`. `_ensurePoster` awaits this before deciding
     // whether to fetch — without it, the render→enqueue→fetch race
@@ -788,9 +798,15 @@ class CameraGalleryCard extends LitElement {
     }, delay);
   }
 
-  _enqueuePoster(src) {
+  _enqueuePoster(src, stableKey) {
     const key = String(src || "").trim();
     if (!key) return;
+    // Record the persistent-cache identifier if it differs from the
+    // fetch URL (media-source items: stable mediaId vs ephemeral
+    // signed URL). `_ensurePoster` reads this on dequeue.
+    if (stableKey && stableKey !== key) {
+      this._posterStableKeys.set(key, stableKey);
+    }
     if (this._posterCache.has(key)) return;
     if (this._posterPending.has(key)) return;
     if (this._posterQueued.has(key)) return;
@@ -845,6 +861,7 @@ class CameraGalleryCard extends LitElement {
     this._posterInFlight.clear();
     this._posterPending.clear();
     this._posterAttempts.clear();
+    this._posterStableKeys.clear();
     if (this._softRetryTimer) {
       clearTimeout(this._softRetryTimer);
       this._softRetryTimer = null;
@@ -953,7 +970,10 @@ class CameraGalleryCard extends LitElement {
           // can recover on a retry once the connection improves.
           const isHard = code === 3 || code === 4;
           this._recordPosterFailure(urlForPoster, { hard: isHard });
-          if (isHard) this._lsThumbDelete(urlForPoster);
+          if (isHard) {
+            const stableKey = this._posterStableKeys.get(urlForPoster) || urlForPoster;
+            this._lsThumbDelete(stableKey, urlForPoster);
+          }
           this.requestUpdate();
         }, { once: true, signal: sig });
       }
@@ -3137,8 +3157,17 @@ class CameraGalleryCard extends LitElement {
     if (pairedJpgId && !this._mediaClient.isResolveFailed(pairedJpgId)) {
       const jpgUrl = this._mediaClient.getUrlCache().get(pairedJpgId) || "";
       if (jpgUrl) {
+        // Persistent-cache key: the paired jpg's mediaId is stable;
+        // jpgUrl is a signed-and-expiring URL that would invalidate
+        // the cached blob on every session.
+        this._posterStableKeys.set(jpgUrl, pairedJpgId);
         const cached = this._posterCache.get(jpgUrl);
         if (cached) return cached;
+        const mirrored = this._lsThumbGet(pairedJpgId);
+        if (mirrored) {
+          this._posterCache.set(jpgUrl, mirrored);
+          return mirrored;
+        }
         this._pendingPosterUrls?.add(jpgUrl);
         return "";
       }
@@ -3160,9 +3189,14 @@ class CameraGalleryCard extends LitElement {
     // user hasn't disabled the expensive capture path via the
     // `capture_video_thumbnails` flag.
     if (thumbUrl) {
+      // For media-source video frames the resolved URL is signed and
+      // expires every session — hash by `it.src` (mediaId) so the
+      // captured blob survives cmd-r and the disabled-config case
+      // can still show previously-captured frames.
+      this._posterStableKeys.set(thumbUrl, it.src);
       const cached = this._posterCache.get(thumbUrl);
       if (cached) return cached;
-      const mirrored = this._lsThumbGet(thumbUrl);
+      const mirrored = this._lsThumbGet(it.src);
       if (mirrored) {
         this._posterCache.set(thumbUrl, mirrored);
         return mirrored;
@@ -3406,16 +3440,20 @@ class CameraGalleryCard extends LitElement {
     return this._posterMirrorEnsureUrl(entry);
   }
 
-  /** Persist a captured Blob and return a usable object URL the caller
-   * can hand to `<img src>` and stash in `_posterCache`. Revokes any
-   * prior URL for the same key so we don't leak browser-side blob
-   * references. Caps the mirror at 500 entries — older entries are
-   * evicted LRU (the Map's first key after delete-then-set on `_lsThumbGet`
-   * is the genuinely-coldest entry), with their URLs revoked and any
-   * back-reference into `_posterCache` cleared. */
-  _lsThumbSet(url, blob) {
+  /** Persist a captured Blob under `stableKey` and return a usable
+   * object URL. `stableKey` is what we hash for IDB lookup (stable
+   * across sessions for media-source items); `displayUrl` is what
+   * the render layer hands to `<img src>` — stored in the mirror
+   * entry so eviction can clear the right `_posterCache` slot.
+   * When the two are the same (sensor mode), pass `undefined` for
+   * `displayUrl` and stableKey will be used for both.
+   * Revokes any prior URL for the same key so we don't leak
+   * browser-side blob references. Caps the mirror at 500 entries
+   * (LRU eviction). */
+  _lsThumbSet(stableKey, blob, displayUrl) {
     if (!blob) return null;
-    const key = this._lsKey(url);
+    const back = displayUrl ?? stableKey;
+    const key = this._lsKey(stableKey);
     if (!this._posterMirror) this._posterMirror = new Map();
     const prev = this._posterMirror.get(key);
     if (prev?.url) {
@@ -3435,27 +3473,31 @@ class CameraGalleryCard extends LitElement {
       if (oldest?.src) this._posterCache.delete(oldest.src);
       this._posterMirror.delete(firstKey);
     }
-    const entry = { src: url, blob, url: null };
+    const entry = { src: back, blob, url: null };
     this._posterMirror.set(key, entry);
     posterStore.set(key, blob).catch(() => {});
     return this._posterMirrorEnsureUrl(entry);
   }
 
-  // Drops a cached thumbnail for a URL. Used when the underlying file is
-  // confirmed missing (HTTP 404 / MediaError NETWORK) so a deleted file's
-  // stale cached thumb stops being shown on next render.
+  // Drops a cached thumbnail. Used when the underlying file is
+  // confirmed missing (HTTP 404 / MediaError NETWORK) so a deleted
+  // file's stale cached thumb stops being shown on next render.
   //
-  // Also clears `_posterCache` for this src — `_ensurePoster` early-returns
-  // on a cache hit, so leaving the (now-revoked) URL there would block the
-  // next capture attempt and render a broken `<img src="blob:revoked">`.
-  _lsThumbDelete(url) {
-    const key = this._lsKey(url);
+  // `stableKey` matches what was used in `_lsThumbSet` (mediaId for
+  // media-source items, file path for sensor). `displayUrl` is the
+  // URL currently stored in `_posterCache` and gets cleared too —
+  // `_ensurePoster` early-returns on a cache hit, so leaving the
+  // (now-revoked) URL there would block the next capture attempt and
+  // render a broken `<img src="blob:revoked">`.
+  _lsThumbDelete(stableKey, displayUrl) {
+    const back = displayUrl ?? stableKey;
+    const key = this._lsKey(stableKey);
     const prev = this._posterMirror?.get(key);
     if (prev?.url) {
       try { URL.revokeObjectURL(prev.url); } catch (_) {}
     }
     this._posterMirror?.delete(key);
-    this._posterCache.delete(url);
+    this._posterCache.delete(back);
     posterStore.delete(key).catch(() => {});
   }
 
@@ -3492,6 +3534,12 @@ class CameraGalleryCard extends LitElement {
     if (this._isPosterHardFailed(src)) return;
     if (this._isPosterCoolingDown(src)) return;
 
+    // Persistent-cache identifier (defaults to the fetch URL for
+    // paths where the URL is itself stable — sensor mode). For
+    // media-source items this is the mediaId, so a cached frame
+    // survives across sessions even though the signed URL changes.
+    const stableKey = this._posterStableKeys.get(src) || src;
+
     // Wait for the IDB prewarm to land before checking cache. On cmd-r
     // the render that triggered this call sees an empty mirror because
     // `posterStore.readAll()` is async — without the await we'd race
@@ -3505,7 +3553,7 @@ class CameraGalleryCard extends LitElement {
       if (this._isPosterCoolingDown(src)) return;
     }
 
-    const cached = this._lsThumbGet(src);
+    const cached = this._lsThumbGet(stableKey);
     if (cached) {
       this._posterCache.set(src, cached);
       // Successful read clears any prior soft-fail state so a previously
@@ -3526,7 +3574,10 @@ class CameraGalleryCard extends LitElement {
             this.config?.thumbnail_frame_pct ?? DEFAULT_THUMBNAIL_FRAME_PCT
           );
       if (blob) {
-        const objectUrl = this._lsThumbSet(src, blob);
+        // Persist by stableKey (mediaId for MS items, URL for sensor)
+        // but cache the resulting object URL by `src` so render's
+        // `<img src>` lookup hits.
+        const objectUrl = this._lsThumbSet(stableKey, blob, src);
         if (objectUrl) {
           this._posterCache.set(src, objectUrl);
           this._clearPosterFailure(src);
@@ -3566,9 +3617,13 @@ class CameraGalleryCard extends LitElement {
         code === 4 /* MEDIA_ERR_SRC_NOT_SUPPORTED */ ||
         isExtractionFail;
       this._recordPosterFailure(src, { hard: isHard });
-      if (status === 404) this._lsThumbDelete(src);
+      if (status === 404) this._lsThumbDelete(stableKey, src);
     } finally {
       this._posterPending.delete(src);
+      // Mapping is per-fetch; drop it now that this fetch has settled.
+      // Render will re-populate on next cycle if the item still needs
+      // a capture.
+      this._posterStableKeys.delete(src);
       this.requestUpdate();
     }
   }
