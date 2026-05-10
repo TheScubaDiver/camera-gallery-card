@@ -221,6 +221,25 @@ describe("SensorSourceClient.getItems", () => {
     expect(client.getSrcEntityMap().has("/local/a.mp4")).toBe(true);
   });
 
+  it("clears srcEntityMap and sensorPairedThumbs eagerly on load()", () => {
+    // Defensive: a media-mode `_items()` call doesn't go through the sensor
+    // client, so a media→sensor flip would otherwise leave the previous
+    // sensor maps in place until the first sensor.getItems() of the new
+    // config. Eager clear in `load()` keeps reads between load() and
+    // getItems() from observing stale entries.
+    hass.setState("sensor.a", { fileList: ["/local/a.mp4", "/local/a.jpg"] });
+    client.load(baseConfig({ entities: ["sensor.a"] }));
+    client.getItems();
+    expect(client.getSrcEntityMap().size).toBeGreaterThan(0);
+    expect(client.getSensorPairedThumbs().size).toBeGreaterThan(0);
+
+    // Re-load (e.g. source_mode flip in editor): both maps drop to empty
+    // before any new getItems() runs.
+    client.load(baseConfig({ entities: ["sensor.a"] }));
+    expect(client.getSrcEntityMap().size).toBe(0);
+    expect(client.getSensorPairedThumbs().size).toBe(0);
+  });
+
   it("fires onChange after a successful getItems()", () => {
     const onChange = vi.fn();
     const local = new SensorSourceClient({ onChange });
