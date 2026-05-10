@@ -843,11 +843,18 @@ class CameraGalleryCard extends LitElement {
     if (!Array.isArray(items) || !items.length) return;
     if (this.config?.source_mode !== "sensor" && this.config?.source_mode !== "combined") return;
 
+    // Only enqueue cheap server-thumbnail fetches (paired jpgs).
+    // The raw video URL would require pulling the entire file just
+    // to extract a single frame; that capture is deferred until the
+    // user actually selects the item (preview-video `canplay` fires
+    // `_enqueuePoster` then).
+    const pairedThumbs = this._sensorClient.getSensorPairedThumbs();
     for (const it of items) {
       const src = String(it?.src || "");
       if (!src) continue;
       if (!isVideo(src)) continue;
-      this._enqueuePoster(src);
+      const pairedJpg = pairedThumbs.get(src);
+      if (pairedJpg) this._enqueuePoster(pairedJpg);
     }
   }
 
@@ -2975,6 +2982,33 @@ class CameraGalleryCard extends LitElement {
     return false;
   }
 
+  /** True iff the gallery has a server-provided thumbnail for this
+   * item that we can fetch cheaply (small HTTP request) — meaning we
+   * don't need to fall back to expensive `<video>` frame capture.
+   *
+   * "Server-provided" = sensor paired-jpg sibling, Frigate snapshot,
+   * media-source `thumbnail` field, or a paired-jpg under a media
+   * root. When NONE of these exist for a video item, the only way to
+   * generate a poster is to download (potentially MBs of) the video
+   * file just to extract one frame. We defer that to the moment the
+   * user actually clicks the item — preview-video `canplay` then
+   * fires `_enqueuePoster(thumbUrl)` and the capture runs once.
+   *
+   * Render uses this to choose between the loading-skeleton (server
+   * thumb in flight) and the video-placeholder icon (no server thumb,
+   * waiting on click). */
+  _hasServerThumbForVideo(it, isMs, tThumb) {
+    if (!isMs) {
+      return !!this._sensorClient.getSensorPairedThumbs().get(it.src);
+    }
+    if (tThumb) return true;
+    if (hasFrigateConfig(this.config)) {
+      if (this._mediaClient.findMatchingSnapshotMediaId(it.src)) return true;
+    }
+    if (this._mediaClient.getPairedThumbs().get(it.src)) return true;
+    return false;
+  }
+
   /** Called from the thumbnail `<img>` onerror. The browser's `<img>`
    * decoder rejected the URL — usually a definitive failure (404 /
    * decode error), so mark it hard right away. Don't bother with the
@@ -2989,17 +3023,40 @@ class CameraGalleryCard extends LitElement {
 
   // Resolve the poster URL to render for a video thumb.
   //
-  // Now read-only: enqueues that previously fired inside this function
-  // are deferred via `_pendingResolveIds` / `_pendingPosterUrls` and
-  // dispatched in bulk from `updated()` after render commits. Keeps
-  // render() pure of network/queue side effects (no re-entrancy risk
-  // from a `requestUpdate` triggered mid-render-walk) and lets us
-  // dispatch a deduplicated batch instead of N individual calls.
-  _resolveVideoPoster(it, isMs, thumbUrl, tThumb, selectedUrl) {
+  // Read-only: enqueues that previously fired inside this function are
+  // deferred via `_pendingResolveIds` / `_pendingPosterUrls` and
+  // dispatched from `updated()` after render commits. Keeps render()
+  // pure of network/queue side effects.
+  //
+  // Strategy:
+  //   1. Server-provided thumbnails (paired-jpg, Frigate snapshot,
+  //      browse_media `thumbnail`) are cheap HTTP fetches — enqueue
+  //      eagerly so they appear as the user scrolls.
+  //   2. The raw video URL (`thumbUrl`) is NEVER enqueued
+  //      speculatively. Pulling a frame out of the video means
+  //      downloading the full file (often MBs) just for one image —
+  //      brutal on slow connections and almost always wasted on
+  //      items the user never clicks. Instead, we surface any frame
+  //      previously captured (sitting in the IDB-backed mirror) and
+  //      otherwise return `""` so the render falls through to the
+  //      video-placeholder icon. The capture happens later, on
+  //      `<video>`'s `canplay` event from `_ensurePreviewVideoHostPlayback`,
+  //      which fires only when the user actually selects the item.
+  _resolveVideoPoster(it, isMs, thumbUrl, tThumb /* selectedUrl unused */) {
     if (!isMs) {
       const pairedJpg = this._sensorClient.getSensorPairedThumbs().get(it.src);
       if (pairedJpg) return this._posterCache.get(pairedJpg) || "";
-      return this._posterCache.get(it.src) || "";
+      // No paired jpg → we'd need a video-frame capture. Don't
+      // enqueue speculatively; surface the IDB-cached frame if a
+      // previous click captured one, else "" → placeholder.
+      const cached = this._posterCache.get(it.src);
+      if (cached) return cached;
+      const mirrored = this._lsThumbGet(it.src);
+      if (mirrored) {
+        this._posterCache.set(it.src, mirrored);
+        return mirrored;
+      }
+      return "";
     }
 
     if (hasFrigateConfig(this.config)) {
@@ -3011,7 +3068,7 @@ class CameraGalleryCard extends LitElement {
       }
     }
 
-    // Paired thumbnail: same-stem jpg next to the mp4
+    // Paired thumbnail: same-stem jpg next to the mp4 (server thumbnail).
     const pairedJpgId = this._mediaClient.getPairedThumbs().get(it.src);
     if (pairedJpgId && !this._mediaClient.isResolveFailed(pairedJpgId)) {
       const jpgUrl = this._mediaClient.getUrlCache().get(pairedJpgId) || "";
@@ -3025,23 +3082,26 @@ class CameraGalleryCard extends LitElement {
       return "";
     }
 
-    // Skip poster-capture for the URL that's currently loading as the preview —
-    // double-loading the same MS URL blocks autoplay on some browsers, and the
-    // preview's `canplay` handler in `_ensurePreviewVideoHostPlayback` enqueues
-    // the poster once the preview itself has the data.
-    //
-    // In live mode the preview shows the live feed instead of the selected
-    // video, so that handler never fires for `selectedUrl` — the selected
-    // thumb would stay blank until the user leaves live mode. Treat the
-    // "preview owns this URL's poster" exemption as not applying in live mode.
-    const previewOwnsSelectedPoster = !this._isLiveActive();
-    for (const url of [tThumb, thumbUrl]) {
-      if (!url) continue;
-      const cached = this._posterCache.get(url);
+    // browse_media `thumbnail` URL — server thumbnail, cheap.
+    if (tThumb) {
+      const cached = this._posterCache.get(tThumb);
       if (cached) return cached;
-      const skipForPreview = previewOwnsSelectedPoster && url === selectedUrl;
-      if (!skipForPreview) this._pendingPosterUrls?.add(url);
+      this._pendingPosterUrls?.add(tThumb);
       return "";
+    }
+
+    // Last resort: the resolved video URL. Don't enqueue — return
+    // whatever's already in cache (or the IDB mirror) so a previously
+    // captured frame is preserved across sessions; otherwise fall
+    // through to the placeholder branch in render.
+    if (thumbUrl) {
+      const cached = this._posterCache.get(thumbUrl);
+      if (cached) return cached;
+      const mirrored = this._lsThumbGet(thumbUrl);
+      if (mirrored) {
+        this._posterCache.set(thumbUrl, mirrored);
+        return mirrored;
+      }
     }
     return "";
   }
@@ -4381,10 +4441,13 @@ class CameraGalleryCard extends LitElement {
                 this._revealedThumbs.add(key);
                 changed = true;
               }
-              // Viewport-aware poster prioritization: enqueue only when visible
+              // Viewport-aware enqueue: only the cheap server-side
+              // thumbnail (paired jpg). Raw video capture is deferred
+              // until the user clicks the item — see the click-path
+              // in `_ensurePreviewVideoHostPlayback`.
               if (isSensor && key && isVideo(key)) {
                 const pairedJpg = this._sensorClient.getSensorPairedThumbs().get(key);
-                this._enqueuePoster(pairedJpg || key);
+                if (pairedJpg) this._enqueuePoster(pairedJpg);
               }
             }
           }
@@ -4942,7 +5005,11 @@ class CameraGalleryCard extends LitElement {
                             ? html`<div class="tph broken" aria-hidden="true">
                                 <ha-icon icon="mdi:image-broken-variant"></ha-icon>
                               </div>`
-                            : html`<div class="tph skeleton" aria-hidden="true"></div>`}
+                            : isVid && !this._hasServerThumbForVideo(it, isMs, tThumb)
+                              ? html`<div class="tph video-placeholder" aria-hidden="true">
+                                  <ha-icon icon="mdi:movie-outline"></ha-icon>
+                                </div>`
+                              : html`<div class="tph skeleton" aria-hidden="true"></div>`}
 
                         ${showBar
                           ? html`
@@ -6583,14 +6650,37 @@ class CameraGalleryCard extends LitElement {
         color: var(--cgc-thumb-broken-color, rgba(255, 255, 255, 0.55));
       }
 
+      /* Video tile with no server-provided thumbnail. Capture from
+       * the actual video file is deferred until the user clicks the
+       * item, so this state is the steady "haven't watched yet"
+       * appearance — not a loading or failure state. Quieter than
+       * .broken (no warning tint) and statically rendered (no
+       * shimmer). */
+      .tph.video-placeholder {
+        display: grid;
+        place-items: center;
+        background: var(--cgc-thumb-bg);
+        color: var(--cgc-thumb-placeholder-color, rgba(255, 255, 255, 0.4));
+      }
+
+      .tph.video-placeholder ha-icon {
+        --mdc-icon-size: 32px;
+        --ha-icon-size: 32px;
+        width: 32px;
+        height: 32px;
+        opacity: 0.7;
+      }
+
       /* When the timestamp bar is actually shown, inset the broken-state's
        * centering area by the bar height so the icon sits visually centered
        * in the *visible* image region instead of the absolute thumb center. */
-      .tthumb.bar-bottom.with-bar .tph.broken {
+      .tthumb.bar-bottom.with-bar .tph.broken,
+      .tthumb.bar-bottom.with-bar .tph.video-placeholder {
         padding-bottom: 26px;
       }
 
-      .tthumb.bar-top.with-bar .tph.broken {
+      .tthumb.bar-top.with-bar .tph.broken,
+      .tthumb.bar-top.with-bar .tph.video-placeholder {
         padding-top: 26px;
       }
 
