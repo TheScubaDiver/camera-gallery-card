@@ -77,6 +77,10 @@ import {
   DEFAULT_VISIBLE_OBJECT_FILTERS,
   MAX_VISIBLE_OBJECT_FILTERS,
   PREVIEW_WIDTH,
+  POSTER_CAPTURE_TIMEOUT_MS,
+  POSTER_FETCH_TIMEOUT_MS,
+  POSTER_MAX_ATTEMPTS,
+  POSTER_RETRY_DELAY_MS,
   SENSOR_POSTER_CONCURRENCY,
   SENSOR_POSTER_QUEUE_LIMIT,
   STYLE,
@@ -182,10 +186,27 @@ class CameraGalleryCard extends LitElement {
     this._pendingScrollToI = null;
     this._posterCache = new Map();
     this._posterPending = new Set();
-    // URLs that returned 404 / failed to decode / timed out. Skipped by
-    // _enqueuePoster, _drainPosterQueue, and _ensurePoster so a single bad
-    // file doesn't spam the network and console on every render.
-    this._posterFailed = new Set();
+    // Per-URL capture-attempt ledger. Replaces the previous binary
+    // `_posterFailed` set, which couldn't distinguish "definitively
+    // broken" (404, codec error → permanent broken-icon) from "timed
+    // out this attempt on slow network" (would re-attempt fine on a
+    // good connection).
+    //
+    // Shape: Map<url, { count, lastAt, hard }>
+    //   - count: number of failed attempts so far
+    //   - lastAt: timestamp of the last attempt (ms)
+    //   - hard: true once we've classified the failure as permanent
+    //
+    // Skip logic:
+    //   - hard=true OR count >= POSTER_MAX_ATTEMPTS → never retry,
+    //     thumbnail renders the broken-icon state.
+    //   - soft + lastAt within POSTER_RETRY_DELAY_MS → skip this round
+    //     (rate-limit retries so we don't spin on a flaky connection).
+    //   - soft + lastAt older than the delay → eligible for re-attempt.
+    this._posterAttempts = new Map();
+    /** Single rolling timer that schedules a requestUpdate at the next
+     * soft-fail cooldown expiry. See `_scheduleSoftRetryRender`. */
+    this._softRetryTimer = null;
     // Unsubscribe callback for HA WS Frigate-event-push subscription.
     // null = not subscribed, function = active subscription.
     this._frigateEventsUnsub = null;
@@ -699,6 +720,67 @@ class CameraGalleryCard extends LitElement {
     this._ensurePreviewVideoHostPlayback(selectedUrl);
   }
 
+  /** True iff this URL has hit its hard-fail criteria — we should not
+   * retry. Used by `_enqueuePoster` / `_drainPosterQueue` to skip and
+   * by `_isThumbBroken` to flip render to the broken-icon state. */
+  _isPosterHardFailed(src) {
+    const a = this._posterAttempts.get(src);
+    if (!a) return false;
+    return a.hard || a.count >= POSTER_MAX_ATTEMPTS;
+  }
+
+  /** True iff a soft-failed URL is inside its retry-cooldown window.
+   * Returning true skips this attempt; render keeps showing the
+   * skeleton until the cooldown expires and a re-enqueue takes hold. */
+  _isPosterCoolingDown(src) {
+    const a = this._posterAttempts.get(src);
+    if (!a || a.hard) return false;
+    if (a.count === 0) return false;
+    return Date.now() - a.lastAt < POSTER_RETRY_DELAY_MS;
+  }
+
+  /** Record a capture failure. `hard` is true for definitive errors
+   * (404, MEDIA_ERR_SRC_NOT_SUPPORTED) — skips straight to the broken
+   * state. Soft failures (timeout, decode) accumulate up to
+   * POSTER_MAX_ATTEMPTS before being treated as hard. Schedules an
+   * auto-retry render so soft fails recover even on idle screens. */
+  _recordPosterFailure(src, { hard = false } = {}) {
+    const prev = this._posterAttempts.get(src);
+    const count = (prev?.count ?? 0) + 1;
+    const isHardNow = hard || count >= POSTER_MAX_ATTEMPTS;
+    this._posterAttempts.set(src, { count, lastAt: Date.now(), hard: isHardNow });
+    if (!isHardNow) this._scheduleSoftRetryRender();
+  }
+
+  _clearPosterFailure(src) {
+    this._posterAttempts.delete(src);
+  }
+
+  /** Schedule a single requestUpdate at the earliest expiring soft-fail
+   * cooldown, then re-arm itself if any soft fails are still cooling
+   * after that render. Without this, a slow-network blip on an idle
+   * dashboard would leave the thumb on its skeleton forever — the
+   * cooldown expires but no render is triggered to re-enqueue. */
+  _scheduleSoftRetryRender() {
+    if (this._softRetryTimer) return;
+    let earliest = Infinity;
+    const now = Date.now();
+    for (const a of this._posterAttempts.values()) {
+      if (a.hard) continue;
+      const expiry = a.lastAt + POSTER_RETRY_DELAY_MS;
+      if (expiry < earliest) earliest = expiry;
+    }
+    if (earliest === Infinity) return;
+    const delay = Math.max(100, earliest - now + 100);
+    this._softRetryTimer = setTimeout(() => {
+      this._softRetryTimer = null;
+      this.requestUpdate();
+      // The render above may re-fail items (still slow); reschedule
+      // for whatever cooldown is still pending.
+      this._scheduleSoftRetryRender();
+    }, delay);
+  }
+
   _enqueuePoster(src) {
     const key = String(src || "").trim();
     if (!key) return;
@@ -706,7 +788,8 @@ class CameraGalleryCard extends LitElement {
     if (this._posterPending.has(key)) return;
     if (this._posterQueued.has(key)) return;
     if (this._posterInFlight.has(key)) return;
-    if (this._posterFailed.has(key)) return;
+    if (this._isPosterHardFailed(key)) return;
+    if (this._isPosterCoolingDown(key)) return;
 
     this._posterQueued.add(key);
     this._posterQueue.push(key);
@@ -730,7 +813,8 @@ class CameraGalleryCard extends LitElement {
       if (this._posterCache.has(src)) continue;
       if (this._posterPending.has(src)) continue;
       if (this._posterInFlight.has(src)) continue;
-      if (this._posterFailed.has(src)) continue;
+      if (this._isPosterHardFailed(src)) continue;
+      if (this._isPosterCoolingDown(src)) continue;
 
       this._posterInFlight.add(src);
 
@@ -748,7 +832,11 @@ class CameraGalleryCard extends LitElement {
     this._posterQueued.clear();
     this._posterInFlight.clear();
     this._posterPending.clear();
-    this._posterFailed.clear();
+    this._posterAttempts.clear();
+    if (this._softRetryTimer) {
+      clearTimeout(this._softRetryTimer);
+      this._softRetryTimer = null;
+    }
   }
 
   _queueSensorPosterWork(items) {
@@ -831,16 +919,21 @@ class CameraGalleryCard extends LitElement {
         video.addEventListener("canplay", () => {
           if (!this._posterCache.has(urlForPoster)) this._enqueuePoster(urlForPoster);
         }, { once: true, signal: sig });
-        // If the preview can't load (broken / corrupt / 404), surface the
-        // broken-thumbnail state immediately. Without this, the selected
-        // thumb stays as plain `.tph` because `_resolveVideoPoster` skips
-        // the capture for the selected URL (the preview's canplay was
-        // meant to handle it) — and canplay never fires for a bad file.
+        // If the preview can't load (broken / corrupt / slow-network),
+        // record the failure so the thumb gets a broken icon (hard
+        // errors) or stays on the skeleton until the cooldown lapses
+        // (soft errors — which is what 99% of slow-network blips are).
+        // Without this hook, the selected thumb sat on plain `.tph`
+        // because `_resolveVideoPoster` skips the capture for the
+        // selected URL (preview canplay was meant to handle it).
         video.addEventListener("error", () => {
-          this._posterFailed.add(urlForPoster);
-          // Drop any stale cached blob too so a re-attempt on next
-          // navigation actually retries instead of replaying the cache.
-          this._lsThumbDelete(urlForPoster);
+          const code = video.error?.code;
+          // MediaError.code: 1=ABORTED, 2=NETWORK, 3=DECODE, 4=SRC_NOT_SUPPORTED.
+          // Only 4 is unambiguously "this file is broken"; the others
+          // can recover on a retry once the connection improves.
+          const isHard = code === 4;
+          this._recordPosterFailure(urlForPoster, { hard: isHard });
+          if (isHard) this._lsThumbDelete(urlForPoster);
           this.requestUpdate();
         }, { once: true, signal: sig });
       }
@@ -2853,40 +2946,44 @@ class CameraGalleryCard extends LitElement {
    * walking the same fallback chain `_resolveVideoPoster` walks, MS
    * failures just ghost as plain `.tph`. */
   _isThumbBroken(it, isMs, thumbUrl, tThumb) {
-    if (this._posterFailed.has(it.src)) return true;
+    // Only render the broken-icon state for *hard* failures (definitive
+    // 404 / codec / repeated soft fail past the attempt cap). Items
+    // still-soft-failed keep the skeleton — they'll re-attempt after
+    // the retry cooldown, which is the right answer for slow networks.
+    if (this._isPosterHardFailed(it.src)) return true;
     if (!isMs) {
       const pairedJpg = this._sensorClient.getSensorPairedThumbs().get(it.src);
-      return !!(pairedJpg && this._posterFailed.has(pairedJpg));
+      return !!(pairedJpg && this._isPosterHardFailed(pairedJpg));
     }
-    if (thumbUrl && this._posterFailed.has(thumbUrl)) return true;
-    if (tThumb && this._posterFailed.has(tThumb)) return true;
+    if (thumbUrl && this._isPosterHardFailed(thumbUrl)) return true;
+    if (tThumb && this._isPosterHardFailed(tThumb)) return true;
     const pairedJpgId = this._mediaClient.getPairedThumbs().get(it.src);
     if (pairedJpgId) {
       const jpgUrl = this._mediaClient.getUrlCache().get(pairedJpgId) || "";
-      if (jpgUrl && this._posterFailed.has(jpgUrl)) return true;
+      if (jpgUrl && this._isPosterHardFailed(jpgUrl)) return true;
     }
     // Frigate snapshot URL is the poster directly when configured —
     // a 404 on that URL fires `<img onerror>` (see thumb render) which
-    // marks it failed; surface that so the broken state lights up.
+    // hard-marks it; surface that so the broken state lights up.
     if (hasFrigateConfig(this.config)) {
       const snapshotId = this._mediaClient.findMatchingSnapshotMediaId(it.src);
       if (snapshotId) {
         const snapshotUrl = this._mediaClient.getUrlCache().get(snapshotId) || "";
-        if (snapshotUrl && this._posterFailed.has(snapshotUrl)) return true;
+        if (snapshotUrl && this._isPosterHardFailed(snapshotUrl)) return true;
       }
     }
     return false;
   }
 
-  /** Called from the thumbnail `<img>` onerror. Marks the URL failed
-   * and re-renders so the broken-thumbnail state shows. Triggered for
-   * Frigate snapshot URLs (which never go through `_ensurePoster`) and
-   * any other case where the browser's `<img>` decoder rejects the
-   * resolved poster URL. */
+  /** Called from the thumbnail `<img>` onerror. The browser's `<img>`
+   * decoder rejected the URL — usually a definitive failure (404 /
+   * decode error), so mark it hard right away. Don't bother with the
+   * soft-retry path since `<img>` won't retry on its own and we've
+   * already given the browser the URL once. */
   _onThumbImgError(posterUrl) {
     if (!posterUrl) return;
-    if (this._posterFailed.has(posterUrl)) return;
-    this._posterFailed.add(posterUrl);
+    if (this._isPosterHardFailed(posterUrl)) return;
+    this._recordPosterFailure(posterUrl, { hard: true });
     this.requestUpdate();
   }
 
@@ -3078,7 +3175,7 @@ class CameraGalleryCard extends LitElement {
         }
       };
 
-      timeout = setTimeout(() => fail(new Error("poster timeout")), 3000);
+      timeout = setTimeout(() => fail(new Error("poster timeout")), POSTER_CAPTURE_TIMEOUT_MS);
       v.addEventListener(
         "error",
         () => {
@@ -3230,27 +3327,42 @@ class CameraGalleryCard extends LitElement {
   async _fetchProtectedAsBlob(src) {
     const token = this._hass?.auth?.data?.access_token;
     if (!token) return null;
-    const res = await fetch(window.location.origin + src, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    if (res.status === 404) {
-      // Throw with a marker so _ensurePoster can drop the stale cached
-      // thumb for files that have been deleted on disk.
-      const err = new Error("not found");
-      err.status = 404;
-      throw err;
+    // Bound the wait. Without this, a slow-network fetch sits open
+    // indefinitely while the queue is starved on the connection limit.
+    // AbortError surfaces as `name === "AbortError"` so `_ensurePoster`
+    // can classify it as soft (timeout) rather than hard (broken file).
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), POSTER_FETCH_TIMEOUT_MS);
+    try {
+      const res = await fetch(window.location.origin + src, {
+        headers: { Authorization: `Bearer ${token}` },
+        signal: ctrl.signal,
+      });
+      if (res.status === 404) {
+        // Throw with a marker so _ensurePoster can drop the stale cached
+        // thumb for files that have been deleted on disk.
+        const err = new Error("not found");
+        err.status = 404;
+        throw err;
+      }
+      if (!res.ok) return null;
+      return await res.blob();
+    } finally {
+      clearTimeout(timer);
     }
-    if (!res.ok) return null;
-    return res.blob();
   }
 
   async _ensurePoster(src) {
     if (!src || this._posterCache.has(src) || this._posterPending.has(src)) return;
-    if (this._posterFailed.has(src)) return;
+    if (this._isPosterHardFailed(src)) return;
+    if (this._isPosterCoolingDown(src)) return;
 
     const cached = this._lsThumbGet(src);
     if (cached) {
       this._posterCache.set(src, cached);
+      // Successful read clears any prior soft-fail state so a previously
+      // flaky URL gets a clean slate next time.
+      this._clearPosterFailure(src);
       this.requestUpdate();
       return;
     }
@@ -3267,26 +3379,33 @@ class CameraGalleryCard extends LitElement {
           );
       if (blob) {
         const objectUrl = this._lsThumbSet(src, blob);
-        if (objectUrl) this._posterCache.set(src, objectUrl);
-        else this._posterFailed.add(src);
+        if (objectUrl) {
+          this._posterCache.set(src, objectUrl);
+          this._clearPosterFailure(src);
+        } else {
+          // toBlob/createObjectURL produced nothing usable — soft fail
+          // (likely a transient resource issue, not a broken file).
+          this._recordPosterFailure(src);
+        }
       } else {
-        // Reached the !res.ok branch in _fetchProtectedAsBlob (non-404
-        // failure). Don't keep retrying every render.
-        this._posterFailed.add(src);
+        // !res.ok branch in `_fetchProtectedAsBlob` (non-404). Could
+        // be a 5xx that'll recover, so soft-fail and let the cooldown
+        // gate retries.
+        this._recordPosterFailure(src);
       }
     } catch (e) {
-      // Hard failure: 404, decode error, timeout, network error. Mark as
-      // failed so subsequent renders skip it instead of re-spamming the
-      // network/console.
-      this._posterFailed.add(src);
-      // For confirmed-missing files (HTTP 404, or video URLs that couldn't
-      // be loaded over the network) drop any stale cached thumb so a
-      // deleted file stops displaying its last cached frame.
-      const isMissing =
-        e?.status === 404 ||
-        e?.mediaErrorCode === 2 || // MEDIA_ERR_NETWORK
-        e?.mediaErrorCode === 4;   // MEDIA_ERR_SRC_NOT_SUPPORTED
-      if (isMissing) this._lsThumbDelete(src);
+      const status = e?.status;
+      const code = e?.mediaErrorCode;
+      // Hard failures: confirmed missing or unsupported. The file
+      // won't recover on retry — render the broken icon and stop.
+      const isHard =
+        status === 404 ||
+        code === 4; /* MEDIA_ERR_SRC_NOT_SUPPORTED — codec / missing */
+      // Soft failures: capture timeout, fetch AbortError, transient
+      // network. Likely to succeed on a retry once the connection
+      // catches up — keep showing the skeleton, retry after cooldown.
+      this._recordPosterFailure(src, { hard: isHard });
+      if (status === 404) this._lsThumbDelete(src);
     } finally {
       this._posterPending.delete(src);
       this.requestUpdate();
@@ -4076,7 +4195,7 @@ class CameraGalleryCard extends LitElement {
       this._resetPosterQueue();
       this._posterCache.clear();
       this._posterPending.clear();
-      this._posterFailed.clear();
+      this._posterAttempts.clear();
       this._objectCache.clear();
     }
 

@@ -83,6 +83,22 @@ const HC: number =
 export const SENSOR_POSTER_CONCURRENCY = Math.min(16, Math.max(4, HC));
 export const SENSOR_POSTER_QUEUE_LIMIT = 100;
 
+// Capture timing. The previous 3 s timeout was tuned for fast LANs;
+// users on slow / metered connections kept hitting it for legitimate
+// (large mp4 with metadata at the end) videos and seeing the broken
+// icon for files that would otherwise render fine. 12 s is generous
+// enough to cover a slow 3G + a 30 MB clip.
+export const POSTER_CAPTURE_TIMEOUT_MS = 12_000;
+/** Auth-protected `<img>` thumbnail fetch timeout. Mirrors the capture
+ * timeout — Bearer-fetched HA images go over the same connection. */
+export const POSTER_FETCH_TIMEOUT_MS = 15_000;
+/** Maximum capture attempts per URL within a session before we give up
+ * and surface the broken-icon state. */
+export const POSTER_MAX_ATTEMPTS = 3;
+/** Minimum gap between retries for a soft-failed (timeout / network)
+ * URL. Stops a flaky connection from spinning the queue. */
+export const POSTER_RETRY_DELAY_MS = 30_000;
+
 // -------- Long-press gestures --------
 export const THUMB_LONG_PRESS_MOVE_PX = 12;
 export const THUMB_LONG_PRESS_MS = 520;
