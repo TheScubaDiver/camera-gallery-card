@@ -9331,10 +9331,7 @@ class CameraGalleryCardEditor extends HTMLElement {
                 <div class="row-head">
                   <div>
                     <div class="lbl">Capture video thumbnails</div>
-                    <div class="desc">
-                      ${svgIcon('mdi:information-outline', 14)}
-                      When on, videos without a server-supplied thumbnail get one extracted from the file as the user scrolls them into view. Turn off to save bandwidth on slow / metered connections — items without server thumbnails will show a placeholder icon.
-                    </div>
+                    <div class="desc">Extract a frame from each video when no server thumbnail is available. Off saves bandwidth on slow connections.</div>
                   </div>
                   <div class="togrow">
                     <label class="cgc-switch"><input type="checkbox" id="capture-video-thumbnails" ${c.capture_video_thumbnails !== false ? "checked" : ""}><span class="cgc-track"></span></label>
