@@ -52,7 +52,7 @@ describe("detectPathFormat", () => {
       ]),
     };
     const result = await detectPathFormat([ROOT], makeBrowse(tree));
-    expect(result.format).toBe("YYYY/MM/DD/RLC_YYYYMMDDHHmmss.mp4");
+    expect(result.format).toBe("YYYY/MM/DD/RLC_YYYYMMDDHHmmss");
     expect(result.matches).toBe(4);
   });
 
@@ -74,7 +74,7 @@ describe("detectPathFormat", () => {
       ]),
     };
     const result = await detectPathFormat([ROOT], makeBrowse(tree));
-    expect(result.format).toBe("YYYYMMDD/HHmmss.mp4");
+    expect(result.format).toBe("YYYYMMDD/HHmmss");
     expect(result.matches).toBeGreaterThanOrEqual(3);
   });
 
@@ -89,7 +89,7 @@ describe("detectPathFormat", () => {
       ]),
     };
     const result = await detectPathFormat([ROOT], makeBrowse(tree));
-    expect(result.format).toBe("YYYYMMDD_HHmmss.mp4");
+    expect(result.format).toBe("YYYYMMDD_HHmmss");
     expect(result.matches).toBe(4);
   });
 
@@ -141,7 +141,7 @@ describe("detectPathFormat", () => {
       ]),
     };
     const result = await detectPathFormat([ROOT], makeBrowse(tree));
-    expect(result.format).toBe("YYYY/MM/DD/RLC_YYYYMMDDHHmmss.mp4");
+    expect(result.format).toBe("YYYY/MM/DD/RLC_YYYYMMDDHHmmss");
     expect(result.matches).toBe(3);
   });
 
@@ -153,7 +153,7 @@ describe("detectPathFormat", () => {
       [ROOT]: folder(ROOT, "Cams", [file(`${ROOT}/20260430_120030.mp4`, "20260430_120030.mp4")]),
     };
     const result = await detectPathFormat([ROOT], makeBrowse(tree));
-    expect(result.format).toBe("YYYYMMDD_HHmmss.mp4");
+    expect(result.format).toBe("YYYYMMDD_HHmmss");
     expect(result.matches).toBe(1);
   });
 
@@ -183,7 +183,7 @@ describe("scoreSamples", () => {
       "/local/security/cam1/2026/05/01/RLC_20260501100000.mp4",
     ];
     const result = scoreSamples(samples);
-    expect(result.format).toBe("YYYY/MM/DD/RLC_YYYYMMDDHHmmss.mp4");
+    expect(result.format).toBe("YYYY/MM/DD/RLC_YYYYMMDDHHmmss");
     expect(result.matches).toBe(4);
   });
 
@@ -198,7 +198,7 @@ describe("scoreSamples", () => {
       "/local/cams/20260501/090000.mp4",
     ];
     const result = scoreSamples(sensorOnly);
-    expect(result.format).toBe("YYYYMMDD/HHmmss.mp4");
+    expect(result.format).toBe("YYYYMMDD/HHmmss");
     expect(result.matches).toBe(3);
   });
 

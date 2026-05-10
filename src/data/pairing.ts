@@ -111,7 +111,7 @@ const MULTI_SLASH_RE = /\/{2,}/g;
 const LEADING_SLASH_RE = /^\/+/;
 const TRAILING_SLASH_RE = /\/+$/;
 
-function normalizeRelPath(idOrPath: unknown): string {
+export function normalizeRelPath(idOrPath: unknown): string {
   return String(idOrPath ?? "")
     .replace(MEDIA_SOURCE_PREFIX_RE, "")
     .replace(MULTI_SLASH_RE, "/")

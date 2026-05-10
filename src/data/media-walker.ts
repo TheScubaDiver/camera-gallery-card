@@ -49,7 +49,7 @@ import {
   loadDay,
 } from "./media-tree";
 import { dedupeByRelPath, pairMediaSourceThumbnails } from "./pairing";
-import { parsePathFormat } from "./path-format";
+import { parsePathFormat, type PathFormat } from "./path-format";
 
 export type Enrich = (src: string) => CardItem;
 const DEFAULT_ENRICH: Enrich = (src) => ({ src });
@@ -197,6 +197,29 @@ function saveDayToStorage(key: string, items: readonly MsItem[]): void {
   }
 }
 
+/**
+ * Schedule a deferred day-cache write. Days can be hundreds of KB once
+ * stringified, so blocking the render task on this write is wasteful —
+ * the user-visible state updated synchronously before this fires, and
+ * the localStorage entry only matters on the *next* page load. Prefers
+ * `requestIdleCallback` (browser-idle time after paint), falls back to
+ * `setTimeout(0)` on hosts that don't ship it (older Safari).
+ */
+type IdleCb = (cb: () => void, opts?: { timeout: number }) => unknown;
+const deferLsWrite = (key: string, items: readonly MsItem[]): void => {
+  const snapshot: readonly MsItem[] = items.slice();
+  const fn = (): void => saveDayToStorage(key, snapshot);
+  const ric: IdleCb | undefined =
+    typeof globalThis !== "undefined"
+      ? (globalThis as { requestIdleCallback?: IdleCb }).requestIdleCallback
+      : undefined;
+  if (typeof ric === "function") {
+    ric(fn, { timeout: 1000 });
+  } else {
+    setTimeout(fn, 0);
+  }
+};
+
 function loadDayFromStorage(key: string): { items: MsItem[]; ts: number } | null {
   try {
     const raw = localStorage.getItem(key);
@@ -229,6 +252,18 @@ export class MediaSourceClient {
   readonly browseTtlCache: Map<string, { ts: number; data: MediaSourceItem }> = new Map();
   /** Frigate snapshot index, populated alongside the walk when a Frigate root is configured. */
   frigateSnapshots: FrigateSnapshot[] = [];
+  /** Lazy stem-keyed index over `frigateSnapshots`. Lifts the exact-stem
+   * pass of `findMatchingSnapshotMediaId` from O(N) linear-scan to O(1)
+   * lookup — important on cold first-paint where ~100 videos each scan a
+   * snapshot library that can run into hundreds. The substring fallback
+   * stays linear (it's rare, and a trie would cost more than it saves).
+   *
+   * `_snapshotIndexFor` is identity-compared against the current array,
+   * so any reassignment of `frigateSnapshots` (`= []`, replacement list)
+   * implicitly invalidates the cached index without needing a manual
+   * clear at every assignment site. */
+  private _snapshotIndexByStem: Map<string, FrigateSnapshot> = new Map();
+  private _snapshotIndexFor: readonly FrigateSnapshot[] | null = null;
   /** `videoSrc → snapshotId` cache for the pairing fuzzy-match. */
   readonly snapshotCache: Map<string, string> = new Map();
 
@@ -252,6 +287,10 @@ export class MediaSourceClient {
    * Format-only changes also invalidate item caches because the parsed
    * `dtMs` / `dayKey` for items can shift. */
   private _prevPathFormat = "";
+  /** Cached compiled `path_datetime_format`. `parsePathFormat` builds a
+   * regex for every segment, so this stays around until the config string
+   * actually changes. Cleared in `load()` on path-format change. */
+  private _compiledPathFormat: PathFormat | null = null;
   /** In-flight `loadDay` promises, keyed by dayKey. Coalesces concurrent
    * `ensureDayLoaded(dayKey)` calls onto one browse round. */
   private readonly _dayInFlight: Map<string, Promise<void>> = new Map();
@@ -287,7 +326,20 @@ export class MediaSourceClient {
       this._prevRootsKey = nextRootsKey;
       this._prevFrigateUrl = nextFrigateUrl;
       this._prevPathFormat = nextPathFormat;
+      this._compiledPathFormat = null;
     }
+  }
+
+  /** Compiled `path_datetime_format` with single-string memoization. Hot
+   * path: `ensureDayLoaded` runs for the active day plus prev/next on
+   * every render cycle, and `_dayCacheKey` recomputes `_formatSignature`
+   * from a parse — multiple regex compilations per navigation event
+   * without this cache. */
+  private _getCompiledPathFormat(): PathFormat | null {
+    if (this._compiledPathFormat) return this._compiledPathFormat;
+    const raw = this._config?.path_datetime_format ?? "";
+    this._compiledPathFormat = parsePathFormat(raw);
+    return this._compiledPathFormat;
   }
 
   /** Reset every cache slot on a roots change. Bumps the load generation
@@ -470,11 +522,31 @@ export class MediaSourceClient {
     });
   }
 
+  /** (Re)build the stem-keyed snapshot index against the current
+   * `frigateSnapshots`. Idempotent: callers compare `_snapshotIndexFor`
+   * against the live array first to skip work on hot paths. */
+  private _buildSnapshotIndex(): void {
+    const map = new Map<string, FrigateSnapshot>();
+    for (const snap of this.frigateSnapshots) {
+      const name =
+        String(snap?.id ?? "")
+          .split("/")
+          .pop()
+          ?.toLowerCase() ?? "";
+      const stem = name.replace(/\.(jpg|jpeg|png|webp)$/i, "");
+      // First-write-wins on stem collisions — matches the legacy
+      // `Array.find` behaviour (which also returned the first hit).
+      if (stem && !map.has(stem)) map.set(stem, snap);
+    }
+    this._snapshotIndexByStem = map;
+    this._snapshotIndexFor = this.frigateSnapshots;
+  }
+
   /**
    * Pair a video media-source URI with its sibling Frigate snapshot.
    * Order:
-   *   1. exact stem match
-   *   2. substring match
+   *   1. exact stem match (via lazy index — O(1))
+   *   2. substring match (linear; rare path)
    *   3. fuzzy ±15s match against the video's resolved ms
    * Returns `""` and caches when nothing matches.
    */
@@ -500,15 +572,10 @@ export class MediaSourceClient {
       return "";
     }
 
-    let match = snapshots.find((snap) => {
-      const snapName =
-        String(snap?.id ?? "")
-          .split("/")
-          .pop()
-          ?.toLowerCase() ?? "";
-      const snapStem = snapName.replace(/\.(jpg|jpeg|png|webp)$/i, "");
-      return snapStem === videoStem;
-    });
+    // O(1) exact-stem hit via the lazy index. Most thumbnails resolve on
+    // this first pass — Frigate's stems are video↔snapshot identical.
+    if (this._snapshotIndexFor !== snapshots) this._buildSnapshotIndex();
+    let match = this._snapshotIndexByStem.get(videoStem);
 
     if (!match) {
       match = snapshots.find((snap) =>
@@ -661,7 +728,7 @@ export class MediaSourceClient {
     const fresh = sameKey && now - (this.state.loadedAt ?? 0) < ENSURE_LOADED_FRESHNESS_MS;
     if (this.state.loading || fresh) return;
 
-    const fmt = parsePathFormat(config.path_datetime_format ?? "");
+    const fmt = this._getCompiledPathFormat();
     if (!fmt) {
       // Validation in normalize.ts requires `path_datetime_format` for media
       // mode (unless Frigate REST handles it). Reaching here means a Frigate
@@ -685,6 +752,18 @@ export class MediaSourceClient {
     const gen = this._loadGeneration;
     const browseFn: BrowseFn = (id) => this._browse(id);
 
+    // Kick the Frigate snapshot index in parallel with calendar discovery.
+    // The snapshot pairing path is independent of the calendar walk, so a
+    // single network round-trip overlap (the `discoverTree` browse + the
+    // snapshot-root browse) shaves visible time off cold-start whenever a
+    // Frigate root is configured.
+    const snapshotsPromise: Promise<FrigateSnapshot[]> = roots.some(isFrigateRoot)
+      ? this._loadFrigateSnapshots(browseFn).catch((e: unknown) => {
+          console.warn("Frigate snapshots load failed:", e);
+          return [] as FrigateSnapshot[];
+        })
+      : Promise.resolve([]);
+
     // Persistent calendar fast-path: serve a cached calendar instantly so the
     // day-picker populates without waiting for the network. Only useful for
     // lazy layouts (B/C) — layout A's items are eager and aren't keyed by
@@ -695,6 +774,20 @@ export class MediaSourceClient {
     let calendarFresh = false;
     if (cachedCal && cacheEligible) {
       this.state.calendar = cachedCal.calendar;
+      // Warm the newest-day cache from localStorage too. Without this the
+      // first `_fireChange()` lands while `state.list` is still empty, so
+      // the card renders "No media found." for one frame before the day
+      // arrives and triggers another render. Doing both here collapses
+      // the two-frame flash into one.
+      const newestDay = cachedCal.calendar.days[0];
+      if (newestDay) {
+        const newestKey = this._dayCacheKey(newestDay);
+        const cachedDay = newestKey ? loadDayFromStorage(newestKey) : null;
+        if (cachedDay) {
+          this.state.dayCache.set(newestDay, this._sortDayItemsInPlace(cachedDay.items));
+          this._refreshList();
+        }
+      }
       this._fireChange();
       calendarFresh = Date.now() - cachedCal.ts < CALENDAR_CACHE_REFRESH_AFTER_MS;
     }
@@ -739,6 +832,7 @@ export class MediaSourceClient {
           if (!byDayItems.has(bucket)) byDayItems.set(bucket, []);
           byDayItems.get(bucket)!.push(item);
         }
+        for (const arr of byDayItems.values()) this._sortDayItemsInPlace(arr);
         this.state.dayCache = byDayItems;
         this._refreshList();
       } else {
@@ -755,75 +849,12 @@ export class MediaSourceClient {
         this._refreshList();
       }
 
-      // Frigate snapshot index — only when a Frigate root is configured.
-      // The snapshot pairing (`findMatchingSnapshotMediaId`) needs this index
-      // independent of `path_datetime_format`. Frigate's snapshots root is a
-      // shallow tree organised as `<root>/<camera_name>/<event-id>.jpg`, so
-      // we browse the root, then descend ONE level into each per-camera
-      // subdir to enumerate the actual snapshot files. (Browsing only the
-      // root would index camera-name folders rather than image IDs and
-      // every `findMatchingSnapshotMediaId` lookup would miss.)
-      if (roots.some(isFrigateRoot)) {
-        try {
-          const dtOpts = this._getDtOpts();
-          const snapshotRoot = await browseFn(FRIGATE_SNAPSHOTS_ROOT);
-          const topChildren = Array.isArray(snapshotRoot?.children) ? snapshotRoot.children : [];
-          const snapshotItems: MediaSourceItem[] = [];
-          // Bounded fan-out so an over-large camera count doesn't stall the
-          // gallery's first paint behind dozens of browse calls.
-          const MAX_SNAPSHOT_DESCENT = 32;
-          const descendTargets: string[] = [];
-          for (const top of topChildren) {
-            if (!top?.media_content_id) continue;
-            if (top.can_expand) {
-              if (descendTargets.length < MAX_SNAPSHOT_DESCENT) {
-                descendTargets.push(String(top.media_content_id));
-              }
-            } else {
-              snapshotItems.push(top);
-            }
-          }
-          const subResults = await Promise.all(
-            descendTargets.map(async (id) => {
-              try {
-                const sub = await browseFn(id);
-                return Array.isArray(sub?.children) ? sub.children : [];
-              } catch {
-                return [];
-              }
-            })
-          );
-          for (const arr of subResults) snapshotItems.push(...arr);
-          this.frigateSnapshots = snapshotItems
-            .map((x): FrigateSnapshot | null => {
-              if (!x?.media_content_id) return null;
-              const id = String(x.media_content_id);
-              if (!id) return null;
-              const title = String(x.title ?? "");
-              const dtMsAttached = frigateEventIdMs(id);
-              const dtMs = dtMsAttached !== null ? dtMsAttached : dtMsFromSrc(title || id, dtOpts);
-              const dayKey = Number.isFinite(dtMs)
-                ? dayKeyFromMs(dtMs as number)
-                : extractDayKey(title || id, dtOpts);
-              const out: FrigateSnapshot = {
-                id,
-                title,
-                mime: String(x.media_content_type ?? ""),
-                cls: String(x.media_class ?? ""),
-                thumb: String(x.thumbnail ?? ""),
-                ...(dtMs !== null ? { dtMs } : {}),
-                dayKey,
-              };
-              return out;
-            })
-            .filter((x): x is FrigateSnapshot => x !== null);
-        } catch (e) {
-          console.warn("Frigate snapshots load failed:", e);
-          this.frigateSnapshots = [];
-        }
-      } else {
-        this.frigateSnapshots = [];
-      }
+      // Snapshot fetch was kicked off in parallel at the top of this call.
+      // Await it here — by now `discoverTree` has typically already returned,
+      // so the second await is essentially free.
+      const snapshots = await snapshotsPromise;
+      if (this._isStale(gen)) return;
+      this.frigateSnapshots = snapshots;
 
       this.state.loadedAt = Date.now();
     } catch (e) {
@@ -851,7 +882,7 @@ export class MediaSourceClient {
     if (inFlight) return inFlight;
     const config = this._config;
     if (!config) return;
-    const fmt = parsePathFormat(config.path_datetime_format ?? "");
+    const fmt = this._getCompiledPathFormat();
     if (!fmt) return;
     const browseFn: BrowseFn = (id) => this._browse(id);
     const gen = this._loadGeneration;
@@ -889,7 +920,7 @@ export class MediaSourceClient {
     const cacheKey = this._dayCacheKey(dayKey);
     const cached = cacheKey ? loadDayFromStorage(cacheKey) : null;
     if (cached) {
-      this.state.dayCache.set(dayKey, cached.items);
+      this.state.dayCache.set(dayKey, this._sortDayItemsInPlace(cached.items));
       this._refreshList();
       this._fireChange();
       if (Date.now() - cached.ts < DAY_CACHE_REFRESH_AFTER_MS) return;
@@ -898,8 +929,14 @@ export class MediaSourceClient {
       isStale: () => this._isStale(gen),
     });
     if (this._isStale(gen)) return;
+    this._sortDayItemsInPlace(items);
     this.state.dayCache.set(dayKey, items);
-    if (cacheKey) saveDayToStorage(cacheKey, items);
+    // Defer the (potentially hundreds of KB) JSON.stringify off the
+    // render-critical path. The user-visible state is already updated; the
+    // localStorage write only matters for the *next* page load. `ric` runs
+    // in browser idle time after paint; `setTimeout` is the fallback for
+    // hosts (older Safari) without rIC.
+    if (cacheKey) deferLsWrite(cacheKey, items);
     this._refreshList();
     this._fireChange();
   }
@@ -913,39 +950,76 @@ export class MediaSourceClient {
     return fmt.segments.map((s) => s.raw).join("/");
   }
 
-  /** Compute the localStorage key for a given dayKey under the active config. */
+  /** Compute the localStorage key for a given dayKey under the active config.
+   *
+   * `frigate_url` participates in the hash because the in-memory clients
+   * already reset on `frigate_url` change (`load()` → `clearForNewRoots`),
+   * but the LS entries would otherwise be re-keyed identically and serve
+   * stale data from the previous Frigate instance after a switch. */
   private _dayCacheKey(dayKey: string): string | null {
     const config = this._config;
     if (!config) return null;
     const rootsKey = keyFromRoots(config.media_sources ?? []);
-    const fmtSig = this._formatSignature(parsePathFormat(config.path_datetime_format ?? ""));
+    const fmtSig = this._formatSignature(this._getCompiledPathFormat());
+    const frigateUrl = String(config.frigate_url ?? "");
     if (!rootsKey || !fmtSig || !dayKey) return null;
-    return `cgc_msday1_${fnv1aHash(`${rootsKey}|${fmtSig}|${dayKey}`)}`;
+    return `cgc_msday1_${fnv1aHash(`${rootsKey}|${fmtSig}|${frigateUrl}|${dayKey}`)}`;
   }
 
-  /** Compute the localStorage key for the calendar under a given roots+format pair. */
+  /** Compute the localStorage key for the calendar under a given roots+format pair.
+   * Includes `frigate_url` for the same staleness reason as `_dayCacheKey`. */
   private _calendarCacheKey(
     roots: readonly string[],
     fmt: ReturnType<typeof parsePathFormat>
   ): string | null {
     const rootsKey = keyFromRoots(roots);
     const fmtSig = this._formatSignature(fmt);
+    const frigateUrl = String(this._config?.frigate_url ?? "");
     if (!rootsKey || !fmtSig) return null;
-    return `cgc_mscal1_${fnv1aHash(`${rootsKey}|${fmtSig}`)}`;
+    return `cgc_mscal1_${fnv1aHash(`${rootsKey}|${fmtSig}|${frigateUrl}`)}`;
   }
 
-  /** Flatten `dayCache` into `state.list` (sorted descending by dtMs).
-   * Called whenever a day is loaded so the existing render path sees the
-   * latest items. */
-  private _refreshList(): void {
-    const flat: MsItem[] = [];
-    for (const arr of this.state.dayCache.values()) flat.push(...arr);
-    flat.sort((a, b) => {
+  /** Sort one day's items in place, descending by `dtMs` with title as
+   * tie-break. Callers run this once at `dayCache.set` time so the per-day
+   * arrays are pre-sorted; `_refreshList` then becomes a linear concat. */
+  private _sortDayItemsInPlace(items: MsItem[]): MsItem[] {
+    items.sort((a, b) => {
       const am = a.dtMs ?? 0;
       const bm = b.dtMs ?? 0;
       if (bm !== am) return bm - am;
       return a.title < b.title ? 1 : a.title > b.title ? -1 : 0;
     });
+    return items;
+  }
+
+  /** Flatten `dayCache` into `state.list` (sorted descending by dtMs).
+   *
+   * Per-day arrays are pre-sorted at insertion (see `_sortDayItemsInPlace`),
+   * so this just walks the day buckets in descending dayKey order and
+   * concatenates. Undated items (no parseable `dtMs`) sit in a sentinel
+   * bucket and trail the dated days, matching legacy ordering where their
+   * `dtMs ?? 0` placed them after every real timestamp.
+   *
+   * Reduces `_refreshList` from O(N log N) per day-load (full re-sort) to
+   * O(K log K + N) where K is the day count — meaningful as the gallery
+   * accumulates loaded days during navigation. */
+  private _refreshList(): void {
+    const keys: string[] = [];
+    let hasUndated = false;
+    for (const key of this.state.dayCache.keys()) {
+      if (key === UNDATED_BUCKET) hasUndated = true;
+      else keys.push(key);
+    }
+    keys.sort((a, b) => (a < b ? 1 : a > b ? -1 : 0));
+    const flat: MsItem[] = [];
+    for (const key of keys) {
+      const arr = this.state.dayCache.get(key);
+      if (arr && arr.length) flat.push(...arr);
+    }
+    if (hasUndated) {
+      const arr = this.state.dayCache.get(UNDATED_BUCKET);
+      if (arr && arr.length) flat.push(...arr);
+    }
     this.setList(dedupeByRelPath(flat) as MsItem[]);
   }
 
@@ -959,6 +1033,73 @@ export class MediaSourceClient {
    * orchestrator paths to drop results that belong to the old config. */
   private _isStale(gen: number): boolean {
     return gen !== this._loadGeneration;
+  }
+
+  /**
+   * Build the Frigate snapshot library index — the input to
+   * `findMatchingSnapshotMediaId`. Frigate's snapshots root is shaped as
+   * `<root>/<camera_name>/<event-id>.jpg`, so we browse the root then
+   * descend ONE level into each per-camera subdir to enumerate the actual
+   * snapshot files. (Browsing only the root would index camera-name
+   * folders rather than image IDs; every pairing lookup would miss.)
+   *
+   * Returns a fully-populated `FrigateSnapshot[]`. Errors are caught at
+   * the call site so the snapshot index can fail without breaking the
+   * primary calendar walk.
+   */
+  private async _loadFrigateSnapshots(browseFn: BrowseFn): Promise<FrigateSnapshot[]> {
+    const dtOpts = this._getDtOpts();
+    const snapshotRoot = await browseFn(FRIGATE_SNAPSHOTS_ROOT);
+    const topChildren = Array.isArray(snapshotRoot?.children) ? snapshotRoot.children : [];
+    const snapshotItems: MediaSourceItem[] = [];
+    // Bounded fan-out so an over-large camera count doesn't stall the
+    // gallery's first paint behind dozens of browse calls.
+    const MAX_SNAPSHOT_DESCENT = 32;
+    const descendTargets: string[] = [];
+    for (const top of topChildren) {
+      if (!top?.media_content_id) continue;
+      if (top.can_expand) {
+        if (descendTargets.length < MAX_SNAPSHOT_DESCENT) {
+          descendTargets.push(String(top.media_content_id));
+        }
+      } else {
+        snapshotItems.push(top);
+      }
+    }
+    const subResults = await Promise.all(
+      descendTargets.map(async (id) => {
+        try {
+          const sub = await browseFn(id);
+          return Array.isArray(sub?.children) ? sub.children : [];
+        } catch {
+          return [];
+        }
+      })
+    );
+    for (const arr of subResults) snapshotItems.push(...arr);
+    return snapshotItems
+      .map((x): FrigateSnapshot | null => {
+        if (!x?.media_content_id) return null;
+        const id = String(x.media_content_id);
+        if (!id) return null;
+        const title = String(x.title ?? "");
+        const dtMsAttached = frigateEventIdMs(id);
+        const dtMs = dtMsAttached !== null ? dtMsAttached : dtMsFromSrc(title || id, dtOpts);
+        const dayKey = Number.isFinite(dtMs)
+          ? dayKeyFromMs(dtMs as number)
+          : extractDayKey(title || id, dtOpts);
+        const out: FrigateSnapshot = {
+          id,
+          title,
+          mime: String(x.media_content_type ?? ""),
+          cls: String(x.media_class ?? ""),
+          thumb: String(x.thumbnail ?? ""),
+          ...(dtMs !== null ? { dtMs } : {}),
+          dayKey,
+        };
+        return out;
+      })
+      .filter((x): x is FrigateSnapshot => x !== null);
   }
 
   private async _browse(rootId: string): Promise<MediaSourceItem | null> {

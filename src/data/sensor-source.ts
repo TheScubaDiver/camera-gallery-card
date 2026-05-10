@@ -115,6 +115,18 @@ export class SensorSourceClient {
   private _config: CameraGalleryCardConfig | null = null;
   private _srcEntityMap: Map<string, string> = new Map();
   private _sensorPairedThumbs: Map<string, string> = new Map();
+  /** Last-seen `fileList` attribute reference per entity. Identity check —
+   * HA returns the same array reference until the sensor genuinely updates,
+   * so this lets `getItems()` short-circuit on unrelated hass pushes. */
+  private _lastAttrRefs: Map<string, unknown> = new Map();
+  /** Cached items from the last rebuild; returned by reference when the
+   * fileList identity check passes. */
+  private _lastItems: CardItem[] = [];
+  /** Cached parsed lists keyed by raw attribute reference. Avoids repeat
+   * `JSON.parse` on FileTrack-legacy stringified fileLists when getItems()
+   * runs but the attribute is still the same object. */
+  private _parseCache: WeakMap<object, string[]> = new WeakMap();
+  private _stringParseCache: Map<string, string[]> = new Map();
   private readonly _onChange?: (() => void) | undefined;
 
   constructor(opts: SensorSourceClientOptions = {}) {
@@ -139,6 +151,10 @@ export class SensorSourceClient {
     this._config = config;
     this._srcEntityMap = new Map();
     this._sensorPairedThumbs = new Map();
+    this._lastAttrRefs = new Map();
+    this._lastItems = [];
+    this._stringParseCache = new Map();
+    this._parseCache = new WeakMap();
   }
 
   /**
@@ -166,20 +182,45 @@ export class SensorSourceClient {
 
   /**
    * Build `CardItem[]` from the configured sensor entities. Side effect:
-   * rebuilds `srcEntityMap` and `sensorPairedThumbs` (audit A7).
+   * rebuilds `srcEntityMap` and `sensorPairedThumbs` when fileList contents
+   * actually changed.
+   *
+   * Fast path: when every watched sensor's `fileList` attribute reference
+   * is the same as last call, return the cached `CardItem[]` by reference
+   * — Lit's reactive update doesn't need a fresh array, and the card's
+   * `_items()` memoization keys off this reference. Cuts O(n) per
+   * irrelevant hass push (the common case in active HA installs).
    *
    * `enrich` is injected by the card (closes over `_resolveItemMs` so the
    * client can stay framework-free).
    */
   getItems(enrich: Enrich = DEFAULT_ENRICH): CardItem[] {
     const entities = this.getEntityIds();
+
+    // Fast path: identity-check every watched fileList ref. If none changed
+    // and the entity set is the same size, return cached items unchanged
+    // and skip `onChange` so the card doesn't kick a render cycle.
+    if (entities.length === this._lastAttrRefs.size) {
+      let identical = true;
+      for (const id of entities) {
+        const raw = this._hass?.states?.[id]?.attributes?.[ATTR_NAME];
+        if (raw !== this._lastAttrRefs.get(id)) {
+          identical = false;
+          break;
+        }
+      }
+      if (identical) return this._lastItems;
+    }
+
     const list: string[] = [];
+    const nextRefs = new Map<string, unknown>();
     this._srcEntityMap = new Map();
 
     for (const entityId of entities) {
       const st = this._hass?.states?.[entityId];
       const raw = st?.attributes?.[ATTR_NAME];
-      const part = parseFileList(raw);
+      nextRefs.set(entityId, raw);
+      const part = this._parseFileListCached(raw);
       for (const src of part) {
         if (!this._srcEntityMap.has(src)) this._srcEntityMap.set(src, entityId);
       }
@@ -189,8 +230,38 @@ export class SensorSourceClient {
     const enriched = dedupeByRelPath(list).map((src) => enrich(String(src)));
     const { items: paired, pairedThumbs } = pairSensorItems(enriched);
     this._sensorPairedThumbs = pairedThumbs;
+    this._lastAttrRefs = nextRefs;
+    this._lastItems = paired;
+    // Fire onChange only when items actually rebuilt — prevents the render
+    // storm that would otherwise queue requestUpdate() during updated().
     if (this._onChange) this._onChange();
     return paired;
+  }
+
+  private _parseFileListCached(raw: unknown): string[] {
+    if (!raw) return [];
+    if (Array.isArray(raw) || (typeof raw === "object" && raw !== null)) {
+      const obj = raw as object;
+      const cached = this._parseCache.get(obj);
+      if (cached) return cached;
+      const parsed = parseFileList(raw);
+      this._parseCache.set(obj, parsed);
+      return parsed;
+    }
+    if (typeof raw === "string") {
+      const cached = this._stringParseCache.get(raw);
+      if (cached) return cached;
+      const parsed = parseFileList(raw);
+      // Bound the string cache: keep the most recent N to avoid unbounded
+      // growth if a sensor cycles through many distinct stringified shapes.
+      if (this._stringParseCache.size >= 8) {
+        const firstKey = this._stringParseCache.keys().next().value;
+        if (firstKey !== undefined) this._stringParseCache.delete(firstKey);
+      }
+      this._stringParseCache.set(raw, parsed);
+      return parsed;
+    }
+    return parseFileList(raw);
   }
 }
 

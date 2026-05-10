@@ -32,30 +32,68 @@ export interface DetectResult {
   readonly sampled: number;
   /** Other candidates that also matched, sorted descending. Useful for UI hints. */
   readonly runnersUp: ReadonlyArray<{ format: string; matches: number }>;
+  /** Every candidate the detector tested, with its match count.
+   * Sorted descending by matches (zero-match entries last). The editor's
+   * expandable "tested formats" view renders this. */
+  readonly allScores: ReadonlyArray<{ format: string; matches: number }>;
 }
 
-/** Curated common-NVR layouts. Keep ordered most-specific → most-generic so
- * tie-breaking favours formats that disambiguate more of the path. */
+/** Curated NVR / camera layouts. Ordered most-specific → most-generic so
+ * tie-breaking favours formats that disambiguate more of the path.
+ *
+ * Extensions intentionally omitted: the parser treats a leaf segment
+ * containing time tokens as "filename, match as substring" (see
+ * `path-format.ts`'s `unanchored` branch). Without `.mp4` baked into the
+ * suggestion, the same format string matches video AND image files —
+ * users with mixed clip + snapshot exports get one suggestion that
+ * covers both. Existing user configs with `.mp4` still parse fine; this
+ * is just about what we *suggest*.
+ *
+ * Coverage:
+ *   - Layout C: nested `YYYY/MM/DD[/HH]/leaf` and dashed `YYYY-MM-DD`
+ *     variants. Reolink / Frigate recordings / Hikvision / generic.
+ *   - Layout B: single dated folder + leaf. Synology, FileTrack.
+ *   - Layout A: flat folder, full timestamp in filename. Blue Iris,
+ *     direct exports. */
 const CANDIDATES: readonly string[] = [
-  // Layout C — nested year/month/day with timestamped filenames
-  "YYYY/MM/DD/YYYYMMDD_HHmmss.mp4",
-  "YYYY/MM/DD/YYYYMMDDHHmmss.mp4",
-  "YYYY/MM/DD/HHmmss.mp4",
-  "YYYY/MM/DD/HH-mm-ss.mp4",
+  // ─── Layout C — nested year/month/day. Most-specific (literal prefix
+  // / full timestamp) first so a tied scorer with the more generic
+  // pattern doesn't win a tie-break. ───
+  "YYYY/MM/DD/RLC_YYYYMMDDHHmmss",
+  "YYYY/MM/DD/YYYY-MM-DD_HH-mm-ss",
+  "YYYY/MM/DD/YYYYMMDD_HHmmss",
+  "YYYY/MM/DD/YYYYMMDDHHmmss",
+  "YYYY/MM/DD/HH-mm-ss",
+  "YYYY/MM/DD/HH_mm_ss",
+  "YYYY/MM/DD/HH.mm.ss",
   "YYYY/MM/DD/HHmmss",
-  // Layout C — Reolink-style RLC prefix in filenames
-  "YYYY/MM/DD/RLC_YYYYMMDDHHmmss.mp4",
-  // Layout B — single date folder + timestamped filename
-  "YYYYMMDD/HHmmss.mp4",
-  "YYYYMMDD/HHmmss",
-  "YYYY-MM-DD/HHmmss.mp4",
+  // ─── Layout C — nested year-month-day (dashes) ───
+  "YYYY-MM-DD/YYYY-MM-DD_HH-mm-ss",
+  "YYYY-MM-DD/YYYYMMDD_HHmmss",
+  "YYYY-MM-DD/HH-mm-ss",
+  "YYYY-MM-DD/HH_mm_ss",
+  "YYYY-MM-DD/HH.mm.ss",
   "YYYY-MM-DD/HHmmss",
-  "YYYYMMDD/YYYYMMDDHHmmss.mp4",
-  // Layout A — flat folder, full timestamp in filename
-  "YYYYMMDD_HHmmss.mp4",
-  "YYYY-MM-DD_HH-mm-ss.mp4",
-  "YYYYMMDDHHmmss.mp4",
+  // ─── Layout C+ — nested with hour subfolder (Frigate / Hikvision) ───
+  "YYYY-MM-DD/HH/MM.ss",
+  "YYYY-MM-DD/HH/MM-ss",
+  "YYYY-MM-DD/HH/HHmmss",
+  "YYYY/MM/DD/HH/MM.ss",
+  "YYYY/MM/DD/HH/HHmmss",
+  // ─── Layout B — single date folder ───
+  "YYYYMMDD/RLC_YYYYMMDDHHmmss",
+  "YYYYMMDD/YYYYMMDD_HHmmss",
+  "YYYYMMDD/YYYYMMDDHHmmss",
+  "YYYYMMDD/HH-mm-ss",
+  "YYYYMMDD/HHmmss",
+  // ─── Layout A — flat folder, full timestamp in filename ───
+  "RLC_YYYYMMDDHHmmss",
+  "RLC_YYYYMMDD_HHmmss",
+  "YYYY-MM-DDTHH-mm-ss",
+  "YYYY-MM-DD-HH-mm-ss",
+  "YYYY-MM-DD_HH-mm-ss",
   "YYYYMMDD_HHmmss",
+  "YYYYMMDD-HHmmss",
   "YYYYMMDDHHmmss",
 ];
 
@@ -167,23 +205,30 @@ export async function collectMediaSamples(
  */
 export function scoreSamples(samples: readonly string[]): DetectResult {
   if (samples.length === 0) {
-    return { format: null, matches: 0, sampled: 0, runnersUp: [] };
+    return { format: null, matches: 0, sampled: 0, runnersUp: [], allScores: [] };
   }
 
-  const scored: Array<{ format: string; matches: number }> = [];
+  // Score every candidate, including zero-match ones — the editor's
+  // expandable "tested formats" view shows the full list so users can
+  // see which patterns *almost* worked.
+  const allScored: Array<{ format: string; matches: number }> = [];
   for (const cand of CANDIDATES) {
     const fmt = parsePathFormat(cand);
-    if (!fmt) continue;
-    const matches = scoreCandidate(samples, fmt);
-    if (matches > 0) scored.push({ format: cand, matches });
+    if (!fmt) {
+      allScored.push({ format: cand, matches: 0 });
+      continue;
+    }
+    allScored.push({ format: cand, matches: scoreCandidate(samples, fmt) });
   }
 
   // Sort: most matches first; tie-break on candidate index (most-specific
   // first per the curated list order).
-  scored.sort((a, b) => {
+  allScored.sort((a, b) => {
     if (b.matches !== a.matches) return b.matches - a.matches;
     return CANDIDATES.indexOf(a.format) - CANDIDATES.indexOf(b.format);
   });
+
+  const scored = allScored.filter((x) => x.matches > 0);
 
   // Require at least half the samples to match before returning a winner —
   // avoids suggesting a format that only happened to match 1 random file.
@@ -197,6 +242,7 @@ export function scoreSamples(samples: readonly string[]): DetectResult {
       matches: winner?.matches ?? 0,
       sampled: samples.length,
       runnersUp: scored.slice(0, 3),
+      allScores: allScored,
     };
   }
 
@@ -205,6 +251,7 @@ export function scoreSamples(samples: readonly string[]): DetectResult {
     matches: winner.matches,
     sampled: samples.length,
     runnersUp: scored.slice(1, 4),
+    allScores: allScored,
   };
 }
 
