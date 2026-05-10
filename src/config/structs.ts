@@ -178,6 +178,7 @@ export const cameraGalleryCardConfigStruct = type({
   allow_bulk_delete: defaulted(boolean(), DEFAULT_ALLOW_BULK_DELETE),
   delete_confirm: defaulted(boolean(), DEFAULT_DELETE_CONFIRM),
   delete_service: defaulted(serviceId, DEFAULT_DELETE_SERVICE),
+  frigate_delete_service: defaulted(serviceId, ""),
 
   // ─── Object filters ────────────────────────────────────────
   // The loose `string | { name: icon }` input shape is unwrapped in
