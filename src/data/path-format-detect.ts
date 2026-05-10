@@ -139,22 +139,33 @@ function scoreCandidate(samples: readonly string[], fmt: PathFormat): number {
 }
 
 /**
- * Detect the best `path_datetime_format` for the given media-source roots.
+ * Browse-probe one or more media-source roots and return up to `limit`
+ * sample file paths. Bounded by `PROBE_BROWSE_BUDGET` per root.
  *
- * Probe budget is capped, so this is safe to call from a UI handler. Returns
- * `format: null` when no candidate matched the majority of probed samples.
+ * Stays format-agnostic: the caller decides which roots to hand in (e.g.
+ * filter out Frigate event-id roots first, since their URIs encode time
+ * directly and have nothing for this detector to match).
  */
-export async function detectPathFormat(
+export async function collectMediaSamples(
   roots: readonly string[],
-  browse: BrowseFn
-): Promise<DetectResult> {
+  browse: BrowseFn,
+  limit: number = PROBE_SAMPLE_LIMIT
+): Promise<string[]> {
   const samples: string[] = [];
   for (const root of roots) {
-    if (samples.length >= PROBE_SAMPLE_LIMIT) break;
+    if (samples.length >= limit) break;
     const part = await probeRoot(root, browse);
-    samples.push(...part.slice(0, PROBE_SAMPLE_LIMIT - samples.length));
+    samples.push(...part.slice(0, limit - samples.length));
   }
+  return samples;
+}
 
+/**
+ * Score `samples` against the curated candidate formats and pick the best.
+ * Pure — caller controls how samples were collected (media-source browse,
+ * sensor `fileList`, or both merged).
+ */
+export function scoreSamples(samples: readonly string[]): DetectResult {
   if (samples.length === 0) {
     return { format: null, matches: 0, sampled: 0, runnersUp: [] };
   }
@@ -195,4 +206,18 @@ export async function detectPathFormat(
     sampled: samples.length,
     runnersUp: scored.slice(1, 4),
   };
+}
+
+/**
+ * Detect the best `path_datetime_format` for the given media-source roots.
+ *
+ * Probe budget is capped, so this is safe to call from a UI handler. Returns
+ * `format: null` when no candidate matched the majority of probed samples.
+ */
+export async function detectPathFormat(
+  roots: readonly string[],
+  browse: BrowseFn
+): Promise<DetectResult> {
+  const samples = await collectMediaSamples(roots, browse);
+  return scoreSamples(samples);
 }

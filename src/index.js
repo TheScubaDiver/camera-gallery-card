@@ -35,7 +35,7 @@ import {
   keyFromRoots as msKeyFromRoots,
   MediaSourceClient,
 } from "./data/media-walker";
-import { detectPathFormat } from "./data/path-format-detect";
+import { collectMediaSamples, scoreSamples } from "./data/path-format-detect";
 import { CombinedSourceClient } from "./data/combined-source";
 import { canDeleteItem, deleteItem } from "./data/delete-service";
 import { fnv1aHash } from "./util/hash";
@@ -44,6 +44,7 @@ import {
   FRIGATE_URI_PREFIX,
   frigateEventIdMs,
   hasFrigateConfig,
+  isFrigateRecordingsRoot,
   isFrigateRoot,
 } from "./util/frigate";
 import {
@@ -8137,8 +8138,8 @@ class CameraGalleryCardEditor extends HTMLElement {
                 <div style="padding-top:8px;">
                   <input type="text" class="ed-input" id="pathfmt" placeholder="e.g. YYYY/MM/DD/HHmmss" />
                   <div class="row-actions" style="margin-top:6px;">
-                    <button type="button" class="actionbtn" id="detect-pathfmt"${(mediaModeOn || combinedModeOn) ? "" : " disabled"} title="${(mediaModeOn || combinedModeOn) ? "Probe the configured media folder(s) and suggest a format" : "Add a media folder first"}">
-                      ${svgIcon('mdi:magnify-scan', 18)}<span>Detect from media</span>
+                    <button type="button" class="actionbtn" id="detect-pathfmt" title="Probe configured sources and suggest a format">
+                      ${svgIcon('mdi:magnify-scan', 18)}<span>Detect format</span>
                     </button>
                     <span class="hint" id="detect-pathfmt-status" style="margin-left:8px;align-self:center;"></span>
                   </div>
@@ -10548,26 +10549,64 @@ if (oldPanel && tmp.firstElementChild) {
       "click",
       async () => {
         if (!this._hass || detectBtn.disabled) return;
-        const roots = Array.isArray(this._config?.media_sources)
+
+        // Two sample sources, scored together against the same candidate list:
+        //   1. Media-source roots — browse-probed. Frigate event/clip/snapshot
+        //      roots are skipped (their URIs encode time via event-id, not
+        //      path layout). Frigate *recordings* roots use date folders and
+        //      stay in.
+        //   2. Sensor `fileList` attributes — already in `hass.states`, so no
+        //      API calls needed. Capped to keep scoring cheap.
+        const allMediaRoots = Array.isArray(this._config?.media_sources)
           ? this._config.media_sources.filter(Boolean)
           : [];
-        if (roots.length === 0) {
-          if (detectStatus) detectStatus.textContent = "No media folders configured";
+        const probableRoots = allMediaRoots.filter(
+          (r) => !(isFrigateRoot(r) && !isFrigateRecordingsRoot(r))
+        );
+
+        const SENSOR_SAMPLE_CAP = 12;
+        const sensorSamples = [];
+        const entityIds = Array.isArray(this._config?.entities)
+          ? this._config.entities
+          : [];
+        for (const id of entityIds) {
+          if (typeof id !== "string" || !id) continue;
+          const raw = this._hass?.states?.[id]?.attributes?.fileList;
+          const list = Array.isArray(raw) ? raw : [];
+          for (const p of list) {
+            if (typeof p === "string" && p) sensorSamples.push(p);
+            if (sensorSamples.length >= SENSOR_SAMPLE_CAP) break;
+          }
+          if (sensorSamples.length >= SENSOR_SAMPLE_CAP) break;
+        }
+
+        if (probableRoots.length === 0 && sensorSamples.length === 0) {
+          if (detectStatus) {
+            const onlyFrigateMedia = allMediaRoots.length > 0;
+            detectStatus.textContent = onlyFrigateMedia
+              ? "Frigate roots use event-ids — no format needed"
+              : "Add a sensor or media folder to detect from";
+          }
           return;
         }
+
         // Snapshot the input value before the await so we can detect whether
         // the user typed something during detection. If they did, we don't
         // overwrite their work.
         const valueAtStart = pathFmtEl?.value ?? "";
         detectBtn.disabled = true;
-        const prevText = detectBtn.querySelector("span")?.textContent || "Detect from media";
+        const prevText = detectBtn.querySelector("span")?.textContent || "Detect format";
         const span = detectBtn.querySelector("span");
         if (span) span.textContent = "Detecting…";
         if (detectStatus) detectStatus.textContent = "";
         try {
           const browse = (id) =>
             this._hass.callWS({ type: "media_source/browse_media", media_content_id: id });
-          const result = await detectPathFormat(roots, browse);
+          const probedSamples = probableRoots.length
+            ? await collectMediaSamples(probableRoots, browse)
+            : [];
+          const samples = [...probedSamples, ...sensorSamples];
+          const result = scoreSamples(samples);
           if (result.format) {
             const userTypedDuringDetect = pathFmtEl && pathFmtEl.value !== valueAtStart;
             if (pathFmtEl && !userTypedDuringDetect) {

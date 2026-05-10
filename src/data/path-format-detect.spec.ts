@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { type BrowseFn, detectPathFormat } from "./path-format-detect";
+import {
+  type BrowseFn,
+  collectMediaSamples,
+  detectPathFormat,
+  scoreSamples,
+} from "./path-format-detect";
 import type { MediaSourceItem } from "../types/media-source";
 
 const folder = (id: string, title: string, children?: MediaSourceItem[]): MediaSourceItem => ({
@@ -163,5 +168,60 @@ describe("detectPathFormat", () => {
     const result = await detectPathFormat([ROOT], makeBrowse(tree));
     // The flat layout has multiple matching candidates (with/without ext).
     expect(result.runnersUp.length).toBeGreaterThanOrEqual(0);
+  });
+});
+
+describe("scoreSamples", () => {
+  // The detect button's click handler feeds `scoreSamples` a merged list of
+  // media-source paths AND sensor `fileList` paths so a single Detect press
+  // works for sensor / media / combined / Frigate-mixed configs alike.
+  it("scores sensor-shaped /local/ paths the same as media-source paths", () => {
+    const samples = [
+      "/local/security/cam1/2026/04/30/RLC_20260430120030.mp4",
+      "/local/security/cam1/2026/04/30/RLC_20260430130000.mp4",
+      "/local/security/cam1/2026/05/01/RLC_20260501090000.mp4",
+      "/local/security/cam1/2026/05/01/RLC_20260501100000.mp4",
+    ];
+    const result = scoreSamples(samples);
+    expect(result.format).toBe("YYYY/MM/DD/RLC_YYYYMMDDHHmmss.mp4");
+    expect(result.matches).toBe(4);
+  });
+
+  it("merges sensor + media samples and picks the shared layout", () => {
+    // Combined-mode reproducer: the user has a Frigate root (skipped by the
+    // editor before scoring) plus a sensor that lists the same files via a
+    // FileTrack-style `/local/...` path. The detector should score these
+    // sensor samples as if they came from the media probe.
+    const sensorOnly = [
+      "/local/cams/20260430/120030.mp4",
+      "/local/cams/20260430/130000.mp4",
+      "/local/cams/20260501/090000.mp4",
+    ];
+    const result = scoreSamples(sensorOnly);
+    expect(result.format).toBe("YYYYMMDD/HHmmss.mp4");
+    expect(result.matches).toBe(3);
+  });
+
+  it("returns empty result for empty samples (no Frigate carve-out leakage)", () => {
+    // The editor filters Frigate event-id roots out before calling probe; if
+    // they're the *only* configured roots and there are no sensor samples
+    // either, the detector receives `[]` and short-circuits.
+    const result = scoreSamples([]);
+    expect(result.format).toBeNull();
+    expect(result.sampled).toBe(0);
+  });
+});
+
+describe("collectMediaSamples", () => {
+  it("respects the limit argument", async () => {
+    const ROOT = "media-source://x/Cams";
+    const files = Array.from({ length: 20 }, (_, i) =>
+      file(`${ROOT}/clip${String(i).padStart(2, "0")}.mp4`, `clip${i}.mp4`)
+    );
+    const tree: Record<string, MediaSourceItem> = {
+      [ROOT]: folder(ROOT, "Cams", files),
+    };
+    const samples = await collectMediaSamples([ROOT], makeBrowse(tree), 5);
+    expect(samples.length).toBe(5);
   });
 });
