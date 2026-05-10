@@ -6,7 +6,7 @@ import { canDeleteItem, deleteItem } from "./delete-service";
 
 type Config = Pick<
   CameraGalleryCardConfig,
-  "source_mode" | "allow_delete" | "delete_service" | "delete_confirm"
+  "source_mode" | "allow_delete" | "delete_service" | "frigate_delete_service" | "delete_confirm"
 >;
 
 const cfg = (overrides: Partial<Config> = {}): Config =>
@@ -14,9 +14,12 @@ const cfg = (overrides: Partial<Config> = {}): Config =>
     source_mode: "sensor",
     allow_delete: true,
     delete_service: "shell_command.delete_clip",
+    frigate_delete_service: "",
     delete_confirm: false,
     ...overrides,
   }) as Config;
+
+const FRIGATE_SRC = "media-source://frigate/frigate/event/clips/achtertuin/1778250346.47892-y8byzk";
 
 describe("canDeleteItem — matrix gate", () => {
   it("returns false when src is missing", () => {
@@ -166,5 +169,137 @@ describe("deleteItem", () => {
       srcEntityMap: new Map(),
     });
     expect(ok).toBe(false);
+  });
+});
+
+describe("Frigate delete path", () => {
+  describe("canDeleteItem", () => {
+    it("enables delete on a Frigate event when frigate_delete_service is set", () => {
+      expect(
+        canDeleteItem({
+          src: FRIGATE_SRC,
+          config: cfg({
+            source_mode: "media",
+            frigate_delete_service: "rest_command.delete_frigate",
+          }),
+          srcEntityMap: new Map(),
+        })
+      ).toBe(true);
+    });
+
+    it("disables delete on a Frigate event when frigate_delete_service is empty", () => {
+      expect(
+        canDeleteItem({
+          src: FRIGATE_SRC,
+          config: cfg({ source_mode: "media", frigate_delete_service: "" }),
+          srcEntityMap: new Map(),
+        })
+      ).toBe(false);
+    });
+
+    it("works for Frigate items even in combined mode without sensor backing", () => {
+      // The Frigate path is independent of the sensor-backed gate.
+      expect(
+        canDeleteItem({
+          src: FRIGATE_SRC,
+          config: cfg({
+            source_mode: "combined",
+            frigate_delete_service: "rest_command.delete_frigate",
+          }),
+          srcEntityMap: new Map(),
+        })
+      ).toBe(true);
+    });
+
+    it("respects allow_delete=false even when frigate_delete_service is set", () => {
+      expect(
+        canDeleteItem({
+          src: FRIGATE_SRC,
+          config: cfg({
+            allow_delete: false,
+            source_mode: "media",
+            frigate_delete_service: "rest_command.delete_frigate",
+          }),
+          srcEntityMap: new Map(),
+        })
+      ).toBe(false);
+    });
+
+    it("rejects Frigate URIs with no parseable event id", () => {
+      // Recordings root has no event id in the URI.
+      expect(
+        canDeleteItem({
+          src: "media-source://frigate/frigate/recordings/2026-05-10/12",
+          config: cfg({
+            source_mode: "media",
+            frigate_delete_service: "rest_command.delete_frigate",
+          }),
+          srcEntityMap: new Map(),
+        })
+      ).toBe(false);
+    });
+  });
+
+  describe("deleteItem", () => {
+    it("calls the configured rest_command with event_id and camera", async () => {
+      const hass = makeFakeHass();
+      const ok = await deleteItem({
+        hass,
+        src: FRIGATE_SRC,
+        config: cfg({
+          source_mode: "media",
+          frigate_delete_service: "rest_command.delete_frigate",
+          delete_confirm: false,
+        }),
+        srcEntityMap: new Map(),
+      });
+      expect(ok).toBe(true);
+      expect(hass.serviceCalls).toHaveLength(1);
+      const call = hass.serviceCalls[0]!;
+      expect(call.domain).toBe("rest_command");
+      expect(call.service).toBe("delete_frigate");
+      expect(call.data).toEqual({
+        event_id: "1778250346.47892-y8byzk",
+        camera: "achtertuin",
+      });
+    });
+
+    it("returns false when user cancels the confirm prompt", async () => {
+      const hass = makeFakeHass();
+      const confirm = vi.fn(() => false);
+      const ok = await deleteItem({
+        hass,
+        src: FRIGATE_SRC,
+        config: cfg({
+          source_mode: "media",
+          frigate_delete_service: "rest_command.delete_frigate",
+          delete_confirm: true,
+        }),
+        srcEntityMap: new Map(),
+        confirm,
+      });
+      expect(ok).toBe(false);
+      expect(confirm).toHaveBeenCalled();
+      expect(hass.serviceCalls).toHaveLength(0);
+    });
+
+    it("falls through to sensor path when src isn't a Frigate event", async () => {
+      const hass = makeFakeHass();
+      const ok = await deleteItem({
+        hass,
+        src: "/config/www/foo.mp4",
+        config: cfg({
+          source_mode: "sensor",
+          delete_service: "shell_command.delete_clip",
+          frigate_delete_service: "rest_command.delete_frigate",
+        }),
+        srcEntityMap: new Map(),
+      });
+      expect(ok).toBe(true);
+      const call = hass.serviceCalls[0]!;
+      expect(call.domain).toBe("shell_command");
+      expect(call.service).toBe("delete_clip");
+      expect(call.data).toHaveProperty("path");
+    });
   });
 });

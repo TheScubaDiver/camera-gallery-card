@@ -66,6 +66,18 @@ export function frigateEventIdMs(src: string): number | null {
   return sec * 1000;
 }
 
+/**
+ * Extract the raw event id (`<unix_epoch>.<micros>-<random>`) from a Frigate
+ * media-source URI or REST URL. This is the form Frigate's
+ * `DELETE /api/events/<id>` endpoint expects.
+ */
+export function frigateEventIdFromSrc(src: string | null | undefined): string | null {
+  const m = String(src ?? "").match(
+    /(?:^|[/_.-])(\d{9,11}(?:\.\d+)?-[a-z0-9]+)(?:\.[a-z0-9]+)?(?:[/?#]|$)/i
+  );
+  return m?.[1] ?? null;
+}
+
 // ---------- REST API ----------
 
 /** Subset of fields the card consumes from a Frigate API event. */
