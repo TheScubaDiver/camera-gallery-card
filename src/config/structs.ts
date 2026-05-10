@@ -198,6 +198,12 @@ export const cameraGalleryCardConfigStruct = type({
     intInRange(THUMBNAIL_FRAME_PCT_MIN, THUMBNAIL_FRAME_PCT_MAX),
     DEFAULT_THUMBNAIL_FRAME_PCT
   ),
+  // When false (default `true`), skip the expensive `<video>`
+  // frame-extraction fallback and only display server-provided
+  // thumbnails. Items without a server thumb stay on the placeholder
+  // icon. Useful on slow / metered connections where pulling MB-scale
+  // mp4 files just for one frame isn't worth the bandwidth.
+  capture_video_thumbnails: defaulted(boolean(), true),
   pill_size: defaulted(intInRange(PILL_SIZE_MIN, PILL_SIZE_MAX), PILL_SIZE_DEFAULT),
   card_height: defaulted(intInRange(CARD_HEIGHT_MIN, CARD_HEIGHT_MAX), CARD_HEIGHT_DEFAULT),
   aspect_ratio: defaulted(enums(ASPECT_RATIOS), DEFAULT_ASPECT_RATIO),

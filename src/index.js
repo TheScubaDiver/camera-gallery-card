@@ -3048,6 +3048,12 @@ class CameraGalleryCard extends LitElement {
   //      `<video>`'s `canplay` event from `_ensurePreviewVideoHostPlayback`,
   //      which fires only when the user actually selects the item.
   _resolveVideoPoster(it, isMs, thumbUrl, tThumb /* selectedUrl unused */) {
+    // Honor the user's "low-bandwidth" preference: when
+    // `capture_video_thumbnails` is false, the expensive `<video>`
+    // frame-extraction fallback is disabled entirely. Items without
+    // a server thumbnail stay on the placeholder icon.
+    const captureAllowed = this.config?.capture_video_thumbnails !== false;
+
     if (!isMs) {
       const pairedJpg = this._sensorClient.getSensorPairedThumbs().get(it.src);
       if (pairedJpg) return this._posterCache.get(pairedJpg) || "";
@@ -3064,7 +3070,7 @@ class CameraGalleryCard extends LitElement {
         this._posterCache.set(it.src, mirrored);
         return mirrored;
       }
-      if (this._revealedThumbs.has(it.src)) {
+      if (captureAllowed && this._revealedThumbs.has(it.src)) {
         this._pendingPosterUrls?.add(it.src);
       }
       return "";
@@ -3103,7 +3109,9 @@ class CameraGalleryCard extends LitElement {
 
     // Last resort: the resolved video URL. Same as the sensor branch
     // above: prefer cached / IDB-mirrored frames; otherwise enqueue
-    // a capture only when the thumb is currently visible.
+    // a capture only when the thumb is currently visible AND the
+    // user hasn't disabled the expensive capture path via the
+    // `capture_video_thumbnails` flag.
     if (thumbUrl) {
       const cached = this._posterCache.get(thumbUrl);
       if (cached) return cached;
@@ -3112,7 +3120,7 @@ class CameraGalleryCard extends LitElement {
         this._posterCache.set(thumbUrl, mirrored);
         return mirrored;
       }
-      if (this._revealedThumbs.has(it.src)) {
+      if (captureAllowed && this._revealedThumbs.has(it.src)) {
         this._pendingPosterUrls?.add(thumbUrl);
       }
     }
@@ -9320,6 +9328,21 @@ class CameraGalleryCardEditor extends HTMLElement {
               </div>
 
               <div class="row">
+                <div class="row-head">
+                  <div>
+                    <div class="lbl">Capture video thumbnails</div>
+                    <div class="desc">
+                      ${svgIcon('mdi:information-outline', 14)}
+                      When on, videos without a server-supplied thumbnail get one extracted from the file as the user scrolls them into view. Turn off to save bandwidth on slow / metered connections — items without server thumbnails will show a placeholder icon.
+                    </div>
+                  </div>
+                  <div class="togrow">
+                    <label class="cgc-switch"><input type="checkbox" id="capture-video-thumbnails" ${c.capture_video_thumbnails !== false ? "checked" : ""}><span class="cgc-track"></span></label>
+                  </div>
+                </div>
+              </div>
+
+              <div class="row">
                 <div class="lbl">Thumbnail bar position</div>
                 <div class="segwrap">
                   <button class="seg ${thumbBarPos === "top" ? "on" : ""}" data-tbpos="top">Top</button>
@@ -11573,6 +11596,10 @@ if (oldPanel && tmp.firstElementChild) {
 
     $("cleanmode")?.addEventListener("change", (e) => {
       this._set("clean_mode", !!e.target.checked);
+    });
+
+    $("capture-video-thumbnails")?.addEventListener("change", (e) => {
+      this._set("capture_video_thumbnails", !!e.target.checked);
     });
 
     $("persistentcontrols")?.addEventListener("change", (e) => {

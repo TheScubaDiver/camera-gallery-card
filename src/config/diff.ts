@@ -45,6 +45,7 @@ const SOURCE_KEYS = new Set<ConfigKey>([
 const UI_ONLY_KEYS = new Set<ConfigKey>([
   "bar_opacity",
   "bar_position",
+  "capture_video_thumbnails",
   "live_camera_entity",
   "live_camera_entities",
   "live_enabled",
