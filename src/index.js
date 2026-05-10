@@ -4111,6 +4111,11 @@ class CameraGalleryCard extends LitElement {
     `;
     const galleryPillsRight = html`
       <div class="gallery-pills-right">
+        ${this.config?.debug_enabled ? html`
+          <button class="gallery-pill live-pill-btn" title="Diagnostics" @pointerdown=${(e) => e.stopPropagation()} @click=${(e) => { e.stopPropagation(); this._openDebug(); }}>
+            <ha-icon icon="mdi:bug-outline"></ha-icon>
+          </button>
+        ` : html``}
         ${!selectedIsVideo && selectedHasUrl && !noResultsForFilter ? html`
           <button class="gallery-pill live-pill-btn" @pointerdown=${(e) => e.stopPropagation()} @click=${(e) => { e.stopPropagation(); this._openImageFullscreen(); }}>
             <ha-icon icon="mdi:fullscreen"></ha-icon>
