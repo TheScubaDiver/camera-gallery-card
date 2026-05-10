@@ -40,8 +40,12 @@ import type { MediaSourceItem } from "../types/media-source";
 import { fnv1aHash } from "../util/hash";
 import {
   FRIGATE_SNAPSHOTS_ROOT,
+  FRIGATE_URI_PREFIX,
+  type FrigateEvent,
   fetchFrigateEvents,
+  fetchFrigateEventsViaWs,
   frigateEventIdMs,
+  frigateInstanceIdFromRoot,
   isFrigateRoot,
   mapFrigateEventToItem,
 } from "../util/frigate";
@@ -490,7 +494,118 @@ export class MediaSourceClient {
       return;
     }
 
+    // No `frigate_url` but Frigate event roots present → try the WS path
+    // through the Frigate-HA integration. One WS roundtrip returns all
+    // events with timestamps, no CORS, no per-folder browse storms. Falls
+    // through to the walker on failure.
+    const frigateRoots = roots.filter(isFrigateRoot);
+    if (frigateRoots.length > 0 && !failedRecently) {
+      const wsHandled = await this._loadFrigateWsPath(frigateRoots, config);
+      if (wsHandled) return;
+    }
+
     await this._loadWalkPath(roots, config);
+  }
+
+  /**
+   * Try the Frigate WS events path. Returns `true` when items were loaded
+   * (state was updated), `false` when nothing was returned and the caller
+   * should fall back to the walker. Aggregates events across all configured
+   * Frigate instances (one WS call per instance).
+   */
+  private async _loadFrigateWsPath(
+    frigateRoots: readonly string[],
+    config: CameraGalleryCardConfig
+  ): Promise<boolean> {
+    const hass = this._hass;
+    if (!hass) return false;
+    const cap = config.max_media ?? DEFAULT_MAX_MEDIA;
+    const key = `frigate_ws:${frigateRoots.slice().sort().join("|")}:${cap}`;
+    const sameKey = this.state.key === key;
+    const fresh = sameKey && Date.now() - (this.state.loadedAt ?? 0) < ENSURE_LOADED_FRESHNESS_MS;
+    if (this.state.loading || fresh) return true;
+
+    if (!sameKey) {
+      this.state.key = key;
+      this.setList([]);
+      this.state.urlCache = new Map();
+      this.resolveFailed = new Map();
+      this.state.frigateApiFailed = false;
+      this.state.frigateApiFailedAt = 0;
+    }
+
+    this.state.loading = true;
+    const gen = this._loadGeneration;
+    try {
+      const all: MsItem[] = [];
+      const seenIds = new Set<string>();
+      let anyResult = false;
+      // Match Frigate's own `.all` shortcut — high enough to span years of
+      // events. Frigate's default limit is 100 (too low).
+      const FRIGATE_WS_LIMIT = 10000;
+      for (const root of frigateRoots) {
+        if (this._isStale(gen)) return false;
+        const inst = frigateInstanceIdFromRoot(root);
+        if (!inst) continue;
+        const events: FrigateEvent[] | null = await fetchFrigateEventsViaWs(
+          hass,
+          inst,
+          FRIGATE_WS_LIMIT
+        );
+        if (!events) continue;
+        anyResult = true;
+        for (const ev of events) {
+          const eventId = String(ev?.id ?? "");
+          if (!eventId) continue;
+          const camera = String(ev?.camera ?? "");
+          if (!camera) continue;
+          const id = `${FRIGATE_URI_PREFIX}/${inst}/event/clips/${camera}/${eventId}`;
+          if (seenIds.has(id)) continue;
+          seenIds.add(id);
+          const startSec = Number(ev?.start_time ?? 0);
+          const dtMs =
+            Number.isFinite(startSec) && startSec > 0
+              ? Math.round(startSec * 1000)
+              : (frigateEventIdMs(id) ?? 0);
+          if (!dtMs) continue;
+          const label = String(ev?.label ?? "");
+          const title = [new Date(dtMs).toLocaleString(), camera, label]
+            .filter(Boolean)
+            .join(" — ");
+          all.push({
+            id,
+            title,
+            cls: "video",
+            mime: "video/mp4",
+            // Notifications proxy is permissive (cookie auth via <img src>) —
+            // the strict /thumbnail/<id> route requires a Bearer header that
+            // an <img> can't send.
+            thumb: `/api/frigate/${inst}/notifications/${eventId}/thumbnail.jpg`,
+            dtMs,
+          });
+        }
+      }
+      if (this._isStale(gen)) return false;
+      if (!anyResult) {
+        // No instance returned anything — let the walker try.
+        this.state.loading = false;
+        return false;
+      }
+      all.sort((a, b) => (b.dtMs ?? 0) - (a.dtMs ?? 0));
+      this.setList(all.slice(0, cap));
+      this.state.loadedAt = Date.now();
+      return true;
+    } catch (e) {
+      if (this._isStale(gen)) return false;
+      console.warn("CGC Frigate WS load failed:", e);
+      this.setList([]);
+      return false;
+    } finally {
+      if (!this._isStale(gen)) {
+        this.state.loading = false;
+        this._fireChange();
+      }
+    }
   }
 
   private async _loadFrigateApiPath(
