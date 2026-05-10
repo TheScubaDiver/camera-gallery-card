@@ -948,9 +948,10 @@ class CameraGalleryCard extends LitElement {
         video.addEventListener("error", () => {
           const code = video.error?.code;
           // MediaError.code: 1=ABORTED, 2=NETWORK, 3=DECODE, 4=SRC_NOT_SUPPORTED.
-          // Only 4 is unambiguously "this file is broken"; the others
+          // 3 & 4 are extraction-side ("file got here, can't decode") —
+          // mark hard so we don't retry. 1 (aborted) & 2 (network)
           // can recover on a retry once the connection improves.
-          const isHard = code === 4;
+          const isHard = code === 3 || code === 4;
           this._recordPosterFailure(urlForPoster, { hard: isHard });
           if (isHard) this._lsThumbDelete(urlForPoster);
           this.requestUpdate();
@@ -2994,6 +2995,45 @@ class CameraGalleryCard extends LitElement {
     return false;
   }
 
+  /** True iff a fetch / capture is currently in flight (or queued)
+   * for any URL that could produce this item's poster. Walks the
+   * same fallback chain as `_resolveVideoPoster` so a download in
+   * progress on the paired-jpg or browse_media thumbnail counts.
+   *
+   * Render uses this to switch from the (idle) skeleton to the
+   * (active) spinner state — communicates "we're working on it"
+   * instead of "this might never load". */
+  _isPosterLoading(it, isMs, thumbUrl, tThumb) {
+    const isUrlLoading = (url) =>
+      !!url &&
+      (this._posterPending.has(url) ||
+        this._posterInFlight.has(url) ||
+        this._posterQueued.has(url));
+    if (isUrlLoading(it.src)) return true;
+    if (!isMs) {
+      const pairedJpg = this._sensorClient.getSensorPairedThumbs().get(it.src);
+      return isUrlLoading(pairedJpg);
+    }
+    if (isUrlLoading(thumbUrl)) return true;
+    if (isUrlLoading(tThumb)) return true;
+    const pairedJpgId = this._mediaClient.getPairedThumbs().get(it.src);
+    if (pairedJpgId) {
+      const jpgUrl = this._mediaClient.getUrlCache().get(pairedJpgId) || "";
+      if (isUrlLoading(jpgUrl)) return true;
+    }
+    return false;
+  }
+
+  /** True iff this video item has no possible poster source under the
+   * current config: no server-side thumbnail AND
+   * `capture_video_thumbnails` is explicitly off. Render shows a
+   * static "disabled" icon for these so users understand the absence
+   * is a config choice, not a failure. */
+  _willNeverLoad(it, isMs, tThumb) {
+    if (this.config?.capture_video_thumbnails !== false) return false;
+    return !this._hasServerThumbForVideo(it, isMs, tThumb);
+  }
+
   /** True iff the gallery has a server-provided thumbnail for this
    * item that we can fetch cheaply (small HTTP request) — meaning we
    * don't need to fall back to expensive `<video>` frame capture.
@@ -3504,14 +3544,27 @@ class CameraGalleryCard extends LitElement {
     } catch (e) {
       const status = e?.status;
       const code = e?.mediaErrorCode;
-      // Hard failures: confirmed missing or unsupported. The file
-      // won't recover on retry — render the broken icon and stop.
+      const msg = String(e?.message ?? "");
+      // Hard failures: anything that won't recover on retry. The
+      // rule of thumb is "the file got here but we can't make a
+      // frame out of it" — retrying won't help. That covers 404
+      // (file gone), codec errors (3, 4), and post-download
+      // extraction failures (blank frame, toBlob null, tainted
+      // canvas).
+      //
+      // Soft failures stay soft: capture timeout, fetch AbortError,
+      // MEDIA_ERR_NETWORK (2), MEDIA_ERR_ABORTED (1), 5xx — these
+      // are likely to succeed on a retry once the connection
+      // catches up.
+      const isExtractionFail =
+        msg === "blank frame" ||
+        msg === "toBlob returned null" ||
+        msg === "no video dimensions";
       const isHard =
         status === 404 ||
-        code === 4; /* MEDIA_ERR_SRC_NOT_SUPPORTED — codec / missing */
-      // Soft failures: capture timeout, fetch AbortError, transient
-      // network. Likely to succeed on a retry once the connection
-      // catches up — keep showing the skeleton, retry after cooldown.
+        code === 3 /* MEDIA_ERR_DECODE */ ||
+        code === 4 /* MEDIA_ERR_SRC_NOT_SUPPORTED */ ||
+        isExtractionFail;
       this._recordPosterFailure(src, { hard: isHard });
       if (status === 404) this._lsThumbDelete(src);
     } finally {
@@ -5053,11 +5106,13 @@ class CameraGalleryCard extends LitElement {
                             ? html`<div class="tph broken" aria-hidden="true">
                                 <ha-icon icon="mdi:image-broken-variant"></ha-icon>
                               </div>`
-                            : isVid && this._prewarmDone && !this._hasServerThumbForVideo(it, isMs, tThumb)
-                              ? html`<div class="tph video-placeholder" aria-hidden="true">
-                                  <ha-icon icon="mdi:movie-outline"></ha-icon>
+                            : isVid && this._prewarmDone && this._willNeverLoad(it, isMs, tThumb)
+                              ? html`<div class="tph disabled" aria-hidden="true" title="Thumbnail capture is off">
+                                  <ha-icon icon="mdi:cloud-off-outline"></ha-icon>
                                 </div>`
-                              : html`<div class="tph skeleton" aria-hidden="true"></div>`}
+                              : this._isPosterLoading(it, isMs, thumbUrl, tThumb)
+                                ? html`<div class="tph spinner" aria-hidden="true"></div>`
+                                : html`<div class="tph skeleton" aria-hidden="true"></div>`}
 
                         ${showBar
                           ? html`
@@ -6698,37 +6753,66 @@ class CameraGalleryCard extends LitElement {
         color: var(--cgc-thumb-broken-color, rgba(255, 255, 255, 0.55));
       }
 
-      /* Video tile with no server-provided thumbnail. Capture from
-       * the actual video file is deferred until the user clicks the
-       * item, so this state is the steady "haven't watched yet"
-       * appearance — not a loading or failure state. Quieter than
-       * .broken (no warning tint) and statically rendered (no
-       * shimmer). */
-      .tph.video-placeholder {
+      /* Active loading state — a fetch or capture is in flight for
+       * this item. Distinguishes "we're working on it" from the
+       * static skeleton (which can also mean "off-screen idle"). */
+      .tph.spinner {
         display: grid;
         place-items: center;
         background: var(--cgc-thumb-bg);
-        color: var(--cgc-thumb-placeholder-color, rgba(255, 255, 255, 0.4));
       }
 
-      .tph.video-placeholder ha-icon {
-        --mdc-icon-size: 32px;
-        --ha-icon-size: 32px;
-        width: 32px;
-        height: 32px;
+      .tph.spinner::after {
+        content: "";
+        width: 22px;
+        height: 22px;
+        border-radius: 50%;
+        border: 2px solid var(--cgc-spinner-track, rgba(255, 255, 255, 0.15));
+        border-top-color: var(--cgc-spinner-color, rgba(255, 255, 255, 0.7));
+        animation: cgc-thumb-spin 0.8s linear infinite;
+      }
+
+      @keyframes cgc-thumb-spin {
+        to { transform: rotate(360deg); }
+      }
+
+      /* Will-not-load state — capture_video_thumbnails is off and
+       * no server-provided thumbnail exists. Distinct from .broken
+       * (failure) and .skeleton (loading) so users can tell the
+       * absence is a config choice. */
+      .tph.disabled {
+        display: grid;
+        place-items: center;
+        background: var(--cgc-thumb-bg);
+        color: var(--cgc-thumb-disabled-color, rgba(255, 255, 255, 0.32));
+      }
+
+      .tph.disabled ha-icon {
+        --mdc-icon-size: 28px;
+        --ha-icon-size: 28px;
+        width: 28px;
+        height: 28px;
         opacity: 0.7;
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        .tph.spinner::after {
+          animation: none;
+        }
       }
 
       /* When the timestamp bar is actually shown, inset the broken-state's
        * centering area by the bar height so the icon sits visually centered
        * in the *visible* image region instead of the absolute thumb center. */
       .tthumb.bar-bottom.with-bar .tph.broken,
-      .tthumb.bar-bottom.with-bar .tph.video-placeholder {
+      .tthumb.bar-bottom.with-bar .tph.disabled,
+      .tthumb.bar-bottom.with-bar .tph.spinner {
         padding-bottom: 26px;
       }
 
       .tthumb.bar-top.with-bar .tph.broken,
-      .tthumb.bar-top.with-bar .tph.video-placeholder {
+      .tthumb.bar-top.with-bar .tph.disabled,
+      .tthumb.bar-top.with-bar .tph.spinner {
         padding-top: 26px;
       }
 
