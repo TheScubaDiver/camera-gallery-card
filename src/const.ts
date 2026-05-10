@@ -70,7 +70,7 @@ export const BAR_OPACITY_MIN = 0;
 export const BAR_OPACITY_MAX = 100;
 
 // -------- Sensor poster generation --------
-export const SENSOR_POSTER_CONCURRENCY = 16;
+export const SENSOR_POSTER_CONCURRENCY = 8;
 export const SENSOR_POSTER_QUEUE_LIMIT = 500;
 
 // -------- Long-press gestures --------
