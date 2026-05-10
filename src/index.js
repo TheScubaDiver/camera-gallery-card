@@ -806,7 +806,12 @@ class CameraGalleryCard extends LitElement {
       this._posterInFlight.size < SENSOR_POSTER_CONCURRENCY &&
       this._posterQueue.length
     ) {
-      const src = this._posterQueue.pop();
+      // FIFO drain: items are pushed in render order (newest-first
+      // by day-sort), so `shift()` here makes the user see the
+      // top-of-gallery (most recent) thumbnails resolve first. The
+      // O(n) shift cost on a small queue is negligible vs the
+      // capture work itself.
+      const src = this._posterQueue.shift();
       this._posterQueued.delete(src);
 
       if (!src) continue;
@@ -3046,15 +3051,21 @@ class CameraGalleryCard extends LitElement {
     if (!isMs) {
       const pairedJpg = this._sensorClient.getSensorPairedThumbs().get(it.src);
       if (pairedJpg) return this._posterCache.get(pairedJpg) || "";
-      // No paired jpg → we'd need a video-frame capture. Don't
-      // enqueue speculatively; surface the IDB-cached frame if a
-      // previous click captured one, else "" → placeholder.
+      // No paired jpg → would need video-frame capture (expensive).
+      // Surface any previously-captured frame from the IDB mirror;
+      // otherwise enqueue a fresh capture but ONLY when the thumb
+      // is currently in the viewport. Off-screen items stay on the
+      // placeholder so we don't burn bandwidth on items the user
+      // may never scroll to.
       const cached = this._posterCache.get(it.src);
       if (cached) return cached;
       const mirrored = this._lsThumbGet(it.src);
       if (mirrored) {
         this._posterCache.set(it.src, mirrored);
         return mirrored;
+      }
+      if (this._revealedThumbs.has(it.src)) {
+        this._pendingPosterUrls?.add(it.src);
       }
       return "";
     }
@@ -3090,10 +3101,9 @@ class CameraGalleryCard extends LitElement {
       return "";
     }
 
-    // Last resort: the resolved video URL. Don't enqueue — return
-    // whatever's already in cache (or the IDB mirror) so a previously
-    // captured frame is preserved across sessions; otherwise fall
-    // through to the placeholder branch in render.
+    // Last resort: the resolved video URL. Same as the sensor branch
+    // above: prefer cached / IDB-mirrored frames; otherwise enqueue
+    // a capture only when the thumb is currently visible.
     if (thumbUrl) {
       const cached = this._posterCache.get(thumbUrl);
       if (cached) return cached;
@@ -3101,6 +3111,9 @@ class CameraGalleryCard extends LitElement {
       if (mirrored) {
         this._posterCache.set(thumbUrl, mirrored);
         return mirrored;
+      }
+      if (this._revealedThumbs.has(it.src)) {
+        this._pendingPosterUrls?.add(thumbUrl);
       }
     }
     return "";
