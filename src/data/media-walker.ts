@@ -670,8 +670,12 @@ export class MediaSourceClient {
     const frigateRoots = roots.filter(isFrigateRoot);
     const otherRoots = roots.filter((r) => !isFrigateRoot(r));
 
+    // WS path is independent of `frigate_url` — don't gate it on the REST
+    // API's recent-failure flag. Otherwise a transient REST failure (wrong
+    // URL, network blip, CORS) takes the WS fallback offline too, leaving
+    // the gallery empty for FRIGATE_API_RETRY_AFTER_MS.
     let frigateItems: MsItem[] = [];
-    if (frigateRoots.length > 0 && !failedRecently) {
+    if (frigateRoots.length > 0) {
       frigateItems = await this._fetchFrigateWsItems(frigateRoots, config);
     }
 
