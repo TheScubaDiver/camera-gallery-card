@@ -34,8 +34,12 @@ import type { HomeAssistant } from "../types/hass";
 import type { MediaSourceItem } from "../types/media-source";
 import {
   FRIGATE_SNAPSHOTS_ROOT,
+  FRIGATE_URI_PREFIX,
+  type FrigateEvent,
   fetchFrigateEvents,
+  fetchFrigateEventsViaWs,
   frigateEventIdMs,
+  frigateInstanceIdFromRoot,
   isFrigateRoot,
   mapFrigateEventToItem,
 } from "../util/frigate";
@@ -659,7 +663,91 @@ export class MediaSourceClient {
       return;
     }
 
-    await this._loadCalendarPath(roots);
+    // Split the roots: Frigate roots load via the HA WebSocket integration
+    // (CORS-free, no `frigate_url` needed), other roots through the calendar
+    // walker (path-based bucketing). Both run for mixed configs and their
+    // results are merged into a single `state.list` at the end.
+    const frigateRoots = roots.filter(isFrigateRoot);
+    const otherRoots = roots.filter((r) => !isFrigateRoot(r));
+
+    let frigateItems: MsItem[] = [];
+    if (frigateRoots.length > 0 && !failedRecently) {
+      frigateItems = await this._fetchFrigateWsItems(frigateRoots, config);
+    }
+
+    if (otherRoots.length > 0) {
+      await this._loadCalendarPath(otherRoots);
+    }
+
+    if (frigateItems.length > 0) {
+      const cap = config.max_media ?? DEFAULT_MAX_MEDIA;
+      const headroom = Math.max(cap * 10, 500);
+      // Merge Frigate items with whatever the calendar walker already wrote
+      // to state.list (sensor-source items, recordings, etc.) and re-sort.
+      const merged = (this.state.list.length ? [...frigateItems, ...this.state.list] : frigateItems)
+        .slice()
+        .sort((a, b) => (b.dtMs ?? 0) - (a.dtMs ?? 0));
+      this.setList(merged.slice(0, headroom));
+      this.state.loadedAt = Date.now();
+      this._fireChange();
+    } else if (frigateRoots.length > 0 && otherRoots.length === 0) {
+      // All-Frigate config but WS path returned nothing — surface an empty
+      // list rather than spinning forever.
+      this.setList([]);
+    }
+  }
+
+  /**
+   * Fetch Frigate events via the HA WebSocket integration. Returns the items
+   * directly so the caller can merge them with results from other paths.
+   * Does NOT touch state.list or state.calendar — that's the caller's job.
+   */
+  private async _fetchFrigateWsItems(
+    frigateRoots: readonly string[],
+    config: CameraGalleryCardConfig
+  ): Promise<MsItem[]> {
+    const hass = this._hass;
+    if (!hass) return [];
+    const all: MsItem[] = [];
+    const seenIds = new Set<string>();
+    const FRIGATE_WS_LIMIT = 10000;
+    for (const root of frigateRoots) {
+      const inst = frigateInstanceIdFromRoot(root);
+      if (!inst) continue;
+      const events: FrigateEvent[] | null = await fetchFrigateEventsViaWs(
+        hass,
+        inst,
+        FRIGATE_WS_LIMIT
+      );
+      if (!events) continue;
+      for (const ev of events) {
+        const eventId = String(ev?.id ?? "");
+        if (!eventId) continue;
+        const camera = String(ev?.camera ?? "");
+        if (!camera) continue;
+        const id = `${FRIGATE_URI_PREFIX}/${inst}/event/clips/${camera}/${eventId}`;
+        if (seenIds.has(id)) continue;
+        seenIds.add(id);
+        const startSec = Number(ev?.start_time ?? 0);
+        const dtMs =
+          Number.isFinite(startSec) && startSec > 0
+            ? Math.round(startSec * 1000)
+            : (frigateEventIdMs(id) ?? 0);
+        if (!dtMs) continue;
+        const label = String(ev?.label ?? "");
+        const title = [new Date(dtMs).toLocaleString(), camera, label].filter(Boolean).join(" — ");
+        all.push({
+          id,
+          title,
+          cls: "video",
+          mime: "video/mp4",
+          thumb: `/api/frigate/${inst}/notifications/${eventId}/thumbnail.jpg`,
+          dtMs,
+        });
+      }
+    }
+    all.sort((a, b) => (b.dtMs ?? 0) - (a.dtMs ?? 0));
+    return all;
   }
 
   private async _loadFrigateApiPath(

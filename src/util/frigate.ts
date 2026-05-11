@@ -168,3 +168,55 @@ export function mapFrigateEventToItem(ev: FrigateEvent, base: string): MappedFri
   };
   return { item, clipUrl };
 }
+
+/**
+ * Fetch Frigate events via the Frigate-hass-integration's
+ * `frigate/events/get` WebSocket command. Same payload shape as the REST
+ * endpoint, but routed through HA — so it works regardless of CORS and
+ * without needing a `frigate_url` in the card config.
+ *
+ * Returns null on any failure (no instance id, integration missing, transport
+ * error). Caller treats null as "no events" and falls back to the REST/walk path.
+ */
+interface HassLike {
+  callWS<T>(msg: Record<string, unknown>): Promise<T>;
+}
+export async function fetchFrigateEventsViaWs(
+  hass: HassLike | null | undefined,
+  instanceId: string | null | undefined,
+  limit?: number
+): Promise<FrigateEvent[] | null> {
+  if (!hass || !instanceId) return null;
+  try {
+    const msg: Record<string, unknown> = {
+      type: "frigate/events/get",
+      instance_id: instanceId,
+      has_clip: true,
+    };
+    if (typeof limit === "number" && limit > 0) msg["limit"] = limit;
+    const result = await hass.callWS<unknown>(msg);
+    let parsed: unknown = result;
+    if (typeof parsed === "string") {
+      try {
+        parsed = JSON.parse(parsed);
+      } catch {
+        return null;
+      }
+    }
+    if (Array.isArray(parsed)) return parsed as FrigateEvent[];
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Extract the Frigate instance id from a media-source URI like
+ * `media-source://frigate/<inst>/event-search/clips`. Returns null when the
+ * URI isn't a Frigate root.
+ */
+export function frigateInstanceIdFromRoot(uri: string | null | undefined): string | null {
+  const s = String(uri ?? "");
+  const m = s.match(/^media-source:\/\/frigate\/([^/]+)/);
+  return m?.[1] ?? null;
+}
