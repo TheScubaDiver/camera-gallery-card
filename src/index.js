@@ -172,7 +172,12 @@ class CameraGalleryCard extends LitElement {
     this._liveLayoutOverride = null;
     // Per-tile player elements when in grid layout, keyed by camera entity.
     this._liveGridTiles = new Map();
-    this._liveWarmedUp = false;
+    this._liveCardPending = null;
+    this._rtcPeerConnection = null;
+    this._rtcWebSocket = null;
+    this._micStream = null;
+    this._micPeerConnection = null;
+    this._micWebSocket = null;
     this._signedWsPath = null;
     this._signedWsPathTs = 0;
     this._autoAspectVideo = null;
@@ -501,6 +506,7 @@ class CameraGalleryCard extends LitElement {
     this._micErrorTimer = null;
 
     this._clearPreviewVideoHostPlayback();
+    this._teardownLiveView();
 
     this._clearThumbLongPress();
 
@@ -1439,7 +1445,7 @@ class CameraGalleryCard extends LitElement {
         ["Last fetch", fmtTs(loadedAt), loadedAt && (Date.now() - loadedAt < 5 * 60 * 1000) ? "ok" : loadedAt ? "warn" : "bad"],
         ["Direct API", ms.frigateApiFailed ? `failed (${ageS(failedAt)})` : "ok", ms.frigateApiFailed ? "warn" : "ok"],
         ["WS subscribe (frigate/events)", this._frigateEventsUnsub ? "active" : "inactive", this._frigateEventsUnsub ? "ok" : (frigateInstalled ? "warn" : null)],
-        ["Live card mounted", this._liveCard ? "yes" : "no", this._liveCard ? "ok" : (cfg.live_enabled ? "warn" : null)],
+        ["Live card mounted", this._liveCard ? "yes" : "no", this._liveCard ? "ok" : (cfg.live_enabled && this._viewMode === "live" ? "warn" : null)],
         ["Live layout override", this._liveLayoutOverride || "—"],
       ]],
       ["Live cameras", "mdi:cctv", (() => {
@@ -2132,13 +2138,9 @@ class CameraGalleryCard extends LitElement {
 
   _returnToGrid() {
     this._liveLayoutOverride = null;
-    // Tear down the single-camera player so the grid mount starts clean.
-    const host = this.renderRoot?.querySelector("#live-card-host");
-    if (this._liveCard && host && host.contains(this._liveCard)) {
-      try { this._liveCard.remove(); } catch (_) {}
-    }
-    this._liveCard = null;
-    this._liveCardConfigKey = "";
+    // Tear down the single-camera player so the grid mount starts clean. Going
+    // through the shared helper also closes any PC/WS the URL-fast-path opened.
+    this._teardownLiveView();
     this.requestUpdate();
     setTimeout(() => this._mountLiveCard(), 0);
   }
@@ -2223,11 +2225,9 @@ class CameraGalleryCard extends LitElement {
 
     if (this._isGridLayout()) {
       // Tear down a previously-mounted single player before switching to grid.
-      if (this._liveCard && host.contains(this._liveCard)) {
-        try { this._liveCard.remove(); } catch (_) {}
-        this._liveCard = null;
-        this._liveCardConfigKey = "";
-      }
+      // Routing through the shared helper also closes URL-fast-path PC/WS that
+      // remove() alone leaves dangling.
+      if (this._liveCard) this._teardownLiveView();
       return this._mountLiveGrid();
     }
 
@@ -2271,30 +2271,48 @@ class CameraGalleryCard extends LitElement {
     this._setupAutoAspectRatio();
   }
 
-  async _warmupLiveCard() {
-    if (!this._hasLiveConfig()) return;
-    // Grid mode mounts directly when the user opens live view; pre-warm only
-    // makes sense for the single-camera fast-path.
-    if (this._isGridLayout()) return;
-    const host = this.renderRoot?.querySelector("#live-card-host");
-    if (!host) return;
-
-    const effectiveCam = this._getEffectiveLiveCamera();
-    const streamEntry = this._getStreamEntryById(effectiveCam);
-    const card = streamEntry
-      ? await this._ensureLiveCardFromUrl(streamEntry.url)
-      : await this._ensureLiveCard();
-    if (!card) return;
-
-    if (card.parentElement !== host) {
-      host.innerHTML = "";
-      host.appendChild(card);
-      card.hass = this._hass;
-      this._injectLiveFillStyle(card);
-      this._liveMuted = this.config?.live_auto_muted !== false;
-      this._syncLiveMuted();
+  // Fully releases the live view: stops playback, closes WebRTC, detaches the
+  // mounted card, and clears grid tiles. Safe to call when nothing is mounted.
+  // Why: ha-camera-stream's disconnectedCallback handles its own tree, but the
+  // URL-fast-path holds a PC + WS on `this` that won't close just by removing
+  // the <video>, and `display:none` doesn't pause playback either — so a card
+  // left mounted in media mode keeps streaming and audible (issue #109).
+  _teardownLiveView() {
+    if (this._autoAspectObs) {
+      clearInterval(this._autoAspectObs);
+      this._autoAspectObs = null;
     }
-    this._setupAutoAspectRatio();
+    this._autoAspectVideo = null;
+
+    // Pause first so audio stops before we wait on element removal.
+    const video = this._findLiveVideo();
+    if (video) {
+      try { video.pause(); } catch (_) {}
+      try { video.srcObject = null; } catch (_) {}
+    }
+
+    if (this._rtcWebSocket) {
+      try { this._rtcWebSocket.close(); } catch (_) {}
+      this._rtcWebSocket = null;
+    }
+    if (this._rtcPeerConnection) {
+      try { this._rtcPeerConnection.close(); } catch (_) {}
+      this._rtcPeerConnection = null;
+    }
+    this._liveCardPending = null;
+
+    // Push-to-talk mic shares the live view's lifecycle; if it's still hot
+    // when we leave live, the user keeps transmitting from the gallery view.
+    this._stopMicStream();
+
+    const host = this.renderRoot?.querySelector("#live-card-host");
+    if (this._liveCard && host && host.contains(this._liveCard)) {
+      try { this._liveCard.remove(); } catch (_) {}
+    }
+    this._liveCard = null;
+    this._liveCardConfigKey = "";
+
+    this._clearLiveGrid();
   }
 
   _injectLiveFillStyle(card) {
@@ -2512,9 +2530,10 @@ class CameraGalleryCard extends LitElement {
     if (!next) return;
 
     this._hideLiveQuickSwitchButton();
-    this._liveCard = null;
-    this._liveCardConfigKey = "";
-    this._liveWarmedUp = false;
+    // Full teardown of the current card before swapping cameras: URL→entity
+    // transitions otherwise leak the previous PC/WS, since _ensureLiveCard
+    // doesn't know to close them.
+    this._teardownLiveView();
     this._signedWsPath = null;
     this._liveSelectedCamera = next;
 
@@ -2541,6 +2560,7 @@ class CameraGalleryCard extends LitElement {
     const mode = nextMode === "live" ? "live" : "media";
     if (mode === "live" && !this._hasLiveConfig()) return;
 
+    const wasLive = this._viewMode === "live";
     this._viewMode = mode;
     this._showNav = false;
 
@@ -2553,6 +2573,7 @@ class CameraGalleryCard extends LitElement {
       this._showLivePicker = false;
       this._resetZoom();
       this._aspectRatio = this._parseAspectRatio(this.config?.aspect_ratio);
+      if (wasLive) this._teardownLiveView();
     }
 
     this.requestUpdate();
@@ -4421,15 +4442,14 @@ class CameraGalleryCard extends LitElement {
 
     if (liveCameraConfigChanged) {
       this._hideLiveQuickSwitchButton();
-      this._liveCard = null;
-      this._liveCardConfigKey = "";
-      this._liveWarmedUp = false;
+      this._teardownLiveView();
       this._signedWsPath = null;
     }
 
     if (!this._hasLiveConfig()) {
       this._hideLiveQuickSwitchButton();
       this._showLivePicker = false;
+      if (this._viewMode === "live") this._teardownLiveView();
       this._viewMode = "media";
     }
 
@@ -4561,10 +4581,6 @@ class CameraGalleryCard extends LitElement {
       this._mountLiveCard();
     } else {
       this._syncPreviewPlaybackFromState();
-      if (!this._liveWarmedUp && this._hasLiveConfig()) {
-        this._liveWarmedUp = true;
-        this._warmupLiveCard();
-      }
     }
 
     this._setupThumbObserver();
