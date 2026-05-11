@@ -43,6 +43,7 @@ import { isVideo } from "./util/media-type";
 import { posterStore } from "./util/poster-store";
 import {
   FRIGATE_URI_PREFIX,
+  frigateEventIdFromSrc,
   frigateEventIdMs,
   hasFrigateConfig,
   isFrigateRecordingsRoot,
@@ -111,6 +112,7 @@ class CameraGalleryCard extends LitElement {
       _selectedSet: { type: Object },
       _selectMode: { type: Boolean },
       _showBulkHint: { type: Boolean },
+      _errorToast: { type: Object },
       _showDatePicker: { type: Boolean },
       _showLivePicker: { type: Boolean },
       _showLiveQuickSwitch: { type: Boolean },
@@ -164,6 +166,7 @@ class CameraGalleryCard extends LitElement {
     this._prefetchKey = "";
     this._selectedPreviewSrc = "";
     this._deleted = new Set();
+    this._deletedFrigateEventIds = new Set();
     this._forceThumbReset = false;
     this._liveCard = null;
     this._liveCardConfigKey = "";
@@ -221,6 +224,8 @@ class CameraGalleryCard extends LitElement {
     this._selectedSet = new Set();
     this._showBulkHint = false;
     this._bulkHintTimer = null;
+    this._errorToast = null;
+    this._errorToastTimer = null;
     this._showDatePicker = false;
     this._datePickerDays = null;
     this._showLivePicker = false;
@@ -1285,6 +1290,29 @@ class CameraGalleryCard extends LitElement {
       this._bulkHintTimer = null;
       this.requestUpdate();
     }, 5000);
+  }
+
+  _showErrorToast(title, message) {
+    if (this._errorToastTimer) {
+      clearTimeout(this._errorToastTimer);
+      this._errorToastTimer = null;
+    }
+    this._errorToast = { title, message };
+    this.requestUpdate();
+    this._errorToastTimer = setTimeout(() => {
+      this._errorToast = null;
+      this._errorToastTimer = null;
+      this.requestUpdate();
+    }, 8000);
+  }
+
+  _dismissErrorToast() {
+    if (this._errorToastTimer) {
+      clearTimeout(this._errorToastTimer);
+      this._errorToastTimer = null;
+    }
+    this._errorToast = null;
+    this.requestUpdate();
   }
 
   // ─── Normalizers / config helpers ─────────────────────────────────
@@ -2729,7 +2757,6 @@ class CameraGalleryCard extends LitElement {
 
   _onThumbContextMenu(e, item) {
     if (this._selectMode) return;
-    if (this._isFrigateMediaItem(item?.src)) return;
 
     e.preventDefault();
     e.stopPropagation();
@@ -2746,7 +2773,6 @@ class CameraGalleryCard extends LitElement {
     if (this._selectMode) return;
     if (!item?.src) return;
     if (e?.button != null && e.button !== 0) return;
-    if (this._isFrigateMediaItem(item.src)) return;
 
     this._thumbLongPressStartX = e.clientX ?? 0;
     this._thumbLongPressStartY = e.clientY ?? 0;
@@ -2929,11 +2955,47 @@ class CameraGalleryCard extends LitElement {
       config: this.config,
       srcEntityMap: this._sensorClient.getSrcEntityMap(),
     });
-    if (!ok) return;
+    if (!ok) {
+      // Surface the failure via an in-card toast instead of swallowing it
+      // silently — otherwise the user taps Delete, nothing happens, and they
+      // have no idea why.
+      const eventId = frigateEventIdFromSrc(src);
+      const isFrigate = eventId !== null && isFrigateRoot(src);
+      this._showErrorToast(
+        "Delete failed",
+        isFrigate
+          ? `Frigate event could not be deleted. Check that the rest_command service is configured correctly and can reach Frigate.`
+          : `File could not be deleted. Check the delete_service config and that the file still exists.`
+      );
+      return;
+    }
 
     this._deleted.add(src);
     this._selectedSet?.delete?.(src);
     this._invalidateItems();
+
+    // Frigate's DELETE /api/events/<id> wipes clip + paired snapshot in
+    // one call, so any item whose URI carries the same event id should
+    // be hidden together. Event-id-keyed filter survives URI shape and
+    // re-fetches better than exact-URI-only matching.
+    const eventId = frigateEventIdFromSrc(src);
+    let alsoHidden = [];
+    if (eventId) {
+      this._deletedFrigateEventIds.add(eventId);
+      alsoHidden = (this._mediaClient?.state?.list || [])
+        .map((it) => it?.id)
+        .filter((id) => id && id !== src && id.includes(eventId));
+    }
+
+    // Diagnostic log so testing can verify both the clip and the paired
+    // snapshot get hidden after one delete.
+    console.info(
+      "[cgc delete]",
+      eventId
+        ? `Frigate event_id=${eventId} — deleted src=${src} — also hiding ${alsoHidden.length} matching item(s):`
+        : `non-Frigate src=${src}`,
+      alsoHidden
+    );
 
     const rawItems = this._items();
     if (!rawItems.length) {
@@ -3680,26 +3742,30 @@ class CameraGalleryCard extends LitElement {
       return dtMs !== null ? { src, dtMs } : { src };
     };
 
+    const isItemDeleted = (it) => {
+      if (this._deleted?.has(it.src)) return true;
+      if (this._deletedFrigateEventIds?.size) {
+        const eid = frigateEventIdFromSrc(it.src);
+        if (eid && this._deletedFrigateEventIds.has(eid)) return true;
+      }
+      return false;
+    };
+    const filterDeleted = (arr) =>
+      this._deleted?.size || this._deletedFrigateEventIds?.size
+        ? arr.filter((it) => !isItemDeleted(it))
+        : arr;
+
     let result;
     if (mode === "combined") {
-      const merged = this._combinedClient.getItems(enrich);
-      result = this._deleted?.size
-        ? merged.filter((it) => !this._deleted.has(it.src))
-        : merged;
+      result = filterDeleted(this._combinedClient.getItems(enrich));
     } else if (usingMediaSource) {
-      const ids = dedupeByRelPath(this._mediaClient.getIds()).map(enrich);
-      result = this._deleted?.size
-        ? ids.filter((it) => !this._deleted.has(it.src))
-        : ids;
+      result = filterDeleted(dedupeByRelPath(this._mediaClient.getIds()).map(enrich));
     } else {
       // Sensor (and the implicit fall-through default) — delegate.
       // Render-side reads of srcEntityMap / sensorPairedThumbs route through
       // `this._sensorClient.getSrcEntityMap()` and `getSensorPairedThumbs()`
       // directly; no mirror-back needed.
-      const items = this._sensorClient.getItems(enrich);
-      result = this._deleted?.size
-        ? items.filter((it) => !this._deleted.has(it.src))
-        : items;
+      result = filterDeleted(this._sensorClient.getItems(enrich));
     }
 
     this._cachedItems = result;
@@ -5342,6 +5408,22 @@ class CameraGalleryCard extends LitElement {
           ? html`
               <div class="bulk-floating-hint">
                 Select thumbnails to delete
+              </div>
+            `
+          : html``}
+
+        ${this._errorToast
+          ? html`
+              <div
+                class="cgc-error-toast"
+                @click=${() => this._dismissErrorToast()}
+                role="alert"
+              >
+                <ha-icon icon="mdi:alert-circle-outline"></ha-icon>
+                <div class="cgc-error-toast-text">
+                  <div class="cgc-error-toast-title">${this._errorToast.title}</div>
+                  <div class="cgc-error-toast-msg">${this._errorToast.message}</div>
+                </div>
               </div>
             `
           : html``}
@@ -7159,6 +7241,59 @@ class CameraGalleryCard extends LitElement {
         }
       }
 
+      .cgc-error-toast {
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        transform: translate(-50%, -50%);
+        display: flex;
+        align-items: flex-start;
+        gap: 10px;
+        max-width: min(420px, 92%);
+        padding: 12px 16px;
+        border-radius: 12px;
+        background: rgba(180, 35, 35, 0.95);
+        color: #fff;
+        font-size: 13px;
+        box-shadow: 0 12px 32px rgba(0, 0, 0, 0.32);
+        backdrop-filter: blur(10px);
+        -webkit-backdrop-filter: blur(10px);
+        z-index: 60;
+        cursor: pointer;
+        animation: cgcErrorToastIn 0.22s ease-out;
+      }
+      .cgc-error-toast ha-icon {
+        flex: 0 0 auto;
+        --mdc-icon-size: 22px;
+        color: #fff;
+        margin-top: 1px;
+      }
+      .cgc-error-toast-text {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+      }
+      .cgc-error-toast-title {
+        font-weight: 700;
+        font-size: 13px;
+      }
+      .cgc-error-toast-msg {
+        font-weight: 400;
+        font-size: 12px;
+        opacity: 0.92;
+        line-height: 1.35;
+      }
+      @keyframes cgcErrorToastIn {
+        from {
+          opacity: 0;
+          transform: translate(-50%, calc(-50% + 8px));
+        }
+        to {
+          opacity: 1;
+          transform: translate(-50%, -50%);
+        }
+      }
+
       .empty {
         padding: 12px;
         border-radius: 14px;
@@ -8685,6 +8820,9 @@ class CameraGalleryCardEditor extends HTMLElement {
     const shellCmds = Object.keys(allServices.shell_command || {})
       .map((svc) => `shell_command.${svc}`)
       .sort((a, b) => a.localeCompare(b));
+    const restCmds = Object.keys(allServices.rest_command || {})
+      .map((svc) => `rest_command.${svc}`)
+      .sort((a, b) => a.localeCompare(b));
 
     const deleteService = String(
       c.delete_service || c.shell_command || ""
@@ -8695,6 +8833,16 @@ class CameraGalleryCardEditor extends HTMLElement {
     const deleteChoices = (() => {
       const set = new Set(shellCmds);
       if (deleteService) set.add(deleteService);
+      return Array.from(set).sort((a, b) => a.localeCompare(b));
+    })();
+
+    const frigateDeleteService = String(c.frigate_delete_service || "").trim();
+    const frigateDeleteOk =
+      !frigateDeleteService ||
+      /^[a-z0-9_]+\.[a-z0-9_]+$/i.test(frigateDeleteService);
+    const frigateDeleteChoices = (() => {
+      const set = new Set(restCmds);
+      if (frigateDeleteService) set.add(frigateDeleteService);
       return Array.from(set).sort((a, b) => a.localeCompare(b));
     })();
 
@@ -9143,41 +9291,53 @@ class CameraGalleryCardEditor extends HTMLElement {
                 </div>
               </div>
 
-              <div class="row ${mediaModeOn ? "row-disabled" : ""}">
-                <div class="lbl">Delete service</div>
-                <div class="hint">
-                  ${mediaModeOn ? `
-                    ${svgIcon('mdi:information-outline', 14)}
-                    <span>Delete is not available in <strong>Media folders</strong> mode. Media-source items don't map to filesystem paths the shell command can delete — switch the source above to enable.</span>
-                  ` : `
-                    ${svgIcon('mdi:help-circle-outline', 14)}
-                    <a
-                      href="https://github.com/TheScubadiver/camera-gallery-card?tab=readme-ov-file#delete-setup"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                    >
-                      How to configure the shell command
-                    </a>
-                  `}
-                </div>
-
-                <div class="selectwrap">
-                  <select class="select ${deleteOk ? "" : "invalid"}" id="delservice" ${mediaModeOn ? "disabled" : ""}>
-                    ${
-                      deleteChoices.length
-                        ? `<option value=""></option>` +
-                          deleteChoices
-                            .map(
-                              (id) =>
-                                `<option value="${id}" ${
-                                  id === deleteService ? "selected" : ""
-                                }>${id}</option>`
-                            )
-                            .join("")
-                        : `<option value="" selected>(no shell_command services found)</option>`
-                    }
-                  </select>
-                  <span class="selarrow"></span>
+              <div class="row">
+                <div class="lbl">Delete services</div>
+                <div style="padding-top:8px;display:flex;flex-direction:column;gap:14px;">
+                  <div class="${mediaModeOn ? "row-disabled" : ""}">
+                    <div class="lbl">Sensor</div>
+                    <div class="selectwrap" style="margin-top:4px;">
+                      <select class="select ${deleteOk ? "" : "invalid"}" id="delservice" ${mediaModeOn ? "disabled" : ""}>
+                        ${
+                          deleteChoices.length
+                            ? `<option value=""></option>` +
+                              deleteChoices
+                                .map(
+                                  (id) =>
+                                    `<option value="${id}" ${
+                                      id === deleteService ? "selected" : ""
+                                    }>${id}</option>`
+                                )
+                                .join("")
+                            : `<option value="" selected>(no shell_command services found)</option>`
+                        }
+                      </select>
+                      <span class="selarrow"></span>
+                    </div>
+                  </div>
+                  ${hasFrigateConfig(c) ? `
+                  <div>
+                    <div class="lbl">Frigate</div>
+                    <div class="selectwrap" style="margin-top:4px;">
+                      <select class="select ${frigateDeleteOk ? "" : "invalid"}" id="frigate-delservice">
+                        ${
+                          frigateDeleteChoices.length
+                            ? `<option value="">(none — Frigate delete disabled)</option>` +
+                              frigateDeleteChoices
+                                .map(
+                                  (id) =>
+                                    `<option value="${id}" ${
+                                      id === frigateDeleteService ? "selected" : ""
+                                    }>${id}</option>`
+                                )
+                                .join("")
+                            : `<option value="" selected>(no rest_command services found — add one to configuration.yaml)</option>`
+                        }
+                      </select>
+                      <span class="selarrow"></span>
+                    </div>
+                  </div>
+                  ` : ``}
                 </div>
               </div>
 
@@ -11613,6 +11773,22 @@ if (oldPanel && tmp.firstElementChild) {
 
     delserviceEl?.addEventListener("change", commitDeleteService, _sig);
 
+    const frigateDelserviceEl = $("frigate-delservice");
+    const commitFrigateDeleteService = () => {
+      const v = String(frigateDelserviceEl?.value || "").trim();
+      if (!v) {
+        const next = { ...this._config };
+        delete next.frigate_delete_service;
+        this._config = this._stripAlwaysTrueKeys(next);
+        this._fire();
+        this._scheduleRender();
+        return;
+      }
+      this._set("frigate_delete_service", v);
+    };
+    frigateDelserviceEl?.addEventListener("change", commitFrigateDeleteService, _sig);
+
+
     const commitNumberField = (key, el, fallback, commit = false) => {
       const raw = String(el?.value ?? "").trim();
 
@@ -12617,7 +12793,7 @@ if (oldPanel && tmp.firstElementChild) {
     }
 
     this._fire();
-    const RENDERS_REQUIRED = new Set(["source_mode", "live_enabled", "live_camera_entities", "object_filters", "delete_service", "live_camera_entity", "menu_buttons", "frigate_url", "live_layout"]);
+    const RENDERS_REQUIRED = new Set(["source_mode", "live_enabled", "live_camera_entities", "object_filters", "delete_service", "frigate_delete_service", "live_camera_entity", "menu_buttons", "frigate_url", "live_layout"]);
     if (RENDERS_REQUIRED.has(key)) this._scheduleRender();
   }
 
