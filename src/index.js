@@ -27,7 +27,6 @@ import { FavoritesStore } from "./data/favorites";
 import {
   parseServiceParts,
   SensorSourceClient,
-  toFsPath,
   toWebPath,
 } from "./data/sensor-source";
 import {
@@ -1137,10 +1136,10 @@ class CameraGalleryCard extends LitElement {
   }
 
   _thumbCanMultipleDelete() {
-    const mode = this.config?.source_mode;
-    if (mode !== "sensor" && mode !== "combined") return false;
     if (!this.config?.allow_delete || !this.config?.allow_bulk_delete) return false;
-    return !!parseServiceParts(this.config?.delete_service);
+    const hasSensorService = !!parseServiceParts(this.config?.delete_service);
+    const hasFrigateService = !!parseServiceParts(this.config?.frigate_delete_service);
+    return hasSensorService || hasFrigateService;
   }
 
   _friendlyCameraName(entityId) {
@@ -4194,32 +4193,42 @@ class CameraGalleryCard extends LitElement {
   // ─── Selection / bulk delete ──────────────────────────────────────
 
   async _bulkDelete(selectedSrcList) {
-    const mode = this.config?.source_mode;
-    if (mode !== "sensor" && mode !== "combined") return;
     if (!this.config?.allow_delete || !this.config?.allow_bulk_delete) return;
 
-    const sp = parseServiceParts(this.config?.delete_service);
-    if (!sp) return;
-
-    const prefix = DELETE_PREFIX_NORMALIZED;
     const srcs = Array.from(selectedSrcList || []);
     if (!srcs.length) return;
 
     if (this.config?.delete_confirm) {
       const ok = window.confirm(
-        `Are you sure you want to delete ${srcs.length} file(s)?`
+        `Are you sure you want to delete ${srcs.length} item(s)?`
       );
       if (!ok) return;
     }
 
-    for (const src of srcs) {
-      const fsPath = toFsPath(src);
-      if (!fsPath || !fsPath.startsWith(prefix)) continue;
+    // Route every item through the same deleteItem() helper as single
+    // delete — picks sensor or Frigate dispatch per item, validates path
+    // prefixes, surfaces errors. `confirm: () => true` suppresses the
+    // per-item dialog since we already confirmed the batch above.
+    const srcEntityMap = this._sensorClient.getSrcEntityMap();
+    let okCount = 0;
+    const failed = [];
 
-      try {
-        await this._hass.callService(sp.domain, sp.service, { path: fsPath });
+    for (const src of srcs) {
+      const ok = await deleteItem({
+        hass: this._hass,
+        src,
+        config: this.config,
+        srcEntityMap,
+        confirm: () => true,
+      });
+      if (ok) {
+        okCount++;
         this._deleted.add(src);
-      } catch (_) {}
+        const eventId = frigateEventIdFromSrc(src);
+        if (eventId) this._deletedFrigateEventIds.add(eventId);
+      } else {
+        failed.push(src);
+      }
     }
 
     this._invalidateItems();
@@ -4227,6 +4236,15 @@ class CameraGalleryCard extends LitElement {
     this._selectMode = false;
     this._hideBulkDeleteHint();
     this.requestUpdate();
+
+    if (failed.length > 0) {
+      this._showErrorToast(
+        "Some deletes failed",
+        okCount > 0
+          ? `Deleted ${okCount} of ${srcs.length}. ${failed.length} failed — check delete_service / frigate_delete_service config.`
+          : `Could not delete ${failed.length} item(s). Check delete_service / frigate_delete_service config.`
+      );
+    }
   }
 
   _exitSelectMode() {
@@ -4789,15 +4807,14 @@ class CameraGalleryCard extends LitElement {
     const isToday = currentForNav === newestDay;
 
     const sp = parseServiceParts(this.config?.delete_service);
+    const fsp = parseServiceParts(this.config?.frigate_delete_service);
 
     const canDelete =
-      (this.config?.source_mode === "sensor" || this.config?.source_mode === "combined") &&
       !!this.config?.allow_delete &&
-      !!sp;
+      (!!sp || !!fsp);
     const canBulkDelete =
-      (this.config?.source_mode === "sensor" || this.config?.source_mode === "combined") &&
       !!this.config?.allow_bulk_delete &&
-      !!sp;
+      (!!sp || !!fsp);
 
     const tsPosClass = this.config.bar_position === "bottom"
       ? "bottom"
