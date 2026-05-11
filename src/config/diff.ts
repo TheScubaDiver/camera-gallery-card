@@ -24,6 +24,12 @@ const SOURCE_KEYS = new Set<ConfigKey>([
   "frigate_url",
   "max_media",
   "media_sources",
+  // path_datetime_format is consumed by every dtMs/dayKey resolution. A
+  // format change shifts how each item parses, so the poster + object
+  // caches keyed off the old parses must be cleared along with the data
+  // layer's invalidation. Without this the gallery showed ghost-day
+  // posters after the user edited the format string.
+  "path_datetime_format",
   "source_mode",
   "thumbnail_frame_pct",
 ]);
@@ -39,6 +45,7 @@ const SOURCE_KEYS = new Set<ConfigKey>([
 const UI_ONLY_KEYS = new Set<ConfigKey>([
   "bar_opacity",
   "bar_position",
+  "capture_video_thumbnails",
   "live_camera_entity",
   "live_camera_entities",
   "live_enabled",

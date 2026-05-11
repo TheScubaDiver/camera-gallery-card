@@ -94,8 +94,7 @@ export interface InputConfig {
   frigate_url?: string;
 
   // ─── Datetime parsing ──────────────────────────────────────
-  filename_datetime_format?: string;
-  folder_datetime_format?: string;
+  path_datetime_format?: string;
 
   // ─── Playback ──────────────────────────────────────────────
   autoplay?: boolean;
@@ -133,6 +132,7 @@ export interface InputConfig {
   thumb_bar_position?: string;
   thumb_layout?: string;
   thumbnail_frame_pct?: number;
+  capture_video_thumbnails?: boolean;
   pill_size?: number;
   card_height?: number;
   aspect_ratio?: string;
@@ -160,6 +160,8 @@ export interface InputConfig {
   media_folder_favorites?: string[];
   shell_command?: string;
   preview_click_to_open?: boolean;
+  filename_datetime_format?: string; // → path_datetime_format
+  folder_datetime_format?: string; //   → path_datetime_format
 
   // ─── Editor-managed always-true keys (deleted in pre-migrate) ─
   filter_folders_enabled?: boolean;
@@ -187,6 +189,9 @@ const LEGACY_KEYS = [
   "media_folder_favorites",
   "media_folders_fav",
   "shell_command",
+  "preview_click_to_open",
+  "filename_datetime_format",
+  "folder_datetime_format",
 ] as const satisfies readonly (keyof InputConfig)[];
 
 export type LegacyKey = (typeof LEGACY_KEYS)[number];
@@ -358,6 +363,30 @@ export function migrateLegacyKeys(raw: unknown): MigratedConfig {
     hadLegacyKeys = true;
   }
 
+  // folder_datetime_format + filename_datetime_format → path_datetime_format
+  // The legacy two-format API mapped folder format to the immediate parent
+  // directory and filename format to the file basename. The new single
+  // path-format joins them with `/` so a path like `<root>/2026/04/30/x.mp4`
+  // can be expressed as `YYYY/MM/DD/<filename>` — and the runtime parser
+  // walks back through path segments rather than only looking at the
+  // immediate parent. New value wins on conflict only when the user has
+  // also set `path_datetime_format` directly; otherwise we synthesize.
+  if (out.path_datetime_format === undefined || out.path_datetime_format === "") {
+    const folder = String(out.folder_datetime_format ?? "").trim();
+    const file = String(out.filename_datetime_format ?? "").trim();
+    if (folder && file) out.path_datetime_format = `${folder}/${file}`;
+    else if (folder) out.path_datetime_format = folder;
+    else if (file) out.path_datetime_format = file;
+  }
+  if ("folder_datetime_format" in out) {
+    delete out.folder_datetime_format;
+    hadLegacyKeys = true;
+  }
+  if ("filename_datetime_format" in out) {
+    delete out.filename_datetime_format;
+    hadLegacyKeys = true;
+  }
+
   // Editor-managed always-true keys that older YAML may carry. The struct's
   // top-level `type()` ignores unknowns, but stripping keeps the migrated
   // input tidy for downstream comparison.
@@ -425,8 +454,7 @@ function preMigrateConfig(input: InputConfig): PreMigrated {
 
   // Defaulted-to-`""` string fields: trim, never delete.
   out.live_camera_entity = (out.live_camera_entity ?? "").trim();
-  out.filename_datetime_format = (out.filename_datetime_format ?? "").trim();
-  out.folder_datetime_format = (out.folder_datetime_format ?? "").trim();
+  out.path_datetime_format = (out.path_datetime_format ?? "").trim();
   out.style_variables = (out.style_variables ?? "").trim();
 
   // live_camera_entities: trim + drop empties.
@@ -567,15 +595,14 @@ function assertRequiredFields(config: CameraGalleryCardConfig): void {
   }
 
   if (
-    !config.folder_datetime_format &&
-    !config.filename_datetime_format &&
+    !config.path_datetime_format &&
     !hasFrigateConfig({
       frigate_url: config.frigate_url,
       media_sources: config.media_sources,
     })
   ) {
     throw new Error(
-      "camera-gallery-card: 'folder_datetime_format' or 'filename_datetime_format' is required so files can be grouped by date"
+      "camera-gallery-card: 'path_datetime_format' is required so files can be grouped by date"
     );
   }
 }

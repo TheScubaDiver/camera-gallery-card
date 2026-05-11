@@ -24,7 +24,7 @@ import type { CameraGalleryCardConfig } from "../config/normalize";
 import type { CardItem } from "../types/media-item";
 import type { Enrich as SensorEnrich, SensorSourceClient } from "./sensor-source";
 import type { MediaSourceClient } from "./media-walker";
-import { dedupeByRelPath } from "./pairing";
+import { normalizeRelPath } from "./pairing";
 
 export type Enrich = SensorEnrich;
 
@@ -51,13 +51,33 @@ export class CombinedSourceClient {
    * Merge sensor items in front of media-source items, dedupe by rel-path
    * with sensor precedence on collision. Side effect: rebuilds the
    * sensor client's srcEntityMap (via the underlying `getItems()` call).
+   *
+   * Implements the merge in one pass instead of `dedupeByRelPath([...sensor,
+   * ...media])`: each child's `getItems()` already runs its own
+   * `dedupeByRelPath` so the inputs are individually unique. We only need
+   * to resolve cross-source collisions, which means a single normalize
+   * pass per item — half the regex work of the legacy concat-and-dedupe.
+   * Also skips an intermediate spread allocation and a `Map → Array.from`
+   * round trip.
    */
   getItems(enrich: Enrich): CardItem[] {
     const sensorItems = this._sensor.getItems(enrich);
     const mediaItems = this._media.getItems(enrich);
-    // dedupeByRelPath keeps the first occurrence — sensor items being
-    // first means the sensor copy wins on a rel-path collision.
-    return dedupeByRelPath([...sensorItems, ...mediaItems]) as CardItem[];
+    if (!mediaItems.length) return sensorItems;
+    if (!sensorItems.length) return mediaItems;
+
+    const sensorKeys = new Set<string>();
+    for (const it of sensorItems) {
+      const key = normalizeRelPath(it?.src ?? "");
+      if (key) sensorKeys.add(key);
+    }
+    const out: CardItem[] = sensorItems.slice();
+    for (const it of mediaItems) {
+      const key = normalizeRelPath(it?.src ?? "");
+      if (!key || sensorKeys.has(key)) continue;
+      out.push(it);
+    }
+    return out;
   }
 
   /**

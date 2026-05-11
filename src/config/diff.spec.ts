@@ -41,8 +41,7 @@ const baseConfig = (overrides: Partial<CameraGalleryCardConfig> = {}): CameraGal
     preview_close_on_tap: false,
     max_media: 50,
     menu_buttons: [],
-    filename_datetime_format: "",
-    folder_datetime_format: "",
+    path_datetime_format: "",
     ...overrides,
   }) as CameraGalleryCardConfig;
 
