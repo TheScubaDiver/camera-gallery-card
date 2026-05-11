@@ -150,8 +150,10 @@ export const cameraGalleryCardConfigStruct = type({
   frigate_url: optional(string()),
 
   // ─── Datetime parsing ──────────────────────────────────────
-  filename_datetime_format: defaulted(string(), ""),
-  folder_datetime_format: defaulted(string(), ""),
+  // Single format that matches the path tail. `/`-separated segments map
+  // to directory levels with the leaf segment matching the filename
+  // (e.g. `YYYY/MM/DD/HHmmss`). Replaces the legacy folder+filename pair.
+  path_datetime_format: defaulted(string(), ""),
 
   // ─── Playback ──────────────────────────────────────────────
   autoplay: defaulted(boolean(), DEFAULT_AUTOPLAY),
@@ -196,6 +198,12 @@ export const cameraGalleryCardConfigStruct = type({
     intInRange(THUMBNAIL_FRAME_PCT_MIN, THUMBNAIL_FRAME_PCT_MAX),
     DEFAULT_THUMBNAIL_FRAME_PCT
   ),
+  // When false (default `true`), skip the expensive `<video>`
+  // frame-extraction fallback and only display server-provided
+  // thumbnails. Items without a server thumb stay on the placeholder
+  // icon. Useful on slow / metered connections where pulling MB-scale
+  // mp4 files just for one frame isn't worth the bandwidth.
+  capture_video_thumbnails: defaulted(boolean(), true),
   pill_size: defaulted(intInRange(PILL_SIZE_MIN, PILL_SIZE_MAX), PILL_SIZE_DEFAULT),
   card_height: defaulted(intInRange(CARD_HEIGHT_MIN, CARD_HEIGHT_MAX), CARD_HEIGHT_DEFAULT),
   aspect_ratio: defaulted(enums(ASPECT_RATIOS), DEFAULT_ASPECT_RATIO),

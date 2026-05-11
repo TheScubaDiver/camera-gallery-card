@@ -34,6 +34,11 @@ export function isFrigateRoot(uri: string | null | undefined): boolean {
  * integration. Use this when deciding whether path-based datetime formats
  * are required: Frigate items get their time from event-ids, so the format
  * fields are optional in Frigate-only setups.
+ *
+ * Caveat: Frigate **recordings** roots (e.g. `media-source://frigate/<inst>/recordings/...`)
+ * don't carry event-ids in their URIs — items there have no auto-extractable
+ * timestamp. Treat those as needing a `path_datetime_format` even though
+ * they technically point at Frigate. See {@link isFrigateRecordingsRoot}.
  */
 export function hasFrigateConfig(config: {
   frigate_url?: string | null | undefined;
@@ -41,7 +46,15 @@ export function hasFrigateConfig(config: {
 }): boolean {
   if ((config.frigate_url ?? "").trim()) return true;
   const roots = config.media_sources ?? [];
-  return roots.some(isFrigateRoot);
+  return roots.some((r) => isFrigateRoot(r) && !isFrigateRecordingsRoot(r));
+}
+
+/** `true` for Frigate recordings roots whose URIs have no event-id. These
+ * need `path_datetime_format` to extract per-item timestamps. */
+export function isFrigateRecordingsRoot(uri: string | null | undefined): boolean {
+  const s = String(uri ?? "");
+  if (!isFrigateRoot(s)) return false;
+  return /\/recordings(\/|$)/.test(s);
 }
 
 /**
@@ -154,4 +167,56 @@ export function mapFrigateEventToItem(ev: FrigateEvent, base: string): MappedFri
     ...(ts ? { dtMs: ts } : {}),
   };
   return { item, clipUrl };
+}
+
+/**
+ * Fetch Frigate events via the Frigate-hass-integration's
+ * `frigate/events/get` WebSocket command. Same payload shape as the REST
+ * endpoint, but routed through HA — so it works regardless of CORS and
+ * without needing a `frigate_url` in the card config.
+ *
+ * Returns null on any failure (no instance id, integration missing, transport
+ * error). Caller treats null as "no events" and falls back to the REST/walk path.
+ */
+interface HassLike {
+  callWS<T>(msg: Record<string, unknown>): Promise<T>;
+}
+export async function fetchFrigateEventsViaWs(
+  hass: HassLike | null | undefined,
+  instanceId: string | null | undefined,
+  limit?: number
+): Promise<FrigateEvent[] | null> {
+  if (!hass || !instanceId) return null;
+  try {
+    const msg: Record<string, unknown> = {
+      type: "frigate/events/get",
+      instance_id: instanceId,
+      has_clip: true,
+    };
+    if (typeof limit === "number" && limit > 0) msg["limit"] = limit;
+    const result = await hass.callWS<unknown>(msg);
+    let parsed: unknown = result;
+    if (typeof parsed === "string") {
+      try {
+        parsed = JSON.parse(parsed);
+      } catch {
+        return null;
+      }
+    }
+    if (Array.isArray(parsed)) return parsed as FrigateEvent[];
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Extract the Frigate instance id from a media-source URI like
+ * `media-source://frigate/<inst>/event-search/clips`. Returns null when the
+ * URI isn't a Frigate root.
+ */
+export function frigateInstanceIdFromRoot(uri: string | null | undefined): string | null {
+  const s = String(uri ?? "");
+  const m = s.match(/^media-source:\/\/frigate\/([^/]+)/);
+  return m?.[1] ?? null;
 }

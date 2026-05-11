@@ -32,19 +32,20 @@ import {
 } from "./data/sensor-source";
 import {
   isMediaSourceId,
-  isRenderable,
   keyFromRoots as msKeyFromRoots,
   MediaSourceClient,
-  walkCacheKey as msWalkCacheKey,
 } from "./data/media-walker";
+import { collectMediaSamples, scoreSamples } from "./data/path-format-detect";
 import { CombinedSourceClient } from "./data/combined-source";
 import { canDeleteItem, deleteItem } from "./data/delete-service";
 import { fnv1aHash } from "./util/hash";
 import { isVideo } from "./util/media-type";
+import { posterStore } from "./util/poster-store";
 import {
   FRIGATE_URI_PREFIX,
   frigateEventIdMs,
   hasFrigateConfig,
+  isFrigateRecordingsRoot,
   isFrigateRoot,
 } from "./util/frigate";
 import {
@@ -76,6 +77,10 @@ import {
   DEFAULT_VISIBLE_OBJECT_FILTERS,
   MAX_VISIBLE_OBJECT_FILTERS,
   PREVIEW_WIDTH,
+  POSTER_CAPTURE_TIMEOUT_MS,
+  POSTER_FETCH_TIMEOUT_MS,
+  POSTER_MAX_ATTEMPTS,
+  POSTER_RETRY_DELAY_MS,
   SENSOR_POSTER_CONCURRENCY,
   SENSOR_POSTER_QUEUE_LIMIT,
   STYLE,
@@ -181,10 +186,27 @@ class CameraGalleryCard extends LitElement {
     this._pendingScrollToI = null;
     this._posterCache = new Map();
     this._posterPending = new Set();
-    // URLs that returned 404 / failed to decode / timed out. Skipped by
-    // _enqueuePoster, _drainPosterQueue, and _ensurePoster so a single bad
-    // file doesn't spam the network and console on every render.
-    this._posterFailed = new Set();
+    // Per-URL capture-attempt ledger. Replaces the previous binary
+    // `_posterFailed` set, which couldn't distinguish "definitively
+    // broken" (404, codec error → permanent broken-icon) from "timed
+    // out this attempt on slow network" (would re-attempt fine on a
+    // good connection).
+    //
+    // Shape: Map<url, { count, lastAt, hard }>
+    //   - count: number of failed attempts so far
+    //   - lastAt: timestamp of the last attempt (ms)
+    //   - hard: true once we've classified the failure as permanent
+    //
+    // Skip logic:
+    //   - hard=true OR count >= POSTER_MAX_ATTEMPTS → never retry,
+    //     thumbnail renders the broken-icon state.
+    //   - soft + lastAt within POSTER_RETRY_DELAY_MS → skip this round
+    //     (rate-limit retries so we don't spin on a flaky connection).
+    //   - soft + lastAt older than the delay → eligible for re-attempt.
+    this._posterAttempts = new Map();
+    /** Single rolling timer that schedules a requestUpdate at the next
+     * soft-fail cooldown expiry. See `_scheduleSoftRetryRender`. */
+    this._softRetryTimer = null;
     // Unsubscribe callback for HA WS Frigate-event-push subscription.
     // null = not subscribed, function = active subscription.
     this._frigateEventsUnsub = null;
@@ -204,7 +226,12 @@ class CameraGalleryCard extends LitElement {
     this._pillsHovered = false;
     this._pillsTimer = null;
     this._pillsHideActive = false;
-    this._sensorClient = new SensorSourceClient();
+    this._sensorClient = new SensorSourceClient({
+      onChange: () => {
+        this._invalidateItems();
+        this.requestUpdate();
+      },
+    });
     this._favorites = new FavoritesStore({ onChange: () => this.requestUpdate() });
     this._suppressNextThumbClick = false;
     this._swipeStartX = 0;
@@ -238,8 +265,6 @@ class CameraGalleryCard extends LitElement {
     this._zoomPanBaseX = 0;
     this._zoomPanBaseY = 0;
 
-    // Stable bound resolver passed into pure datetime-parsing functions.
-    this.__dtResolveName = (src) => this._sourceNameForParsing(src);
 
     this._onFullscreenChange = () => {
       const isFs = document.fullscreenElement === this || document.webkitFullscreenElement === this;
@@ -350,16 +375,60 @@ class CameraGalleryCard extends LitElement {
     };
 
     this._mediaClient = new MediaSourceClient({
-      onChange: () => this.requestUpdate(),
+      onChange: () => {
+        this._invalidateItems();
+        this.requestUpdate();
+      },
       getDtOpts: () => this._dtOpts,
       resolveItemMs: (src) => this._resolveItemMs(src),
     });
     this._combinedClient = new CombinedSourceClient(this._sensorClient, this._mediaClient);
+
+    // Items cache. The two source clients fire `onChange` when their
+    // contents change, which bumps this rev. `_items()` returns the cached
+    // result while the rev is unchanged — so the duplicate `_items()` call
+    // pattern in `updated()` + `render()` no longer rebuilds twice per cycle,
+    // and irrelevant hass pushes don't pay the cost at all.
+    this._itemsRev = 0;
+    this._cachedItemsRev = -1;
+    this._cachedItems = [];
+    // Base list cache (sorted+day+object-filter). `updated()` and `render()`
+    // both walk the same map→sort→day-filter→object-filter prefix; this
+    // caches that result so each render cycle pays the O(n log n) sort
+    // exactly once. Invalidated by items rev / selected day / objectFilters.
+    this._cachedBaseListItemsRev = -1;
+    this._cachedBaseListSelectedDay = null;
+    this._cachedBaseListObjFilters = null;
+    this._cachedBaseList = null;
     this._previewLoadTimer = null;
 
     this._posterQueue = [];
     this._posterQueued = new Set();
     this._posterInFlight = new Set();
+    // In-memory mirror of the IDB-backed `posterStore`. Holds Blob refs
+    // alongside lazily-created `URL.createObjectURL` strings — render
+    // reads return the URL string synchronously, writes persist the
+    // Blob to IDB asynchronously without blocking the render task. URL
+    // lifecycle is owned here: revoke on overwrite / delete / clear.
+    //   Map<lsKey, { blob: Blob; url: string | null }>
+    this._posterMirror = null;
+    // For media-source items, HA's `media_source/resolve_media` returns
+    // a *signed* URL that varies every session (expires:60*60). Hashing
+    // that URL as our IDB key meant yesterday's captured frame was
+    // unreachable today — the key changed even though the underlying
+    // file didn't. This Map records "when you enqueue/fetch THIS url,
+    // persist the blob under THAT stable key (mediaId)". Lookups in
+    // `_lsThumbGet`/`_lsThumbSet`/`_ensurePoster` go through it; falls
+    // back to the URL itself when no stable key is provided (sensor
+    // mode and other paths where the URL IS the stable identifier).
+    this._posterStableKeys = new Map();
+    // Promise that resolves once the IDB prewarm has populated
+    // `_posterMirror`. `_ensurePoster` awaits this before deciding
+    // whether to fetch — without it, the render→enqueue→fetch race
+    // beats `posterStore.readAll()` on cold loads (cmd-r) and we
+    // re-download blobs that are already cached.
+    this._prewarmReadyPromise = null;
+    this._prewarmDone = false;
 
     this._revealedThumbs = new Set();
     this._thumbObserver = null;
@@ -555,21 +624,9 @@ class CameraGalleryCard extends LitElement {
     }
     if (payload?.type !== "end") return;
 
-    {
-      // Bypass freshness gate.
-      this._mediaClient.invalidate();
-      // Bypass the persistent walk cache so we do a real media-source walk
-      // instead of replaying stale localStorage data.
-      try {
-        const roots = Array.isArray(this.config?.media_sources)
-          ? this.config.media_sources
-          : [];
-        if (roots.length) {
-          const cacheKey = msWalkCacheKey(msKeyFromRoots(roots));
-          localStorage.removeItem(cacheKey);
-        }
-      } catch (_) {}
-    }
+    // Bypass freshness gate so the next ensureLoaded re-runs calendar
+    // discovery and re-fetches the visible day.
+    this._mediaClient.invalidate();
     this._mediaClient.ensureLoaded();
   }
 
@@ -602,7 +659,7 @@ class CameraGalleryCard extends LitElement {
     });
 
     const allWithDay = withDt.map((x) => ({ dayKey: x.dayKey, src: x.src, dtMs: x.dtMs }));
-    const days = uniqueDays(allWithDay);
+    const days = this._allKnownDays(allWithDay);
     const newestDay = days[0] ?? null;
     const activeDay = this._selectedDay ?? newestDay;
 
@@ -680,14 +737,82 @@ class CameraGalleryCard extends LitElement {
     this._ensurePreviewVideoHostPlayback(selectedUrl);
   }
 
-  _enqueuePoster(src) {
+  /** True iff this URL has hit its hard-fail criteria — we should not
+   * retry. Used by `_enqueuePoster` / `_drainPosterQueue` to skip and
+   * by `_isThumbBroken` to flip render to the broken-icon state. */
+  _isPosterHardFailed(src) {
+    const a = this._posterAttempts.get(src);
+    if (!a) return false;
+    return a.hard || a.count >= POSTER_MAX_ATTEMPTS;
+  }
+
+  /** True iff a soft-failed URL is inside its retry-cooldown window.
+   * Returning true skips this attempt; render keeps showing the
+   * skeleton until the cooldown expires and a re-enqueue takes hold. */
+  _isPosterCoolingDown(src) {
+    const a = this._posterAttempts.get(src);
+    if (!a || a.hard) return false;
+    if (a.count === 0) return false;
+    return Date.now() - a.lastAt < POSTER_RETRY_DELAY_MS;
+  }
+
+  /** Record a capture failure. `hard` is true for definitive errors
+   * (404, MEDIA_ERR_SRC_NOT_SUPPORTED) — skips straight to the broken
+   * state. Soft failures (timeout, decode) accumulate up to
+   * POSTER_MAX_ATTEMPTS before being treated as hard. Schedules an
+   * auto-retry render so soft fails recover even on idle screens. */
+  _recordPosterFailure(src, { hard = false } = {}) {
+    const prev = this._posterAttempts.get(src);
+    const count = (prev?.count ?? 0) + 1;
+    const isHardNow = hard || count >= POSTER_MAX_ATTEMPTS;
+    this._posterAttempts.set(src, { count, lastAt: Date.now(), hard: isHardNow });
+    if (!isHardNow) this._scheduleSoftRetryRender();
+  }
+
+  _clearPosterFailure(src) {
+    this._posterAttempts.delete(src);
+  }
+
+  /** Schedule a single requestUpdate at the earliest expiring soft-fail
+   * cooldown, then re-arm itself if any soft fails are still cooling
+   * after that render. Without this, a slow-network blip on an idle
+   * dashboard would leave the thumb on its skeleton forever — the
+   * cooldown expires but no render is triggered to re-enqueue. */
+  _scheduleSoftRetryRender() {
+    if (this._softRetryTimer) return;
+    let earliest = Infinity;
+    const now = Date.now();
+    for (const a of this._posterAttempts.values()) {
+      if (a.hard) continue;
+      const expiry = a.lastAt + POSTER_RETRY_DELAY_MS;
+      if (expiry < earliest) earliest = expiry;
+    }
+    if (earliest === Infinity) return;
+    const delay = Math.max(100, earliest - now + 100);
+    this._softRetryTimer = setTimeout(() => {
+      this._softRetryTimer = null;
+      this.requestUpdate();
+      // The render above may re-fail items (still slow); reschedule
+      // for whatever cooldown is still pending.
+      this._scheduleSoftRetryRender();
+    }, delay);
+  }
+
+  _enqueuePoster(src, stableKey) {
     const key = String(src || "").trim();
     if (!key) return;
+    // Record the persistent-cache identifier if it differs from the
+    // fetch URL (media-source items: stable mediaId vs ephemeral
+    // signed URL). `_ensurePoster` reads this on dequeue.
+    if (stableKey && stableKey !== key) {
+      this._posterStableKeys.set(key, stableKey);
+    }
     if (this._posterCache.has(key)) return;
     if (this._posterPending.has(key)) return;
     if (this._posterQueued.has(key)) return;
     if (this._posterInFlight.has(key)) return;
-    if (this._posterFailed.has(key)) return;
+    if (this._isPosterHardFailed(key)) return;
+    if (this._isPosterCoolingDown(key)) return;
 
     this._posterQueued.add(key);
     this._posterQueue.push(key);
@@ -704,14 +829,20 @@ class CameraGalleryCard extends LitElement {
       this._posterInFlight.size < SENSOR_POSTER_CONCURRENCY &&
       this._posterQueue.length
     ) {
-      const src = this._posterQueue.pop();
+      // FIFO drain: items are pushed in render order (newest-first
+      // by day-sort), so `shift()` here makes the user see the
+      // top-of-gallery (most recent) thumbnails resolve first. The
+      // O(n) shift cost on a small queue is negligible vs the
+      // capture work itself.
+      const src = this._posterQueue.shift();
       this._posterQueued.delete(src);
 
       if (!src) continue;
       if (this._posterCache.has(src)) continue;
       if (this._posterPending.has(src)) continue;
       if (this._posterInFlight.has(src)) continue;
-      if (this._posterFailed.has(src)) continue;
+      if (this._isPosterHardFailed(src)) continue;
+      if (this._isPosterCoolingDown(src)) continue;
 
       this._posterInFlight.add(src);
 
@@ -729,18 +860,30 @@ class CameraGalleryCard extends LitElement {
     this._posterQueued.clear();
     this._posterInFlight.clear();
     this._posterPending.clear();
-    this._posterFailed.clear();
+    this._posterAttempts.clear();
+    this._posterStableKeys.clear();
+    if (this._softRetryTimer) {
+      clearTimeout(this._softRetryTimer);
+      this._softRetryTimer = null;
+    }
   }
 
   _queueSensorPosterWork(items) {
     if (!Array.isArray(items) || !items.length) return;
     if (this.config?.source_mode !== "sensor" && this.config?.source_mode !== "combined") return;
 
+    // Only enqueue cheap server-thumbnail fetches (paired jpgs).
+    // The raw video URL would require pulling the entire file just
+    // to extract a single frame; that capture is deferred until the
+    // user actually selects the item (preview-video `canplay` fires
+    // `_enqueuePoster` then).
+    const pairedThumbs = this._sensorClient.getSensorPairedThumbs();
     for (const it of items) {
       const src = String(it?.src || "");
       if (!src) continue;
       if (!isVideo(src)) continue;
-      this._enqueuePoster(src);
+      const pairedJpg = pairedThumbs.get(src);
+      if (pairedJpg) this._enqueuePoster(pairedJpg);
     }
   }
 
@@ -779,6 +922,18 @@ class CameraGalleryCard extends LitElement {
     video.muted = shouldMute;
 
     if (video.src !== selectedUrl) {
+      // Tear down any listeners from the previous URL before swapping.
+      // Without an AbortController, the previous src's `{ once: true }`
+      // canplay/error listeners are still attached — and the
+      // `removeAttribute("src") + load()` we're about to do can fire
+      // `error` for the aborted load, which the stale closure would
+      // attribute to the OLD url (poisoning `_posterFailed` for a
+      // perfectly good URL the user just navigated away from).
+      this._previewLoadAbort?.abort();
+      const abortController = new AbortController();
+      this._previewLoadAbort = abortController;
+      const sig = abortController.signal;
+
       // Cancel any in-flight load on the previous src before swapping. Without
       // this, Firefox surfaces the browser-internal fetch abort as
       // `Uncaught (in promise) DOMException: aborted by the user agent` —
@@ -799,7 +954,28 @@ class CameraGalleryCard extends LitElement {
         const urlForPoster = selectedUrl;
         video.addEventListener("canplay", () => {
           if (!this._posterCache.has(urlForPoster)) this._enqueuePoster(urlForPoster);
-        }, { once: true });
+        }, { once: true, signal: sig });
+        // If the preview can't load (broken / corrupt / slow-network),
+        // record the failure so the thumb gets a broken icon (hard
+        // errors) or stays on the skeleton until the cooldown lapses
+        // (soft errors — which is what 99% of slow-network blips are).
+        // Without this hook, the selected thumb sat on plain `.tph`
+        // because `_resolveVideoPoster` skips the capture for the
+        // selected URL (preview canplay was meant to handle it).
+        video.addEventListener("error", () => {
+          const code = video.error?.code;
+          // MediaError.code: 1=ABORTED, 2=NETWORK, 3=DECODE, 4=SRC_NOT_SUPPORTED.
+          // 3 & 4 are extraction-side ("file got here, can't decode") —
+          // mark hard so we don't retry. 1 (aborted) & 2 (network)
+          // can recover on a retry once the connection improves.
+          const isHard = code === 3 || code === 4;
+          this._recordPosterFailure(urlForPoster, { hard: isHard });
+          if (isHard) {
+            const stableKey = this._posterStableKeys.get(urlForPoster) || urlForPoster;
+            this._lsThumbDelete(stableKey, urlForPoster);
+          }
+          this.requestUpdate();
+        }, { once: true, signal: sig });
       }
 
       if (shouldAutoplay) {
@@ -810,7 +986,7 @@ class CameraGalleryCard extends LitElement {
         video.addEventListener("canplay", () => {
           video.muted = shouldMute;
           video.play().catch(() => {});
-        }, { once: true });
+        }, { once: true, signal: sig });
       }
 
       try {
@@ -826,6 +1002,10 @@ class CameraGalleryCard extends LitElement {
 
   _clearPreviewVideoHostPlayback() {
     const host = this.renderRoot?.querySelector("#preview-video-host");
+
+    // Detach any error/canplay listeners attached to the previous src.
+    this._previewLoadAbort?.abort();
+    this._previewLoadAbort = null;
 
     if (this._previewVideoEl) {
       try {
@@ -971,22 +1151,37 @@ class CameraGalleryCard extends LitElement {
   }
 
   // Options bag for the pure datetime-parsing functions.
-  // Reads config + resolveName each access; cheap allocation, no caching needed.
+  // Reads config each access; cheap allocation, no caching needed.
   get _dtOpts() {
     return {
-      folderFormat: this.config?.folder_datetime_format,
-      filenameFormat: this.config?.filename_datetime_format,
-      resolveName: this.__dtResolveName,
+      pathFormat: this.config?.path_datetime_format ?? "",
     };
+  }
+
+  // Day-picker source. Three contributing layers, merged into one descending list:
+  //   1. Media calendar — days the media client discovered during Phase A.
+  //      For lazy modes (B/C), days appear here BEFORE their files are
+  //      loaded, so the picker is fully populated immediately.
+  //   2. Item-derived days — every loaded item with a dayKey contributes.
+  //      In `combined` mode this folds the sensor-side dayKeys (sensor
+  //      items aren't lazy-loaded; their dates come straight from the
+  //      filename via path_datetime_format) into the picker.
+  //   3. Frigate REST + sensor-only modes — when no calendar exists, we
+  //      fall back to item-derived only.
+  _allKnownDays(itemsWithDay) {
+    const calendarDays = this._mediaClient?.getDays?.() ?? [];
+    if (calendarDays.length === 0) return uniqueDays(itemsWithDay);
+    const merged = new Set(calendarDays);
+    for (const it of itemsWithDay) if (it?.dayKey) merged.add(it.dayKey);
+    return Array.from(merged).sort((a, b) => (a < b ? 1 : a > b ? -1 : 0));
   }
 
   // Resolve the best dtMs we know for a src. Order:
   //   1. Authoritative timestamp attached at the source (e.g., Frigate REST
   //      _loadFrigateApi sets dtMs from start_time).
-  //   2. Frigate event-id epoch parsed from the URI itself (covers walk
-  //      partial-load before the post-walk enrichment runs, plus any path
-  //      that wasn't routed through _ms.list).
-  //   3. User-format parsing of the filename / folder.
+  //   2. Frigate event-id epoch parsed from the URI itself (covers paths that
+  //      didn't pass through the media client's listIndex).
+  //   3. User-format parsing of the path tail (path_datetime_format).
   // Returns null when nothing matches.
   _resolveItemMs(src) {
     const pre = this._mediaClient.getDtMsForId(src);
@@ -1198,9 +1393,15 @@ class CameraGalleryCard extends LitElement {
     const cfg = this.config || {};
     const hass = this._hass;
     const frigateInstalled = !!hass?.config?.components?.includes?.("frigate");
-    const ms = this._ms || {};
+    // Read media-client state directly. The legacy `this._ms` proxy was never
+    // wired on the card, so the diagnostics panel previously showed all zero/—
+    // values regardless of actual state.
+    const ms = this._mediaClient?.state || {};
+    const list = Array.isArray(ms.list) ? ms.list : [];
     const loadedAt = ms.loadedAt || 0;
     const failedAt = ms.frigateApiFailedAt || 0;
+    const calendarDays = ms.calendar?.days?.length ?? 0;
+    const dayCacheSize = ms.dayCache?.size ?? 0;
     const ageS = (ts) => (ts ? Math.round((Date.now() - ts) / 1000) + "s ago" : "—");
     const fmtTs = (ts) => (ts ? new Date(ts).toLocaleTimeString() + " (" + ageS(ts) + ")" : "—");
 
@@ -1232,7 +1433,9 @@ class CameraGalleryCard extends LitElement {
         ["live_layout", cfg.live_layout || "single"],
       ]],
       ["Runtime state", "mdi:pulse", [
-        ["Items in gallery", String((ms.list || []).length), (ms.list || []).length > 0 ? "ok" : "warn"],
+        ["Items in gallery", String(list.length), list.length > 0 ? "ok" : "warn"],
+        ["Calendar days", String(calendarDays), calendarDays > 0 ? "ok" : null],
+        ["Days loaded", String(dayCacheSize)],
         ["Last fetch", fmtTs(loadedAt), loadedAt && (Date.now() - loadedAt < 5 * 60 * 1000) ? "ok" : loadedAt ? "warn" : "bad"],
         ["Direct API", ms.frigateApiFailed ? `failed (${ageS(failedAt)})` : "ok", ms.frigateApiFailed ? "warn" : "ok"],
         ["WS subscribe (frigate/events)", this._frigateEventsUnsub ? "active" : "inactive", this._frigateEventsUnsub ? "ok" : (frigateInstalled ? "warn" : null)],
@@ -2709,6 +2912,7 @@ class CameraGalleryCard extends LitElement {
 
     this._deleted.add(src);
     this._selectedSet?.delete?.(src);
+    this._invalidateItems();
 
     const rawItems = this._items();
     if (!rawItems.length) {
@@ -2771,13 +2975,172 @@ class CameraGalleryCard extends LitElement {
 
   // ─── Poster helpers ───────────────────────────────────────────────
 
+  /** True iff every URL we'd attempt to capture a poster from for this
+   * thumb has been recorded in `_posterFailed`. The render path uses
+   * this to swap an empty `.tph` for the broken-thumbnail UI instead.
+   *
+   * Why "every URL we'd attempt" rather than just one: poster capture
+   * for media-source items is keyed by the resolved URL (Frigate clip
+   * MP4, paired-jpg URL, browse_media thumb URL) — never by the raw
+   * `media-source://` id that the gallery item carries. Without
+   * walking the same fallback chain `_resolveVideoPoster` walks, MS
+   * failures just ghost as plain `.tph`. */
+  _isThumbBroken(it, isMs, thumbUrl, tThumb) {
+    // Only render the broken-icon state for *hard* failures (definitive
+    // 404 / codec / repeated soft fail past the attempt cap). Items
+    // still-soft-failed keep the skeleton — they'll re-attempt after
+    // the retry cooldown, which is the right answer for slow networks.
+    if (this._isPosterHardFailed(it.src)) return true;
+    if (!isMs) {
+      const pairedJpg = this._sensorClient.getSensorPairedThumbs().get(it.src);
+      return !!(pairedJpg && this._isPosterHardFailed(pairedJpg));
+    }
+    if (thumbUrl && this._isPosterHardFailed(thumbUrl)) return true;
+    if (tThumb && this._isPosterHardFailed(tThumb)) return true;
+    const pairedJpgId = this._mediaClient.getPairedThumbs().get(it.src);
+    if (pairedJpgId) {
+      const jpgUrl = this._mediaClient.getUrlCache().get(pairedJpgId) || "";
+      if (jpgUrl && this._isPosterHardFailed(jpgUrl)) return true;
+    }
+    // Frigate snapshot URL is the poster directly when configured —
+    // a 404 on that URL fires `<img onerror>` (see thumb render) which
+    // hard-marks it; surface that so the broken state lights up.
+    if (hasFrigateConfig(this.config)) {
+      const snapshotId = this._mediaClient.findMatchingSnapshotMediaId(it.src);
+      if (snapshotId) {
+        const snapshotUrl = this._mediaClient.getUrlCache().get(snapshotId) || "";
+        if (snapshotUrl && this._isPosterHardFailed(snapshotUrl)) return true;
+      }
+    }
+    return false;
+  }
+
+  /** True iff a fetch / capture is currently in flight (or queued)
+   * for any URL that could produce this item's poster. Walks the
+   * same fallback chain as `_resolveVideoPoster` so a download in
+   * progress on the paired-jpg or browse_media thumbnail counts.
+   *
+   * Render uses this to switch from the (idle) skeleton to the
+   * (active) spinner state — communicates "we're working on it"
+   * instead of "this might never load". */
+  _isPosterLoading(it, isMs, thumbUrl, tThumb) {
+    const isUrlLoading = (url) =>
+      !!url &&
+      (this._posterPending.has(url) ||
+        this._posterInFlight.has(url) ||
+        this._posterQueued.has(url));
+    if (isUrlLoading(it.src)) return true;
+    if (!isMs) {
+      const pairedJpg = this._sensorClient.getSensorPairedThumbs().get(it.src);
+      return isUrlLoading(pairedJpg);
+    }
+    if (isUrlLoading(thumbUrl)) return true;
+    if (isUrlLoading(tThumb)) return true;
+    const pairedJpgId = this._mediaClient.getPairedThumbs().get(it.src);
+    if (pairedJpgId) {
+      const jpgUrl = this._mediaClient.getUrlCache().get(pairedJpgId) || "";
+      if (isUrlLoading(jpgUrl)) return true;
+    }
+    return false;
+  }
+
+  /** True iff this video item has no possible poster source under the
+   * current config: no server-side thumbnail AND
+   * `capture_video_thumbnails` is explicitly off. Render shows a
+   * static "disabled" icon for these so users understand the absence
+   * is a config choice, not a failure. */
+  _willNeverLoad(it, isMs, tThumb) {
+    if (this.config?.capture_video_thumbnails !== false) return false;
+    return !this._hasServerThumbForVideo(it, isMs, tThumb);
+  }
+
+  /** True iff the gallery has a server-provided thumbnail for this
+   * item that we can fetch cheaply (small HTTP request) — meaning we
+   * don't need to fall back to expensive `<video>` frame capture.
+   *
+   * "Server-provided" = sensor paired-jpg sibling, Frigate snapshot,
+   * media-source `thumbnail` field, or a paired-jpg under a media
+   * root. When NONE of these exist for a video item, the only way to
+   * generate a poster is to download (potentially MBs of) the video
+   * file just to extract one frame. We defer that to the moment the
+   * user actually clicks the item — preview-video `canplay` then
+   * fires `_enqueuePoster(thumbUrl)` and the capture runs once.
+   *
+   * Render uses this to choose between the loading-skeleton (server
+   * thumb in flight) and the video-placeholder icon (no server thumb,
+   * waiting on click). */
+  _hasServerThumbForVideo(it, isMs, tThumb) {
+    if (!isMs) {
+      return !!this._sensorClient.getSensorPairedThumbs().get(it.src);
+    }
+    if (tThumb) return true;
+    if (hasFrigateConfig(this.config)) {
+      if (this._mediaClient.findMatchingSnapshotMediaId(it.src)) return true;
+    }
+    if (this._mediaClient.getPairedThumbs().get(it.src)) return true;
+    return false;
+  }
+
+  /** Called from the thumbnail `<img>` onerror. The browser's `<img>`
+   * decoder rejected the URL — usually a definitive failure (404 /
+   * decode error), so mark it hard right away. Don't bother with the
+   * soft-retry path since `<img>` won't retry on its own and we've
+   * already given the browser the URL once. */
+  _onThumbImgError(posterUrl) {
+    if (!posterUrl) return;
+    if (this._isPosterHardFailed(posterUrl)) return;
+    this._recordPosterFailure(posterUrl, { hard: true });
+    this.requestUpdate();
+  }
+
   // Resolve the poster URL to render for a video thumb.
-  // Side effects: enqueues poster capture / snapshot resolution when needed.
-  _resolveVideoPoster(it, isMs, thumbUrl, tThumb, selectedUrl) {
+  //
+  // Read-only: enqueues that previously fired inside this function are
+  // deferred via `_pendingResolveIds` / `_pendingPosterUrls` and
+  // dispatched from `updated()` after render commits. Keeps render()
+  // pure of network/queue side effects.
+  //
+  // Strategy:
+  //   1. Server-provided thumbnails (paired-jpg, Frigate snapshot,
+  //      browse_media `thumbnail`) are cheap HTTP fetches — enqueue
+  //      eagerly so they appear as the user scrolls.
+  //   2. The raw video URL (`thumbUrl`) is NEVER enqueued
+  //      speculatively. Pulling a frame out of the video means
+  //      downloading the full file (often MBs) just for one image —
+  //      brutal on slow connections and almost always wasted on
+  //      items the user never clicks. Instead, we surface any frame
+  //      previously captured (sitting in the IDB-backed mirror) and
+  //      otherwise return `""` so the render falls through to the
+  //      video-placeholder icon. The capture happens later, on
+  //      `<video>`'s `canplay` event from `_ensurePreviewVideoHostPlayback`,
+  //      which fires only when the user actually selects the item.
+  _resolveVideoPoster(it, isMs, thumbUrl, tThumb /* selectedUrl unused */) {
+    // Honor the user's "low-bandwidth" preference: when
+    // `capture_video_thumbnails` is false, the expensive `<video>`
+    // frame-extraction fallback is disabled entirely. Items without
+    // a server thumbnail stay on the placeholder icon.
+    const captureAllowed = this.config?.capture_video_thumbnails !== false;
+
     if (!isMs) {
       const pairedJpg = this._sensorClient.getSensorPairedThumbs().get(it.src);
       if (pairedJpg) return this._posterCache.get(pairedJpg) || "";
-      return this._posterCache.get(it.src) || "";
+      // No paired jpg → would need video-frame capture (expensive).
+      // Surface any previously-captured frame from the IDB mirror;
+      // otherwise enqueue a fresh capture but ONLY when the thumb
+      // is currently in the viewport. Off-screen items stay on the
+      // placeholder so we don't burn bandwidth on items the user
+      // may never scroll to.
+      const cached = this._posterCache.get(it.src);
+      if (cached) return cached;
+      const mirrored = this._lsThumbGet(it.src);
+      if (mirrored) {
+        this._posterCache.set(it.src, mirrored);
+        return mirrored;
+      }
+      if (captureAllowed && this._revealedThumbs.has(it.src)) {
+        this._pendingPosterUrls?.add(it.src);
+      }
+      return "";
     }
 
     if (hasFrigateConfig(this.config)) {
@@ -2785,41 +3148,62 @@ class CameraGalleryCard extends LitElement {
       if (snapshotId) {
         const snapshotUrl = this._mediaClient.getUrlCache().get(snapshotId) || "";
         if (snapshotUrl) return snapshotUrl;
-        this._mediaClient.queueResolve([snapshotId]);
+        this._pendingResolveIds?.add(snapshotId);
       }
     }
 
-    // Paired thumbnail: same-stem jpg next to the mp4
+    // Paired thumbnail: same-stem jpg next to the mp4 (server thumbnail).
     const pairedJpgId = this._mediaClient.getPairedThumbs().get(it.src);
     if (pairedJpgId && !this._mediaClient.isResolveFailed(pairedJpgId)) {
       const jpgUrl = this._mediaClient.getUrlCache().get(pairedJpgId) || "";
       if (jpgUrl) {
+        // Persistent-cache key: the paired jpg's mediaId is stable;
+        // jpgUrl is a signed-and-expiring URL that would invalidate
+        // the cached blob on every session.
+        this._posterStableKeys.set(jpgUrl, pairedJpgId);
         const cached = this._posterCache.get(jpgUrl);
         if (cached) return cached;
-        this._enqueuePoster(jpgUrl);
+        const mirrored = this._lsThumbGet(pairedJpgId);
+        if (mirrored) {
+          this._posterCache.set(jpgUrl, mirrored);
+          return mirrored;
+        }
+        this._pendingPosterUrls?.add(jpgUrl);
         return "";
       }
-      this._mediaClient.queueResolve([pairedJpgId]);
+      this._pendingResolveIds?.add(pairedJpgId);
       return "";
     }
 
-    // Skip poster-capture for the URL that's currently loading as the preview —
-    // double-loading the same MS URL blocks autoplay on some browsers, and the
-    // preview's `canplay` handler in `_ensurePreviewVideoHostPlayback` enqueues
-    // the poster once the preview itself has the data.
-    //
-    // In live mode the preview shows the live feed instead of the selected
-    // video, so that handler never fires for `selectedUrl` — the selected
-    // thumb would stay blank until the user leaves live mode. Treat the
-    // "preview owns this URL's poster" exemption as not applying in live mode.
-    const previewOwnsSelectedPoster = !this._isLiveActive();
-    for (const url of [tThumb, thumbUrl]) {
-      if (!url) continue;
-      const cached = this._posterCache.get(url);
+    // browse_media `thumbnail` URL — server thumbnail, cheap.
+    if (tThumb) {
+      const cached = this._posterCache.get(tThumb);
       if (cached) return cached;
-      const skipForPreview = previewOwnsSelectedPoster && url === selectedUrl;
-      if (!skipForPreview) this._enqueuePoster(url);
+      this._pendingPosterUrls?.add(tThumb);
       return "";
+    }
+
+    // Last resort: the resolved video URL. Same as the sensor branch
+    // above: prefer cached / IDB-mirrored frames; otherwise enqueue
+    // a capture only when the thumb is currently visible AND the
+    // user hasn't disabled the expensive capture path via the
+    // `capture_video_thumbnails` flag.
+    if (thumbUrl) {
+      // For media-source video frames the resolved URL is signed and
+      // expires every session — hash by `it.src` (mediaId) so the
+      // captured blob survives cmd-r and the disabled-config case
+      // can still show previously-captured frames.
+      this._posterStableKeys.set(thumbUrl, it.src);
+      const cached = this._posterCache.get(thumbUrl);
+      if (cached) return cached;
+      const mirrored = this._lsThumbGet(it.src);
+      if (mirrored) {
+        this._posterCache.set(thumbUrl, mirrored);
+        return mirrored;
+      }
+      if (captureAllowed && this._revealedThumbs.has(it.src)) {
+        this._pendingPosterUrls?.add(thumbUrl);
+      }
     }
     return "";
   }
@@ -2833,13 +3217,76 @@ class CameraGalleryCard extends LitElement {
       v.preload = "metadata";
 
       let timeout;
+      let retried = false;
+      // Single-shot guard: browsers can fire `seeked` synchronously
+      // (when the seek is a no-op) or twice for keyframe-bracketing
+      // seeks. Without this, the retry path could resolve and reject
+      // the same promise, or reject a frame `toBlob` is mid-encoding.
+      let settled = false;
+      const startedAt = (typeof performance !== "undefined" ? performance.now() : Date.now());
       const cleanup = () => {
         clearTimeout(timeout);
+        try { v.removeEventListener("seeked", onSeeked); } catch (_) {}
         try { v.pause(); v.removeAttribute("src"); v.load(); } catch (_) {}
       };
-      const fail = (err) => { cleanup(); reject(err ?? new Error("poster fail")); };
+      const fail = (err) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(err ?? new Error("poster fail"));
+      };
+      const ok = (blob) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        resolve(blob);
+      };
 
-      const draw = () => {
+      // Sample the rendered frame to detect uniform decoder output —
+      // signature of a corrupt segment in an otherwise-decodable file.
+      // Three cases caught:
+      //   1. variance < 5      — uniform color (grey "no signal" tile,
+      //                          all-black, all-white).
+      //   2. mean < 6 && var < 30 — near-black with limited dithering.
+      //                          Real night cams run mean 10-30 with
+      //                          variance 50+ from sensor noise.
+      //   3. >97% near-black pixels — uniform black with a few stray
+      //                          noise pixels.
+      //
+      // Costly on mobile (`getImageData` forces a GPU→CPU readback),
+      // so we gate the call: run only when `pct > 0` (corruption risk
+      // exists since we seek into the middle/end), OR when the capture
+      // took unusually long (> 200ms — proxy for "decoder struggled").
+      // Returns `null` when the canvas is tainted (cross-origin), so
+      // the caller treats it as "assume valid".
+      const isBlankFrame = (ctx, w, h) => {
+        try {
+          const data = ctx.getImageData(0, 0, w, h).data;
+          let sum = 0;
+          let sumSq = 0;
+          let nearBlack = 0;
+          let n = 0;
+          for (let i = 0; i < data.length; i += 16) {
+            const luma = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+            sum += luma;
+            sumSq += luma * luma;
+            if (luma < 8) nearBlack++;
+            n++;
+          }
+          if (!n) return false;
+          const mean = sum / n;
+          const variance = sumSq / n - mean * mean;
+          if (variance < 5) return true;
+          if (mean < 6 && variance < 30) return true;
+          if (nearBlack / n > 0.97) return true;
+          return false;
+        } catch {
+          return null;
+        }
+      };
+
+      const onSeeked = () => {
+        if (settled) return;
         try {
           const w = v.videoWidth, h = v.videoHeight;
           if (!w || !h) return fail(new Error("no video dimensions"));
@@ -2847,15 +3294,50 @@ class CameraGalleryCard extends LitElement {
           const c = document.createElement("canvas");
           c.width = Math.max(1, Math.round(w * scale));
           c.height = Math.max(1, Math.round(h * scale));
-          c.getContext("2d").drawImage(v, 0, 0, c.width, c.height);
-          cleanup();
-          resolve(c.toDataURL("image/jpeg", 0.6));
+          const ctx = c.getContext("2d");
+          ctx.drawImage(v, 0, 0, c.width, c.height);
+
+          // Blank-frame retry path. Skip the GPU readback entirely on
+          // the fast, common case (pct=0, fast capture) — start frames
+          // are almost never corrupt, and the readback is the costly
+          // step on mobile.
+          const elapsed =
+            (typeof performance !== "undefined" ? performance.now() : Date.now()) - startedAt;
+          const shouldCheckBlank = (Number(pct) || 0) > 0 || elapsed > 200;
+          if (shouldCheckBlank) {
+            const blank = isBlankFrame(ctx, c.width, c.height);
+            if (blank === true) {
+              if (!retried && (Number(pct) || 0) > 0) {
+                retried = true;
+                // Re-arm the listener (was consumed by `{ once: true }`)
+                // and explicitly remove first in case the runtime hasn't
+                // yet — defensive against double-fire on the next seek.
+                v.removeEventListener("seeked", onSeeked);
+                v.addEventListener("seeked", onSeeked, { once: true });
+                try { v.currentTime = 0.01; } catch (e) { return fail(e); }
+                return;
+              }
+              return fail(new Error("blank frame"));
+            }
+          }
+
+          // Blob-shaped output skips the base64 round-trip and stores
+          // ~33% smaller than the legacy `toDataURL`. The render layer
+          // gets a synchronous object URL via `URL.createObjectURL`.
+          c.toBlob(
+            (blob) => {
+              if (!blob) return fail(new Error("toBlob returned null"));
+              ok(blob);
+            },
+            "image/jpeg",
+            0.6
+          );
         } catch (e) {
           fail(e);
         }
       };
 
-      timeout = setTimeout(() => fail(new Error("poster timeout")), 3000);
+      timeout = setTimeout(() => fail(new Error("poster timeout")), POSTER_CAPTURE_TIMEOUT_MS);
       v.addEventListener(
         "error",
         () => {
@@ -2863,7 +3345,7 @@ class CameraGalleryCard extends LitElement {
           // MediaError.code: 2 = NETWORK (often 404), 4 = SRC_NOT_SUPPORTED
           // (usually codec but browsers also report 4 for missing files).
           // _ensurePoster uses this to decide whether to drop a stale
-          // localStorage thumb.
+          // cached thumb.
           err.mediaErrorCode = v.error?.code;
           fail(err);
         },
@@ -2875,9 +3357,9 @@ class CameraGalleryCard extends LitElement {
         // Seek slightly off the boundaries — exact 0 or duration often yields no frame.
         let t = 0.01;
         if (dur && p > 0) t = p === 100 ? Math.max(0.01, dur - 0.05) : dur * (p / 100);
-        try { v.currentTime = t; } catch (_) { draw(); }
+        try { v.currentTime = t; } catch (_) { onSeeked(); }
       }, { once: true });
-      v.addEventListener("seeked", () => draw(), { once: true });
+      v.addEventListener("seeked", onSeeked, { once: true });
 
       v.src = src;
       try { v.load(); } catch (_) {}
@@ -2891,75 +3373,192 @@ class CameraGalleryCard extends LitElement {
     return "cgc_p_" + fnv1aHash(url + "|" + pct);
   }
 
+  // ─── Poster persistent cache ──────────────────────────────────────
+  //
+  // Backing store is IndexedDB via `posterStore` (binary `Blob` records,
+  // ~33% smaller on disk than the legacy base64 dataUrl shape). The
+  // render layer needs a synchronous string URL, so the in-memory
+  // `_posterMirror` map keeps `Blob` refs alongside lazily-created
+  // `URL.createObjectURL` strings. Reads return the cached URL or
+  // create one on demand; writes overwrite-revoke before persisting.
+  //
+  // If IDB is unavailable (private-browsing Safari, sandboxed embeds)
+  // the in-memory mirror still works for the lifetime of the page —
+  // just nothing crosses page reloads. That's acceptable for thumbnails.
+  _prewarmPosterLs() {
+    if (!this._posterMirror) this._posterMirror = new Map();
+    // Single shared promise — `_ensurePoster` and the render branch
+    // both observe it. Resolves regardless of success so awaits never
+    // hang on storage failures.
+    this._prewarmReadyPromise = posterStore
+      .readAll()
+      .then((records) => {
+        if (this._posterMirror) {
+          // In-flight captures during prewarm have already populated
+          // their entries — preserve those (fresh > disk).
+          for (const rec of records) {
+            if (this._posterMirror.has(rec.key)) continue;
+            this._posterMirror.set(rec.key, { blob: rec.blob, url: null });
+          }
+        }
+      })
+      .catch(() => {})
+      .finally(() => {
+        this._prewarmDone = true;
+        // Pull freshly-warmed posters into view without waiting for
+        // the next hass push.
+        this.requestUpdate();
+      });
+    // Trim disk store so it never exceeds the cap. Best-effort.
+    posterStore.evictExcess(500).catch(() => {});
+  }
+
+  _posterMirrorEnsureUrl(entry) {
+    if (entry.url) return entry.url;
+    try {
+      entry.url = URL.createObjectURL(entry.blob);
+    } catch (_) {
+      return null;
+    }
+    return entry.url;
+  }
+
   _lsThumbGet(url) {
-    try {
-      return localStorage.getItem(this._lsKey(url)) || null;
-    } catch (_) { return null; }
+    if (!this._posterMirror) return null;
+    const key = this._lsKey(url);
+    const entry = this._posterMirror.get(key);
+    if (!entry) return null;
+    // LRU: move the entry to the end of the Map so eviction (which
+    // pops `keys().next().value`) drops the genuinely-coldest entry.
+    // `Map.set` on an existing key keeps insertion position, so we
+    // delete-then-set to relocate.
+    this._posterMirror.delete(key);
+    this._posterMirror.set(key, entry);
+    // Mirror the bump on disk too (best-effort) so cold restarts inherit
+    // hot/cold ordering.
+    posterStore.touch(key).catch(() => {});
+    return this._posterMirrorEnsureUrl(entry);
   }
 
-  _lsThumbSet(url, dataUrl) {
-    try {
-      const key = this._lsKey(url);
-      const indexKey = "cgc_poster_index";
-      const index = JSON.parse(localStorage.getItem(indexKey) || "[]");
-      // Evict oldest entries if over limit (max 150)
-      if (index.length >= 150) {
-        const toRemove = index.splice(0, index.length - 149);
-        toRemove.forEach((k) => { try { localStorage.removeItem(k); } catch (_) {} });
+  /** Persist a captured Blob under `stableKey` and return a usable
+   * object URL. `stableKey` is what we hash for IDB lookup (stable
+   * across sessions for media-source items); `displayUrl` is what
+   * the render layer hands to `<img src>` — stored in the mirror
+   * entry so eviction can clear the right `_posterCache` slot.
+   * When the two are the same (sensor mode), pass `undefined` for
+   * `displayUrl` and stableKey will be used for both.
+   * Revokes any prior URL for the same key so we don't leak
+   * browser-side blob references. Caps the mirror at 500 entries
+   * (LRU eviction). */
+  _lsThumbSet(stableKey, blob, displayUrl) {
+    if (!blob) return null;
+    const back = displayUrl ?? stableKey;
+    const key = this._lsKey(stableKey);
+    if (!this._posterMirror) this._posterMirror = new Map();
+    const prev = this._posterMirror.get(key);
+    if (prev?.url) {
+      try { URL.revokeObjectURL(prev.url); } catch (_) {}
+    }
+    // Delete first so re-setting moves the key to the end of the Map's
+    // insertion order — keeps the LRU semantics aligned with `_lsThumbGet`.
+    this._posterMirror.delete(key);
+    const MAX_MIRROR = 500;
+    while (this._posterMirror.size >= MAX_MIRROR) {
+      const firstKey = this._posterMirror.keys().next().value;
+      if (!firstKey) break;
+      const oldest = this._posterMirror.get(firstKey);
+      if (oldest?.url) {
+        try { URL.revokeObjectURL(oldest.url); } catch (_) {}
       }
-      if (!index.includes(key)) index.push(key);
-      localStorage.setItem(indexKey, JSON.stringify(index));
-      localStorage.setItem(key, dataUrl);
-    } catch (_) {}
+      if (oldest?.src) this._posterCache.delete(oldest.src);
+      this._posterMirror.delete(firstKey);
+    }
+    const entry = { src: back, blob, url: null };
+    this._posterMirror.set(key, entry);
+    posterStore.set(key, blob).catch(() => {});
+    return this._posterMirrorEnsureUrl(entry);
   }
 
-  // Drops a cached thumbnail for a URL. Used when the underlying file is
-  // confirmed missing (HTTP 404 / MediaError NETWORK) so a deleted file's
-  // stale localStorage thumb stops being shown on next render.
-  _lsThumbDelete(url) {
-    try {
-      const key = this._lsKey(url);
-      const indexKey = "cgc_poster_index";
-      const index = JSON.parse(localStorage.getItem(indexKey) || "[]");
-      const idx = index.indexOf(key);
-      if (idx >= 0) {
-        index.splice(idx, 1);
-        localStorage.setItem(indexKey, JSON.stringify(index));
-      }
-      localStorage.removeItem(key);
-    } catch (_) {}
+  // Drops a cached thumbnail. Used when the underlying file is
+  // confirmed missing (HTTP 404 / MediaError NETWORK) so a deleted
+  // file's stale cached thumb stops being shown on next render.
+  //
+  // `stableKey` matches what was used in `_lsThumbSet` (mediaId for
+  // media-source items, file path for sensor). `displayUrl` is the
+  // URL currently stored in `_posterCache` and gets cleared too —
+  // `_ensurePoster` early-returns on a cache hit, so leaving the
+  // (now-revoked) URL there would block the next capture attempt and
+  // render a broken `<img src="blob:revoked">`.
+  _lsThumbDelete(stableKey, displayUrl) {
+    const back = displayUrl ?? stableKey;
+    const key = this._lsKey(stableKey);
+    const prev = this._posterMirror?.get(key);
+    if (prev?.url) {
+      try { URL.revokeObjectURL(prev.url); } catch (_) {}
+    }
+    this._posterMirror?.delete(key);
+    this._posterCache.delete(back);
+    posterStore.delete(key).catch(() => {});
   }
 
-  async _fetchProtectedAsDataUrl(src) {
+  async _fetchProtectedAsBlob(src) {
     const token = this._hass?.auth?.data?.access_token;
     if (!token) return null;
-    const res = await fetch(window.location.origin + src, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    if (res.status === 404) {
-      // Throw with a marker so _ensurePoster can drop the stale localStorage
-      // thumb for files that have been deleted on disk.
-      const err = new Error("not found");
-      err.status = 404;
-      throw err;
+    // Bound the wait. Without this, a slow-network fetch sits open
+    // indefinitely while the queue is starved on the connection limit.
+    // AbortError surfaces as `name === "AbortError"` so `_ensurePoster`
+    // can classify it as soft (timeout) rather than hard (broken file).
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), POSTER_FETCH_TIMEOUT_MS);
+    try {
+      const res = await fetch(window.location.origin + src, {
+        headers: { Authorization: `Bearer ${token}` },
+        signal: ctrl.signal,
+      });
+      if (res.status === 404) {
+        // Throw with a marker so _ensurePoster can drop the stale cached
+        // thumb for files that have been deleted on disk.
+        const err = new Error("not found");
+        err.status = 404;
+        throw err;
+      }
+      if (!res.ok) return null;
+      return await res.blob();
+    } finally {
+      clearTimeout(timer);
     }
-    if (!res.ok) return null;
-    const blob = await res.blob();
-    return new Promise((resolve, reject) => {
-      const r = new FileReader();
-      r.onload = () => resolve(r.result);
-      r.onerror = reject;
-      r.readAsDataURL(blob);
-    });
   }
 
   async _ensurePoster(src) {
     if (!src || this._posterCache.has(src) || this._posterPending.has(src)) return;
-    if (this._posterFailed.has(src)) return;
+    if (this._isPosterHardFailed(src)) return;
+    if (this._isPosterCoolingDown(src)) return;
 
-    const cached = this._lsThumbGet(src);
+    // Persistent-cache identifier (defaults to the fetch URL for
+    // paths where the URL is itself stable — sensor mode). For
+    // media-source items this is the mediaId, so a cached frame
+    // survives across sessions even though the signed URL changes.
+    const stableKey = this._posterStableKeys.get(src) || src;
+
+    // Wait for the IDB prewarm to land before checking cache. On cmd-r
+    // the render that triggered this call sees an empty mirror because
+    // `posterStore.readAll()` is async — without the await we'd race
+    // the network and re-download blobs that are already on disk.
+    if (this._prewarmReadyPromise && !this._prewarmDone) {
+      await this._prewarmReadyPromise;
+      // State may have changed during the await (selection moved,
+      // failure recorded by another path, cache populated by prewarm).
+      if (this._posterCache.has(src)) return;
+      if (this._isPosterHardFailed(src)) return;
+      if (this._isPosterCoolingDown(src)) return;
+    }
+
+    const cached = this._lsThumbGet(stableKey);
     if (cached) {
       this._posterCache.set(src, cached);
+      // Successful read clears any prior soft-fail state so a previously
+      // flaky URL gets a clean slate next time.
+      this._clearPosterFailure(src);
       this.requestUpdate();
       return;
     }
@@ -2967,36 +3566,64 @@ class CameraGalleryCard extends LitElement {
     this._posterPending.add(src);
     try {
       // Auth-protected HA image thumbnails (browse_media) need a Bearer fetch.
-      // Videos always go through _captureFrame to extract a still — never base64 the file.
-      const dataUrl = src.startsWith("/") && !isVideo(src)
-        ? await this._fetchProtectedAsDataUrl(src)
+      // Videos always go through _captureFrame to extract a still — never inline the file.
+      const blob = src.startsWith("/") && !isVideo(src)
+        ? await this._fetchProtectedAsBlob(src)
         : await this._captureFrame(
             src,
             this.config?.thumbnail_frame_pct ?? DEFAULT_THUMBNAIL_FRAME_PCT
           );
-      if (dataUrl) {
-        this._posterCache.set(src, dataUrl);
-        this._lsThumbSet(src, dataUrl);
+      if (blob) {
+        // Persist by stableKey (mediaId for MS items, URL for sensor)
+        // but cache the resulting object URL by `src` so render's
+        // `<img src>` lookup hits.
+        const objectUrl = this._lsThumbSet(stableKey, blob, src);
+        if (objectUrl) {
+          this._posterCache.set(src, objectUrl);
+          this._clearPosterFailure(src);
+        } else {
+          // toBlob/createObjectURL produced nothing usable — soft fail
+          // (likely a transient resource issue, not a broken file).
+          this._recordPosterFailure(src);
+        }
       } else {
-        // Reached the !res.ok branch in _fetchProtectedAsDataUrl (non-404
-        // failure). Don't keep retrying every render.
-        this._posterFailed.add(src);
+        // !res.ok branch in `_fetchProtectedAsBlob` (non-404). Could
+        // be a 5xx that'll recover, so soft-fail and let the cooldown
+        // gate retries.
+        this._recordPosterFailure(src);
       }
     } catch (e) {
-      // Hard failure: 404, decode error, timeout, network error. Mark as
-      // failed so subsequent renders skip it instead of re-spamming the
-      // network/console.
-      this._posterFailed.add(src);
-      // For confirmed-missing files (HTTP 404, or video URLs that couldn't
-      // be loaded over the network) drop any stale localStorage thumb so a
-      // deleted file stops displaying its last cached frame.
-      const isMissing =
-        e?.status === 404 ||
-        e?.mediaErrorCode === 2 || // MEDIA_ERR_NETWORK
-        e?.mediaErrorCode === 4;   // MEDIA_ERR_SRC_NOT_SUPPORTED
-      if (isMissing) this._lsThumbDelete(src);
+      const status = e?.status;
+      const code = e?.mediaErrorCode;
+      const msg = String(e?.message ?? "");
+      // Hard failures: anything that won't recover on retry. The
+      // rule of thumb is "the file got here but we can't make a
+      // frame out of it" — retrying won't help. That covers 404
+      // (file gone), codec errors (3, 4), and post-download
+      // extraction failures (blank frame, toBlob null, tainted
+      // canvas).
+      //
+      // Soft failures stay soft: capture timeout, fetch AbortError,
+      // MEDIA_ERR_NETWORK (2), MEDIA_ERR_ABORTED (1), 5xx — these
+      // are likely to succeed on a retry once the connection
+      // catches up.
+      const isExtractionFail =
+        msg === "blank frame" ||
+        msg === "toBlob returned null" ||
+        msg === "no video dimensions";
+      const isHard =
+        status === 404 ||
+        code === 3 /* MEDIA_ERR_DECODE */ ||
+        code === 4 /* MEDIA_ERR_SRC_NOT_SUPPORTED */ ||
+        isExtractionFail;
+      this._recordPosterFailure(src, { hard: isHard });
+      if (status === 404) this._lsThumbDelete(stableKey, src);
     } finally {
       this._posterPending.delete(src);
+      // Mapping is per-fetch; drop it now that this fetch has settled.
+      // Render will re-populate on next cycle if the item still needs
+      // a capture.
+      this._posterStableKeys.delete(src);
       this.requestUpdate();
     }
   }
@@ -3011,7 +3638,16 @@ class CameraGalleryCard extends LitElement {
    * filename/folder parsing. Sensor items have no authoritative timestamp and
    * arrive as `{ src }` only — gallery falls back to path parsing.
    */
+  /** Bump the items revision so the next `_items()` call rebuilds. Wired
+   * from both source clients' `onChange`, plus `setConfig` and any direct
+   * `_deleted` mutation. */
+  _invalidateItems() {
+    this._itemsRev++;
+  }
+
   _items() {
+    if (this._cachedItemsRev === this._itemsRev) return this._cachedItems;
+
     const mode = this.config?.source_mode;
     const usingMediaSource = mode === "media";
 
@@ -3023,24 +3659,122 @@ class CameraGalleryCard extends LitElement {
       return dtMs !== null ? { src, dtMs } : { src };
     };
 
+    let result;
     if (mode === "combined") {
       const merged = this._combinedClient.getItems(enrich);
-      return this._deleted?.size
+      result = this._deleted?.size
         ? merged.filter((it) => !this._deleted.has(it.src))
         : merged;
-    }
-
-    if (usingMediaSource) {
+    } else if (usingMediaSource) {
       const ids = dedupeByRelPath(this._mediaClient.getIds()).map(enrich);
-      return this._deleted?.size ? ids.filter((it) => !this._deleted.has(it.src)) : ids;
+      result = this._deleted?.size
+        ? ids.filter((it) => !this._deleted.has(it.src))
+        : ids;
+    } else {
+      // Sensor (and the implicit fall-through default) — delegate.
+      // Render-side reads of srcEntityMap / sensorPairedThumbs route through
+      // `this._sensorClient.getSrcEntityMap()` and `getSensorPairedThumbs()`
+      // directly; no mirror-back needed.
+      const items = this._sensorClient.getItems(enrich);
+      result = this._deleted?.size
+        ? items.filter((it) => !this._deleted.has(it.src))
+        : items;
     }
 
-    // Sensor (and the implicit fall-through default) — delegate.
-    // Render-side reads of srcEntityMap / sensorPairedThumbs route through
-    // `this._sensorClient.getSrcEntityMap()` and `getSensorPairedThumbs()`
-    // directly; no mirror-back needed.
-    const items = this._sensorClient.getItems(enrich);
-    return this._deleted?.size ? items.filter((it) => !this._deleted.has(it.src)) : items;
+    this._cachedItems = result;
+    this._cachedItemsRev = this._itemsRev;
+    return result;
+  }
+
+  /**
+   * Shared sort+day+object-filter pipeline used by both `updated()` and
+   * `render()`. Returns the intermediate stages so each call site picks
+   * what it needs without recomputing the prefix.
+   *
+   * Returns `{ rawItems, allWithDay, days, newestDay, activeDay, dayFiltered,
+   * objFiltered }`. `objFiltered` is `dayFiltered` with `_matchesObjectFilter`
+   * applied — both call sites consume this stage.
+   */
+  _computeBaseList() {
+    if (
+      this._cachedBaseList &&
+      this._cachedBaseListItemsRev === this._itemsRev &&
+      this._cachedBaseListSelectedDay === this._selectedDay &&
+      this._cachedBaseListObjFilters === this._objectFilters
+    ) {
+      return this._cachedBaseList;
+    }
+
+    const rawItems = this._items();
+
+    if (!rawItems.length) {
+      const empty = {
+        rawItems,
+        allWithDay: [],
+        days: [],
+        newestDay: null,
+        activeDay: null,
+        dayFiltered: [],
+        objFiltered: [],
+      };
+      this._cachedBaseList = empty;
+      this._cachedBaseListItemsRev = this._itemsRev;
+      this._cachedBaseListSelectedDay = this._selectedDay;
+      this._cachedBaseListObjFilters = this._objectFilters;
+      return empty;
+    }
+
+    const withDt = rawItems.map((it, idx) => {
+      const dtMs = Number.isFinite(it.dtMs) ? it.dtMs : null;
+      const dayKey = dtMs !== null ? dayKeyFromMs(dtMs) : null;
+      return { dayKey, dtMs, idx, src: it.src };
+    });
+
+    withDt.sort((a, b) => {
+      const aOk = Number.isFinite(a.dtMs);
+      const bOk = Number.isFinite(b.dtMs);
+      if (aOk && bOk && b.dtMs !== a.dtMs) return b.dtMs - a.dtMs;
+      if (aOk && !bOk) return -1;
+      if (!aOk && bOk) return 1;
+      return b.idx - a.idx;
+    });
+
+    const allWithDay = withDt.map((x) => ({ dayKey: x.dayKey, src: x.src, dtMs: x.dtMs }));
+    const days = this._allKnownDays(allWithDay);
+    const newestDay = days[0] ?? null;
+    const activeDay = this._selectedDay ?? newestDay;
+
+    const dayFiltered = !activeDay
+      ? allWithDay
+      : allWithDay.filter((x) => x.dayKey === activeDay);
+
+    const objFiltered = dayFiltered.filter((x) => this._matchesObjectFilter(x.src));
+
+    // Pre-count videos vs images in one pass — render() needs both for
+    // the type-filter pill visibility, and the legacy two-filter pattern
+    // walked the list twice + called `_isVideoForSrc` per item per pass.
+    let videoCount = 0;
+    for (const x of objFiltered) {
+      if (this._isVideoForSrc(x.src)) videoCount++;
+    }
+    const imageCount = objFiltered.length - videoCount;
+
+    const result = {
+      rawItems,
+      allWithDay,
+      days,
+      newestDay,
+      activeDay,
+      dayFiltered,
+      objFiltered,
+      videoCount,
+      imageCount,
+    };
+    this._cachedBaseList = result;
+    this._cachedBaseListItemsRev = this._itemsRev;
+    this._cachedBaseListSelectedDay = this._selectedDay;
+    this._cachedBaseListObjFilters = this._objectFilters;
+    return result;
   }
 
   _isVideoSmart(urlOrTitle, mime, cls) {
@@ -3301,7 +4035,7 @@ class CameraGalleryCard extends LitElement {
     });
 
     const allWithDay = withDt.map((x) => ({ dayKey: x.dayKey, src: x.src, dtMs: x.dtMs }));
-    const days = uniqueDays(allWithDay);
+    const days = this._allKnownDays(allWithDay);
     const newestDay = days[0] ?? null;
     const activeDay = this._selectedDay ?? newestDay;
 
@@ -3401,6 +4135,7 @@ class CameraGalleryCard extends LitElement {
       } catch (_) {}
     }
 
+    this._invalidateItems();
     this._selectedSet.clear();
     this._selectMode = false;
     this._hideBulkDeleteHint();
@@ -3597,6 +4332,11 @@ class CameraGalleryCard extends LitElement {
     this._mediaClient.load(this.config);
     this._startMediaPoll();
 
+    // Prewarm the poster localStorage cache once on the first setConfig.
+    // Reads up to 150 cached entries into memory in a single sync batch so
+    // subsequent renders can answer `_lsThumbGet` without touching LS.
+    if (!prevConfig) this._prewarmPosterLs();
+
     const { changedKeys, isSourceChange: sourceChange, isUiOnly: uiOnlyChange } =
       configDiff(prevConfig, nextConfig);
 
@@ -3659,6 +4399,7 @@ class CameraGalleryCard extends LitElement {
     }
 
     if (sourceChange) {
+      this._invalidateItems();
       this._closeThumbMenu();
       this._forceThumbReset = false;
       this._pendingScrollToI = 0;
@@ -3670,7 +4411,7 @@ class CameraGalleryCard extends LitElement {
       this._resetPosterQueue();
       this._posterCache.clear();
       this._posterPending.clear();
-      this._posterFailed.clear();
+      this._posterAttempts.clear();
       this._objectCache.clear();
     }
 
@@ -3730,6 +4471,32 @@ class CameraGalleryCard extends LitElement {
       this._scrollThumbIntoView(i);
     }
 
+    // Lazy-load the active day for media/combined modes. The MediaSourceClient
+    // returns immediately when the day is already cached, so this is cheap.
+    // Also prefetch the adjacent days so left/right arrow navigation feels
+    // instant.
+    if (dayChanged || changedProps.has("config")) {
+      const mode = this.config?.source_mode;
+      if (mode === "media" || mode === "combined") {
+        const activeDay = this._selectedDay;
+        const days = this._mediaClient.getDays?.() || [];
+        const ensure = (d) => {
+          if (d) void this._mediaClient.ensureDayLoaded?.(d);
+        };
+        if (activeDay) ensure(activeDay);
+        if (activeDay && days.length) {
+          const i = days.indexOf(activeDay);
+          if (i >= 0) {
+            ensure(days[i - 1]); // newer
+            ensure(days[i + 1]); // older
+          }
+        } else if (days.length) {
+          // No selection yet — load the newest day so first paint isn't empty.
+          ensure(days[0]);
+        }
+      }
+    }
+
     if (changedProps.has("config") && this._previewVideoEl) {
       this._previewVideoEl.autoplay = this.config?.autoplay === true;
       this._previewVideoEl.muted =
@@ -3739,36 +4506,10 @@ class CameraGalleryCard extends LitElement {
     }
 
     const usingMediaSource = this.config?.source_mode === "media" || this.config?.source_mode === "combined";
-    const rawItems = this._items();
+    const base = this._computeBaseList();
 
-    if (rawItems.length) {
-      const withDt = rawItems.map((it, idx) => {
-        const dtMs = Number.isFinite(it.dtMs) ? it.dtMs : null;
-        const dayKey = dtMs !== null ? dayKeyFromMs(dtMs) : null;
-        return { dayKey, dtMs, idx, src: it.src };
-      });
-
-      withDt.sort((a, b) => {
-        const aOk = Number.isFinite(a.dtMs);
-        const bOk = Number.isFinite(b.dtMs);
-        if (aOk && bOk && b.dtMs !== a.dtMs) return b.dtMs - a.dtMs;
-        if (aOk && !bOk) return -1;
-        if (!aOk && bOk) return 1;
-        return b.idx - a.idx;
-      });
-
-      const allWithDay = withDt.map((x) => ({ dayKey: x.dayKey, src: x.src, dtMs: x.dtMs }));
-      const days = uniqueDays(allWithDay);
-      const newestDay = days[0] ?? null;
-      const activeDay = this._selectedDay ?? newestDay;
-
-      const dayFiltered = !activeDay
-        ? allWithDay
-        : allWithDay.filter((x) => x.dayKey === activeDay);
-
-      const filteredAll = dayFiltered.filter((x) =>
-        this._matchesObjectFilter(x.src)
-      );
+    if (base.rawItems.length) {
+      const filteredAll = base.objFiltered;
 
       const cap = (this.config?.max_media ?? DEFAULT_MAX_MEDIA);
       const filtered = filteredAll.slice(0, Math.min(cap, filteredAll.length));
@@ -3789,8 +4530,31 @@ class CameraGalleryCard extends LitElement {
         Math.min(filtered.length, thumbRenderLimit + 6)
       );
 
-      this._queueSnapshotResolveForVisibleThumbs(visibleThumbSlice);
-      this._queueSensorPosterWork(posterWorkSlice);
+      // Skip the per-cycle poster scheduling when nothing observable
+      // changed since the last `updated()` — both methods are internally
+      // idempotent, but iterating up to ~50 items per hass push when
+      // the slice is the same is wasted CPU. Gate on items rev + the
+      // composition keys that drive `_computeBaseList`.
+      const queueKey = `${this._itemsRev}|${this._selectedDay}|${this._selectedIndex}`;
+      if (queueKey !== this._lastPosterQueueKey) {
+        this._lastPosterQueueKey = queueKey;
+        this._queueSnapshotResolveForVisibleThumbs(visibleThumbSlice);
+        this._queueSensorPosterWork(posterWorkSlice);
+      }
+    }
+
+    // Drain the pending work `_resolveVideoPoster` collected during
+    // render(). Both queues internally dedup; this is a deduplicated
+    // batch dispatch that runs after the DOM commit, so any
+    // `requestUpdate` triggered by the queue draining doesn't re-enter
+    // the current render cycle.
+    if (this._pendingResolveIds && this._pendingResolveIds.size) {
+      this._mediaClient.queueResolve([...this._pendingResolveIds]);
+      this._pendingResolveIds.clear();
+    }
+    if (this._pendingPosterUrls && this._pendingPosterUrls.size) {
+      for (const url of this._pendingPosterUrls) this._enqueuePoster(url);
+      this._pendingPosterUrls.clear();
     }
 
     if (this._isLiveActive()) {
@@ -3833,10 +4597,13 @@ class CameraGalleryCard extends LitElement {
                 this._revealedThumbs.add(key);
                 changed = true;
               }
-              // Viewport-aware poster prioritization: enqueue only when visible
+              // Viewport-aware enqueue: only the cheap server-side
+              // thumbnail (paired jpg). Raw video capture is deferred
+              // until the user clicks the item — see the click-path
+              // in `_ensurePreviewVideoHostPlayback`.
               if (isSensor && key && isVideo(key)) {
                 const pairedJpg = this._sensorClient.getSensorPairedThumbs().get(key);
-                this._enqueuePoster(pairedJpg || key);
+                if (pairedJpg) this._enqueuePoster(pairedJpg);
               }
             }
           }
@@ -3859,9 +4626,16 @@ class CameraGalleryCard extends LitElement {
   render() {
     if (!this._hass || !this.config) return html``;
 
+    // Reset per-render pending-work collectors. `_resolveVideoPoster`
+    // pushes work into these instead of side-effecting the queues
+    // mid-render; `updated()` drains them after the DOM is committed.
+    this._pendingResolveIds = new Set();
+    this._pendingPosterUrls = new Set();
+
     const usingMediaSource = this.config?.source_mode === "media" || this.config?.source_mode === "combined";
     const thumbRatio = "1 / 1";
-    const rawItems = this._items();
+    const base = this._computeBaseList();
+    const rawItems = base.rawItems;
     const visibleObjectFilters = this._getVisibleObjectFilters();
 
     if (!rawItems.length) {
@@ -3871,33 +4645,8 @@ class CameraGalleryCard extends LitElement {
       return html`<div class="empty">No media found.</div>`;
     }
 
-    const withDt = rawItems.map((it, idx) => {
-      const dtMs = Number.isFinite(it.dtMs) ? it.dtMs : null;
-      const dayKey = dtMs !== null ? dayKeyFromMs(dtMs) : null;
-      return { dayKey, dtMs, idx, src: it.src };
-    });
+    const { days, newestDay, activeDay, objFiltered, videoCount, imageCount } = base;
 
-    withDt.sort((a, b) => {
-      const aOk = Number.isFinite(a.dtMs);
-      const bOk = Number.isFinite(b.dtMs);
-      if (aOk && bOk && b.dtMs !== a.dtMs) return b.dtMs - a.dtMs;
-      if (aOk && !bOk) return -1;
-      if (!aOk && bOk) return 1;
-      return b.idx - a.idx;
-    });
-
-    const allWithDay = withDt.map((x) => ({ dayKey: x.dayKey, src: x.src, dtMs: x.dtMs }));
-    const days = uniqueDays(allWithDay);
-    const newestDay = days[0] ?? null;
-    const activeDay = this._selectedDay ?? newestDay;
-
-    const dayFiltered = !activeDay
-      ? allWithDay
-      : allWithDay.filter((x) => x.dayKey === activeDay);
-
-    const objFiltered = dayFiltered.filter((x) => this._matchesObjectFilter(x.src));
-    const videoCount = objFiltered.filter((x) => this._isVideoForSrc(x.src)).length;
-    const imageCount = objFiltered.filter((x) => !this._isVideoForSrc(x.src)).length;
     const showTypeFilter = videoCount > 0 && imageCount > 0;
     if (!showTypeFilter) { this._filterVideo = false; this._filterImage = false; }
 
@@ -4151,7 +4900,7 @@ class CameraGalleryCard extends LitElement {
               : noResultsForFilter
                 ? html`<div class="preview-empty">No media for this day.</div>`
                 : !selectedHasUrl
-                  ? html`<div class="empty inpreview">Loading...</div>`
+                  ? html`<div class="preview-skeleton" aria-hidden="true"></div>`
                   : selectedIsVideo
                     ? html`<div id="preview-video-host" class="preview-video-host"></div>`
                     : html`<img class="pimg" src=${selectedUrl} alt="" />`}
@@ -4354,7 +5103,7 @@ class CameraGalleryCard extends LitElement {
 
                     return html`
                       <button
-                        class="tthumb ${isOn ? "on" : ""} ${this._selectMode && isSel ? "sel" : ""} bar-${barPos}"
+                        class="tthumb ${isOn ? "on" : ""} ${this._selectMode && isSel ? "sel" : ""} bar-${barPos} ${showBar ? "with-bar" : ""}"
                         data-i="${it.i}"
                         data-lazy-src="${it.src}"
                         style="${thumbStyle}"
@@ -4406,22 +5155,19 @@ class CameraGalleryCard extends LitElement {
                               class="timg"
                               src="${poster}"
                               alt=""
+                              @error=${() => this._onThumbImgError(poster)}
                             />`
-                          : html`<div class="tph" aria-hidden="true"></div>`}
-
-                        ${isVid
-                          ? html`
-                              <div
-                                class="video-overlay ${barPos === "bottom"
-                                  ? "has-bottom-bar"
-                                  : barPos === "top"
-                                    ? "has-top-bar"
-                                    : ""}"
-                              >
-                                <ha-icon icon="mdi:play"></ha-icon>
-                              </div>
-                            `
-                          : html``}
+                          : this._isThumbBroken(it, isMs, thumbUrl, tThumb)
+                            ? html`<div class="tph broken" aria-hidden="true">
+                                <ha-icon icon="mdi:image-broken-variant"></ha-icon>
+                              </div>`
+                            : isVid && this._prewarmDone && this._willNeverLoad(it, isMs, tThumb)
+                              ? html`<div class="tph disabled" aria-hidden="true" title="Thumbnail capture is off">
+                                  <ha-icon icon="mdi:cloud-off-outline"></ha-icon>
+                                </div>`
+                              : this._isPosterLoading(it, isMs, thumbUrl, tThumb)
+                                ? html`<div class="tph spinner" aria-hidden="true"></div>`
+                                : html`<div class="tph skeleton" aria-hidden="true"></div>`}
 
                         ${showBar
                           ? html`
@@ -5353,38 +6099,6 @@ class CameraGalleryCard extends LitElement {
         color: var(--cgc-obj-icon-active-color, var(--text-primary-color, #fff));
       }
 
-      .video-overlay {
-        position: absolute;
-        inset: 0;
-        display: grid;
-        place-items: center;
-        pointer-events: none;
-        z-index: 2;
-      }
-
-      .video-overlay ha-icon {
-        --mdc-icon-size: 24px;
-        --ha-icon-size: 24px;
-        width: 30px;
-        height: 30px;
-        border-radius: 999px;
-        display: grid;
-        place-items: center;
-        color: white;
-        background: rgba(0, 0, 0, 0.30);
-        backdrop-filter: blur(6px);
-        -webkit-backdrop-filter: blur(6px);
-        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
-      }
-
-      .video-overlay.has-bottom-bar {
-        transform: translateY(-13px);
-      }
-
-      .video-overlay.has-top-bar {
-        transform: translateY(13px);
-      }
-
       .objbtn ha-icon {
         --ha-icon-size: 22px;
         --mdc-icon-size: var(--ha-icon-size);
@@ -6024,6 +6738,145 @@ class CameraGalleryCard extends LitElement {
         width: 100%;
         height: 100%;
         background: var(--cgc-thumb-bg);
+        box-sizing: border-box;
+      }
+
+      /* Shared loading-shimmer used by thumbnail / preview / live skeletons.
+       * A subtle highlight band sweeps across the surface so users see the
+       * card is *doing something* on cold start, instead of staring at flat
+       * placeholders. Disabled under prefers-reduced-motion. */
+      @keyframes cgc-shimmer {
+        0% { background-position: 200% 0%; }
+        100% { background-position: -200% 0%; }
+      }
+
+      .tph.skeleton {
+        background:
+          linear-gradient(
+            90deg,
+            var(--cgc-thumb-bg) 0%,
+            var(--cgc-skeleton-highlight, rgba(255, 255, 255, 0.06)) 50%,
+            var(--cgc-thumb-bg) 100%
+          );
+        background-size: 200% 100%;
+        animation: cgc-shimmer 1.4s ease-in-out infinite;
+      }
+
+      .preview-skeleton {
+        position: absolute;
+        inset: 0;
+        z-index: 1;
+        background:
+          linear-gradient(
+            90deg,
+            var(--cgc-preview-bg, #000) 0%,
+            var(--cgc-skeleton-highlight, rgba(255, 255, 255, 0.05)) 50%,
+            var(--cgc-preview-bg, #000) 100%
+          );
+        background-size: 200% 100%;
+        animation: cgc-shimmer 1.4s ease-in-out infinite;
+        border-radius: inherit;
+      }
+
+      /* Live host shows the same shimmer while waiting for the inner card
+       * to mount. _mountLiveCard clears innerHTML before appending, so the
+       * :empty selector accurately tracks "live element hasn't mounted yet". */
+      .live-card-host:empty {
+        background:
+          linear-gradient(
+            90deg,
+            rgba(0, 0, 0, 0.55) 0%,
+            var(--cgc-skeleton-highlight, rgba(255, 255, 255, 0.05)) 50%,
+            rgba(0, 0, 0, 0.55) 100%
+          );
+        background-size: 200% 100%;
+        animation: cgc-shimmer 1.4s ease-in-out infinite;
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        .tph.skeleton,
+        .preview-skeleton,
+        .live-card-host:empty {
+          animation: none;
+        }
+      }
+
+      .tph.broken {
+        display: grid;
+        place-items: center;
+        background: var(--cgc-thumb-broken-bg, rgba(255, 90, 70, 0.08));
+        color: var(--cgc-thumb-broken-color, rgba(255, 255, 255, 0.55));
+      }
+
+      /* Active loading state — a fetch or capture is in flight for
+       * this item. Distinguishes "we're working on it" from the
+       * static skeleton (which can also mean "off-screen idle"). */
+      .tph.spinner {
+        display: grid;
+        place-items: center;
+        background: var(--cgc-thumb-bg);
+      }
+
+      .tph.spinner::after {
+        content: "";
+        width: 22px;
+        height: 22px;
+        border-radius: 50%;
+        border: 2px solid var(--cgc-spinner-track, rgba(255, 255, 255, 0.15));
+        border-top-color: var(--cgc-spinner-color, rgba(255, 255, 255, 0.7));
+        animation: cgc-thumb-spin 0.8s linear infinite;
+      }
+
+      @keyframes cgc-thumb-spin {
+        to { transform: rotate(360deg); }
+      }
+
+      /* Will-not-load state — capture_video_thumbnails is off and
+       * no server-provided thumbnail exists. Distinct from .broken
+       * (failure) and .skeleton (loading) so users can tell the
+       * absence is a config choice. */
+      .tph.disabled {
+        display: grid;
+        place-items: center;
+        background: var(--cgc-thumb-bg);
+        color: var(--cgc-thumb-disabled-color, rgba(255, 255, 255, 0.32));
+      }
+
+      .tph.disabled ha-icon {
+        --mdc-icon-size: 28px;
+        --ha-icon-size: 28px;
+        width: 28px;
+        height: 28px;
+        opacity: 0.7;
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        .tph.spinner::after {
+          animation: none;
+        }
+      }
+
+      /* When the timestamp bar is actually shown, inset the broken-state's
+       * centering area by the bar height so the icon sits visually centered
+       * in the *visible* image region instead of the absolute thumb center. */
+      .tthumb.bar-bottom.with-bar .tph.broken,
+      .tthumb.bar-bottom.with-bar .tph.disabled,
+      .tthumb.bar-bottom.with-bar .tph.spinner {
+        padding-bottom: 26px;
+      }
+
+      .tthumb.bar-top.with-bar .tph.broken,
+      .tthumb.bar-top.with-bar .tph.disabled,
+      .tthumb.bar-top.with-bar .tph.spinner {
+        padding-top: 26px;
+      }
+
+      .tph.broken ha-icon {
+        --mdc-icon-size: 28px;
+        --ha-icon-size: 28px;
+        width: 28px;
+        height: 28px;
+        opacity: 0.7;
       }
 
       .tbar {
@@ -6680,6 +7533,17 @@ class CameraGalleryCardEditor extends HTMLElement {
     this._mediaSuggestReq = 0;
     this._mediaSuggestTimer = null;
     this._raf = null;
+
+    // Path-format auto-detection state. The result holds the full
+    // scored list so the editor can render an expandable scoreboard
+    // (winner + match counts for every tested candidate). `_detectKey`
+    // fingerprints the inputs (roots + entities) so a click on a
+    // already-up-to-date result is cheap. `_detectStatus` carries
+    // user-facing messaging (e.g. "Frigate-only — no format needed").
+    this._detectResult = null;
+    this._detectStatus = "";
+    this._detectKey = "";
+    this._detectInFlight = false;
 
     this._mediaBrowserOpen = false;
     this._mediaBrowserLoading = false;
@@ -7560,6 +8424,158 @@ class CameraGalleryCardEditor extends HTMLElement {
     });
   }
 
+  /** Compute the cache key the detector should run against. Bumps when
+   * roots / sensor entities / hass identity change (sample shape can
+   * change with hass swap, e.g. dev → prod). Empty string means there's
+   * nothing worth probing (no sources configured). */
+  _formatDetectKey() {
+    const roots = Array.isArray(this._config?.media_sources)
+      ? this._config.media_sources.filter(Boolean)
+      : [];
+    const ents = Array.isArray(this._config?.entities)
+      ? this._config.entities.filter(Boolean)
+      : [];
+    if (!roots.length && !ents.length) return "";
+    return `${roots.join("|")}::${ents.join(",")}`;
+  }
+
+  /** Run path-format detection: probe configured sources, score every
+   * candidate, store the full result for the scoreboard view. The
+   * detector itself stays format-agnostic; this method just collects
+   * samples (Frigate event-id roots filtered out, recordings kept,
+   * sensor `fileList`s included) and hands them to `scoreSamples`. */
+  async _runFormatDetection() {
+    if (this._detectInFlight) return;
+    if (!this._hass) return;
+
+    const allRoots = Array.isArray(this._config?.media_sources)
+      ? this._config.media_sources.filter(Boolean)
+      : [];
+    const probableRoots = allRoots.filter(
+      (r) => !(isFrigateRoot(r) && !isFrigateRecordingsRoot(r))
+    );
+
+    const SENSOR_SAMPLE_CAP = 12;
+    const sensorSamples = [];
+    const entityIds = Array.isArray(this._config?.entities)
+      ? this._config.entities
+      : [];
+    for (const id of entityIds) {
+      if (typeof id !== "string" || !id) continue;
+      const raw = this._hass?.states?.[id]?.attributes?.fileList;
+      const list = Array.isArray(raw) ? raw : [];
+      for (const p of list) {
+        if (typeof p === "string" && p) sensorSamples.push(p);
+        if (sensorSamples.length >= SENSOR_SAMPLE_CAP) break;
+      }
+      if (sensorSamples.length >= SENSOR_SAMPLE_CAP) break;
+    }
+
+    if (probableRoots.length === 0 && sensorSamples.length === 0) {
+      this._detectResult = null;
+      this._detectStatus = allRoots.length
+        ? "Frigate event roots use event-ids — no format needed"
+        : "Add a sensor or media folder to detect from";
+      this._detectKey = this._formatDetectKey();
+      this._scheduleRender();
+      return;
+    }
+
+    this._detectInFlight = true;
+    this._detectStatus = "";
+    this._scheduleRender();
+    try {
+      const browse = (id) =>
+        this._hass.callWS({ type: "media_source/browse_media", media_content_id: id });
+      const probedSamples = probableRoots.length
+        ? await collectMediaSamples(probableRoots, browse).catch(() => [])
+        : [];
+      const samples = [...probedSamples, ...sensorSamples];
+      const result = scoreSamples(samples);
+
+      this._detectResult = result;
+      this._detectStatus = result.format
+        ? `Detected ${result.format} (${result.matches}/${result.sampled} matched)`
+        : samples.length
+          ? `No common pattern matched across ${samples.length} sample${samples.length === 1 ? "" : "s"}`
+          : "Probe found no files";
+      this._detectKey = this._formatDetectKey();
+
+      // Auto-fill empty input with the winner so users don't have to
+      // click anything for the common case. Don't clobber a value the
+      // user has already typed.
+      if (result.format && !String(this._config?.path_datetime_format ?? "").trim()) {
+        const next = { ...this._config, path_datetime_format: result.format };
+        this._config = this._stripAlwaysTrueKeys(next);
+        this._fire();
+      }
+    } catch (e) {
+      console.warn("path-format detect failed:", e);
+      this._detectStatus = "Detect failed (see console)";
+      this._detectResult = null;
+    } finally {
+      this._detectInFlight = false;
+      this._scheduleRender();
+    }
+  }
+
+  _renderDetectStatusText() {
+    return this._detectStatus
+      ? String(this._detectStatus)
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+      : "";
+  }
+
+  /** Render the expandable "tested formats" details panel. Each row
+   * shows a candidate, its match count, and a click handler that
+   * applies it. Hidden until detection has run; gracefully empty when
+   * the result has no scores (Frigate-only / unavailable sources). */
+  _renderDetectScoreboard() {
+    const result = this._detectResult;
+    if (!result || !Array.isArray(result.allScores) || !result.allScores.length) {
+      return "";
+    }
+    const current = String(this._config?.path_datetime_format ?? "").trim();
+    const total = result.sampled || 0;
+    const esc = (s) =>
+      String(s)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+
+    const rows = result.allScores
+      .map((entry) => {
+        const fmt = entry.format;
+        const m = Number.isFinite(entry.matches) ? entry.matches : 0;
+        const matchPct = total > 0 ? Math.round((m / total) * 100) : 0;
+        const isWinner = fmt === result.format;
+        const isCurrent = fmt === current;
+        const cls = [
+          "pathfmt-row",
+          m > 0 ? "matched" : "no-match",
+          isWinner ? "winner" : "",
+          isCurrent ? "current" : "",
+        ]
+          .filter(Boolean)
+          .join(" ");
+        const safe = esc(fmt);
+        return `<button type="button" class="${cls}" data-pathfmt="${safe}" title="${safe}">
+          <span class="pathfmt-row-fmt">${safe}</span>
+          <span class="pathfmt-row-count">${m}/${total}</span>
+          <span class="pathfmt-row-bar"><span style="width:${matchPct}%"></span></span>
+        </button>`;
+      })
+      .join("");
+
+    return `<details class="pathfmt-details">
+      <summary>${svgIcon('mdi:chevron-right', 14)}<span>Show all tested formats (${result.allScores.length})</span></summary>
+      <div class="pathfmt-rows">${rows}</div>
+    </details>`;
+  }
+
   _render() {
     const c = this._config || {};
 
@@ -7614,12 +8630,8 @@ class CameraGalleryCardEditor extends HTMLElement {
       this._looksLikeFile(this._prettyLabel(s))
     );
 
-    const filenameDatetimeFormat = String(
-      c.filename_datetime_format || ""
-    ).trim();
-
-    const folderDatetimeFormat = String(
-      c.folder_datetime_format || ""
+    const pathDatetimeFormat = String(
+      c.path_datetime_format || ""
     ).trim();
 
     const objectFiltersArr = this._normalizeObjectFilters(
@@ -8098,29 +9110,20 @@ class CameraGalleryCardEditor extends HTMLElement {
               </div>
 
               <div class="row">
-                <div class="lbl">Datetime formats</div>
+                <div class="lbl">Path datetime format</div>
                 <div class="desc">
                   ${svgIcon('mdi:information-outline', 14)}
-                  Configure at least one format so files can be grouped by date. Files with no matching format appear under <strong>Other</strong>.
-                  Tokens: <code>YYYY</code> <code>MM</code> <code>DD</code> <code>HH</code> <code>mm</code> <code>ss</code>
+                  Pattern matched against your file paths. The detector covers both video and image files — extension is optional. Tokens: <code>YYYY</code> <code>MM</code> <code>DD</code> <code>HH</code> <code>mm</code> <code>ss</code>.
                 </div>
-                <div style="padding-top:8px;display:flex;flex-direction:column;gap:14px;">
-                  <div>
-                    <div class="lbl">Folder datetime format</div>
-                    <input type="text" class="ed-input" id="folderfmt" placeholder="e.g. YYYY-MM-DD" style="margin-top:4px;" />
-                    <div class="hint" style="margin-top:4px;">
-                      ${svgIcon('mdi:information-outline', 14)}
-                      Matches the folder name in the path. Examples: <code>YYYY-MM-DD</code>, <code>YYYYMMDD</code>, <code>DD-MM-YYYY</code>. Year defaults to current year if omitted.
-                    </div>
+                <div style="padding-top:8px;">
+                  <input type="text" class="ed-input" id="pathfmt" placeholder="e.g. YYYY/MM/DD/HHmmss" />
+                  <div class="row-actions" style="margin-top:8px;">
+                    <button type="button" class="actionbtn" id="detect-pathfmt" title="Probe configured sources and suggest a format" ?disabled=${this._detectInFlight}>
+                      ${svgIcon('mdi:magnify-scan', 18)}<span>${this._detectInFlight ? "Detecting…" : "Auto-detect format"}</span>
+                    </button>
                   </div>
-                  <div>
-                    <div class="lbl">Filename datetime format</div>
-                    <input type="text" class="ed-input" id="filenamefmt" placeholder="e.g. YYYYMMDD_HHmmss" style="margin-top:4px;" />
-                    <div class="hint" style="margin-top:4px;">
-                      ${svgIcon('mdi:information-outline', 14)}
-                      Matches the filename (without extension). Examples: <code>YYYYMMDD_HHmmss</code>, <code>DD-MM-YYYY_HH-mm-ss</code>, <code>YYYY-MM-DDTHH:mm:ss</code>
-                    </div>
-                  </div>
+                  <div id="detect-pathfmt-status" class="hint">${this._renderDetectStatusText()}</div>
+                  ${this._renderDetectScoreboard()}
                 </div>
               </div>
 
@@ -8487,6 +9490,18 @@ class CameraGalleryCardEditor extends HTMLElement {
                     <div class="pillval" id="thumbpctval">${thumbFramePct}%</div>
                   </div>
                   <input type="range" class="cgc-range" id="thumbpct" min="0" max="100" step="1">
+                </div>
+              </div>
+
+              <div class="row">
+                <div class="row-head">
+                  <div>
+                    <div class="lbl">Capture video thumbnails</div>
+                    <div class="desc">Extract a frame from each video when no server thumbnail is available. Off saves bandwidth on slow connections.</div>
+                  </div>
+                  <div class="togrow">
+                    <label class="cgc-switch"><input type="checkbox" id="capture-video-thumbnails" ${c.capture_video_thumbnails !== false ? "checked" : ""}><span class="cgc-track"></span></label>
+                  </div>
                 </div>
               </div>
 
@@ -10177,6 +11192,112 @@ class CameraGalleryCardEditor extends HTMLElement {
           box-shadow: var(--ed-section-glow);
         }
         .ed-input:focus { border-color: color-mix(in srgb, var(--ed-input-border) 25%, var(--primary-color, #03a9f4) 75%); box-shadow: 0 0 0 3px var(--ed-focus-ring), var(--ed-section-glow); }
+        /* Path-format auto-detect status + scoreboard. The status line
+         * sits under the Detect button; the expandable shows every
+         * candidate the detector tested with its match count, so users
+         * can see *why* a particular format won (or didn't). */
+        #detect-pathfmt-status {
+          display: block;
+          margin-top: 8px;
+          font-size: 11px;
+          color: var(--secondary-text-color, rgba(0,0,0,0.6));
+          min-height: 14px;
+        }
+        .pathfmt-details {
+          margin-top: 8px;
+          font-size: 11px;
+        }
+        .pathfmt-details > summary {
+          display: inline-flex;
+          align-items: center;
+          gap: 4px;
+          cursor: pointer;
+          color: var(--primary-color, #03a9f4);
+          font-weight: 700;
+          list-style: none;
+          padding: 4px 2px;
+          user-select: none;
+        }
+        .pathfmt-details > summary::-webkit-details-marker { display: none; }
+        .pathfmt-details > summary svg {
+          transition: transform 0.15s ease;
+        }
+        .pathfmt-details[open] > summary svg {
+          transform: rotate(90deg);
+        }
+        .pathfmt-rows {
+          display: flex;
+          flex-direction: column;
+          gap: 2px;
+          margin-top: 6px;
+          padding: 6px;
+          background: var(--ed-input-bg);
+          border: 1px solid var(--ed-input-border);
+          border-radius: var(--ed-radius-input);
+          max-height: 320px;
+          overflow-y: auto;
+        }
+        .pathfmt-row {
+          display: grid;
+          grid-template-columns: 1fr auto 60px;
+          align-items: center;
+          gap: 8px;
+          padding: 6px 8px;
+          font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+          font-size: 11px;
+          font-weight: 600;
+          color: var(--ed-text);
+          background: transparent;
+          border: 1px solid transparent;
+          border-radius: 4px;
+          cursor: pointer;
+          text-align: left;
+          transition: background 0.12s ease, border-color 0.12s ease;
+        }
+        .pathfmt-row:hover {
+          background: var(--secondary-background-color, rgba(0,0,0,0.04));
+        }
+        .pathfmt-row.no-match {
+          color: var(--secondary-text-color, rgba(0,0,0,0.45));
+        }
+        .pathfmt-row.winner {
+          background: color-mix(in srgb, var(--primary-color, #03a9f4) 10%, transparent);
+          border-color: color-mix(in srgb, var(--primary-color, #03a9f4) 30%, transparent);
+        }
+        .pathfmt-row.current {
+          border-color: var(--primary-color, #03a9f4);
+        }
+        .pathfmt-row-fmt {
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
+        .pathfmt-row-count {
+          font-variant-numeric: tabular-nums;
+          color: var(--secondary-text-color, rgba(0,0,0,0.55));
+          min-width: 36px;
+          text-align: right;
+        }
+        .pathfmt-row.matched .pathfmt-row-count {
+          color: var(--primary-text-color, rgba(0,0,0,0.85));
+        }
+        .pathfmt-row-bar {
+          display: block;
+          height: 4px;
+          width: 100%;
+          background: color-mix(in srgb, var(--ed-input-border) 50%, transparent);
+          border-radius: 2px;
+          overflow: hidden;
+        }
+        .pathfmt-row-bar > span {
+          display: block;
+          height: 100%;
+          background: var(--primary-color, #03a9f4);
+          transition: width 0.2s ease;
+        }
+        .pathfmt-row.no-match .pathfmt-row-bar > span {
+          background: transparent;
+        }
 details summary { user-select: none; }
         details summary .details-chevron { transition: transform 0.15s; margin-left: auto; }
         details[open] summary .details-chevron { transform: rotate(90deg); }
@@ -10330,8 +11451,7 @@ if (oldPanel && tmp.firstElementChild) {
 
     const entitiesEl = $("entities");
     const mediaEl = $("mediasources");
-    const filenameFmtEl = $("filenamefmt");
-    const folderFmtEl = $("folderfmt");
+    const pathFmtEl = $("pathfmt");
     const delserviceEl = $("delservice");
 
     const thumbEl = $("thumb");
@@ -10345,8 +11465,7 @@ if (oldPanel && tmp.firstElementChild) {
 
     this._setControlValue(entitiesEl, entitiesText);
     this._setControlValue(mediaEl, mediaSourcesText);
-    this._setControlValue(filenameFmtEl, filenameDatetimeFormat);
-    this._setControlValue(folderFmtEl, folderDatetimeFormat);
+    this._setControlValue(pathFmtEl, pathDatetimeFormat);
     this._setControlValue(thumbEl, String(thumbSize));
     this._setControlValue(maxmediaEl, String(maxMedia));
     this._setControlValue(thumbpctEl, thumbFramePct);
@@ -10506,51 +11625,59 @@ if (oldPanel && tmp.firstElementChild) {
       }
     };
 
-    const commitFilenameFormat = (commit = false) => {
-      const raw = String(filenameFmtEl?.value ?? "").trim();
-
-      if (!raw) {
-        const next = { ...this._config };
-        delete next.filename_datetime_format;
-        this._config = this._stripAlwaysTrueKeys(next);
-
-        if (commit) {
-          this._fire();
-          this._scheduleRender();
-        }
-        return;
-      }
-
-      this._config = this._stripAlwaysTrueKeys({
-        ...this._config,
-        filename_datetime_format: raw,
-      });
-
-      if (commit) {
-        this._fire();
-        this._scheduleRender();
-      }
-    };
-
-    filenameFmtEl?.addEventListener("input", () => commitFilenameFormat(false), _sig);
-    filenameFmtEl?.addEventListener("change", () => commitFilenameFormat(true), _sig);
-    filenameFmtEl?.addEventListener("blur", () => commitFilenameFormat(true), _sig);
-
-    const commitFolderFormat = (commit = false) => {
-      const raw = String(folderFmtEl?.value ?? "").trim();
+    const commitPathFormat = (commit = false) => {
+      const raw = String(pathFmtEl?.value ?? "").trim();
       const next = { ...this._config };
-      if (!raw) {
-        delete next.folder_datetime_format;
-      } else {
-        next.folder_datetime_format = raw;
-      }
+      if (!raw) delete next.path_datetime_format;
+      else next.path_datetime_format = raw;
       this._config = this._stripAlwaysTrueKeys(next);
       if (commit) { this._fire(); this._scheduleRender(); }
     };
 
-    folderFmtEl?.addEventListener("input", () => commitFolderFormat(false), _sig);
-    folderFmtEl?.addEventListener("change", () => commitFolderFormat(true), _sig);
-    folderFmtEl?.addEventListener("blur", () => commitFolderFormat(true), _sig);
+    pathFmtEl?.addEventListener("input", () => commitPathFormat(false), _sig);
+    pathFmtEl?.addEventListener("change", () => commitPathFormat(true), _sig);
+    pathFmtEl?.addEventListener("blur", () => commitPathFormat(true), _sig);
+
+    // Auto-detect button: re-runs detection on click. The detector
+    // also fires once automatically when the editor first sees hass
+    // (and when sources change) — see the `set hass` path.
+    const detectBtn = $("detect-pathfmt");
+    detectBtn?.addEventListener(
+      "click",
+      () => {
+        // Force a re-run by clearing the fingerprint; otherwise the
+        // detector short-circuits when the inputs haven't changed.
+        this._detectKey = "";
+        void this._runFormatDetection();
+      },
+      _sig
+    );
+
+    // Scoreboard row click → apply that format to the input.
+    this.shadowRoot.querySelectorAll(".pathfmt-row[data-pathfmt]").forEach((btn) => {
+      btn.addEventListener(
+        "click",
+        () => {
+          const fmt = btn.getAttribute("data-pathfmt") || "";
+          if (!pathFmtEl || !fmt) return;
+          pathFmtEl.value = fmt;
+          commitPathFormat(true);
+        },
+        _sig
+      );
+    });
+
+    // First-paint trigger: kick detection when the source fingerprint
+    // has changed since the last run. Idempotent against the current
+    // inputs; cheap and safe to call on every render.
+    if (
+      this._hass &&
+      !this._detectInFlight &&
+      this._formatDetectKey() &&
+      this._formatDetectKey() !== this._detectKey
+    ) {
+      void this._runFormatDetection();
+    }
 
     this.shadowRoot.querySelectorAll(".seg[data-objfit]").forEach((btn) => {
       btn.addEventListener("click", () => {
@@ -10632,6 +11759,10 @@ if (oldPanel && tmp.firstElementChild) {
 
     $("cleanmode")?.addEventListener("change", (e) => {
       this._set("clean_mode", !!e.target.checked);
+    });
+
+    $("capture-video-thumbnails")?.addEventListener("change", (e) => {
+      this._set("capture_video_thumbnails", !!e.target.checked);
     });
 
     $("persistentcontrols")?.addEventListener("change", (e) => {
@@ -11554,7 +12685,7 @@ if (oldPanel && tmp.firstElementChild) {
         tag === "textarea" ||
         id === "entities" ||
         id === "mediasources" ||
-        id === "filenamefmt" ||
+        id === "pathfmt" ||
         id === "thumb" ||
         id === "maxmedia" ||
         id === "new-filter-name" ||

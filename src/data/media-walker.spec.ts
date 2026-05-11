@@ -2,20 +2,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { CameraGalleryCardConfig } from "../config/normalize";
 import { makeFakeHass, type FakeHass, type WsHandler } from "../test/fake-hass";
-import {
-  MediaSourceClient,
-  isMediaSourceId,
-  isRenderable,
-  keyFromRoots,
-  walkCacheKey,
-  type MsItem,
-} from "./media-walker";
+import { MediaSourceClient, isMediaSourceId, keyFromRoots, type MsItem } from "./media-walker";
 
 const baseConfig = (overrides: Partial<CameraGalleryCardConfig> = {}): CameraGalleryCardConfig =>
   ({
     type: "custom:camera-gallery-card",
     source_mode: "media",
     media_sources: ["media-source://media_source/local/recordings"],
+    path_datetime_format: "YYYYMMDD_HHmmss",
     max_media: 50,
     ...overrides,
   }) as unknown as CameraGalleryCardConfig;
@@ -62,27 +56,6 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-describe("isRenderable", () => {
-  it("accepts video MIME types", () => {
-    expect(isRenderable("video/mp4", "", "")).toBe(true);
-  });
-  it("accepts image MIME types", () => {
-    expect(isRenderable("image/jpeg", "", "")).toBe(true);
-  });
-  it("accepts file extensions in titles", () => {
-    expect(isRenderable("", "", "clip.mp4")).toBe(true);
-    expect(isRenderable("", "", "thumb.JPG")).toBe(true);
-  });
-  it("accepts media classes", () => {
-    expect(isRenderable("", "video", "")).toBe(true);
-    expect(isRenderable("", "image", "")).toBe(true);
-  });
-  it("rejects directories and unknown shapes", () => {
-    expect(isRenderable("", "directory", "2026-04-28")).toBe(false);
-    expect(isRenderable("", "", "")).toBe(false);
-  });
-});
-
 describe("isMediaSourceId", () => {
   it("matches media-source URIs", () => {
     expect(isMediaSourceId("media-source://media_source/local/clip.mp4")).toBe(true);
@@ -105,16 +78,6 @@ describe("keyFromRoots", () => {
     const a = keyFromRoots(["media-source://b", "media-source://a"]);
     const b = keyFromRoots(["media-source://a", "media-source://b"]);
     expect(a).toBe(b);
-  });
-});
-
-describe("walkCacheKey", () => {
-  it("produces a stable cgc_mswalk3_ prefixed key", () => {
-    expect(walkCacheKey("media-source://x")).toMatch(/^cgc_mswalk3_/);
-    expect(walkCacheKey("media-source://x")).toBe(walkCacheKey("media-source://x"));
-  });
-  it("differs for different inputs", () => {
-    expect(walkCacheKey("a")).not.toBe(walkCacheKey("b"));
   });
 });
 
@@ -405,7 +368,7 @@ describe("MediaSourceClient.ensureLoaded", () => {
     expect(browse).not.toHaveBeenCalled();
   });
 
-  it("walks the configured root and stores the resulting list", async () => {
+  it("walks the configured root and stores items matching the format", async () => {
     const root = "media-source://media_source/local/recordings";
     const child = (id: string, title: string): unknown => ({
       title,
@@ -427,7 +390,10 @@ describe("MediaSourceClient.ensureLoaded", () => {
           can_play: false,
           can_expand: true,
           thumbnail: null,
-          children: [child(`${root}/a.mp4`, "a.mp4"), child(`${root}/b.mp4`, "b.mp4")],
+          children: [
+            child(`${root}/20260502_120030.mp4`, "20260502_120030.mp4"),
+            child(`${root}/20260501_080000.mp4`, "20260501_080000.mp4"),
+          ],
         };
       }
       return null;
@@ -437,7 +403,7 @@ describe("MediaSourceClient.ensureLoaded", () => {
     await client.ensureLoaded();
 
     const ids = client.getIds().sort();
-    expect(ids).toEqual([`${root}/a.mp4`, `${root}/b.mp4`]);
+    expect(ids).toEqual([`${root}/20260501_080000.mp4`, `${root}/20260502_120030.mp4`]);
   });
 
   it("drops stale results when load(config) bumps the generation mid-flight (B1, R5)", async () => {
@@ -518,6 +484,108 @@ describe("MediaSourceClient.ensureLoaded", () => {
     expect(client.state.urlCache.size).toBe(0);
   });
 
+  it("drops empty short-circuit dayCache entries when a fresh discovery finds them in the calendar", async () => {
+    // Reproduces the bug where a sensor-only day (or a stale-cached day) had
+    // dayCache.set(dayKey, []) — and after a fresh calendar discovery added
+    // that day to the calendar, ensureDayLoaded still hit the empty cache
+    // and never re-fetched, leaving the gallery blank for that day.
+    const root = "media-source://x";
+    hass.registerWs("media_source/browse_media", (p) => {
+      const id = String(p["media_content_id"]);
+      if (id === root) {
+        return {
+          title: "x",
+          media_class: "directory",
+          media_content_type: "directory",
+          media_content_id: root,
+          can_play: false,
+          can_expand: true,
+          thumbnail: null,
+          children: [
+            {
+              title: "20260502",
+              media_class: "directory",
+              media_content_type: "directory",
+              media_content_id: `${root}/20260502`,
+              can_play: false,
+              can_expand: true,
+              thumbnail: null,
+              children: [],
+            },
+          ],
+        };
+      }
+      if (id === `${root}/20260502`) {
+        return {
+          title: "20260502",
+          media_class: "directory",
+          media_content_type: "directory",
+          media_content_id: id,
+          can_play: false,
+          can_expand: true,
+          thumbnail: null,
+          children: [
+            {
+              title: "120030.mp4",
+              media_class: "video",
+              media_content_type: "video/mp4",
+              media_content_id: `${root}/20260502/120030.mp4`,
+              can_play: true,
+              can_expand: false,
+              thumbnail: null,
+              children: [],
+            },
+          ],
+        };
+      }
+      return null;
+    });
+
+    // Pre-populate a "stale" empty short-circuit entry mimicking a cached
+    // calendar that didn't yet know about 2026-05-02.
+    client.load(baseConfig({ media_sources: [root], path_datetime_format: "YYYYMMDD/HHmmss.mp4" }));
+    client.state.dayCache.set("2026-05-02", []);
+    // Plant a stale cached calendar so the empty-entry-drop path runs.
+    client.state.calendar = { byDay: new Map(), days: [] };
+    // Use localStorage to simulate a cached calendar that survives across
+    // ensureLoaded calls.
+    const fakeCalKey = "cgc_mscal1_X";
+    localStorage.setItem(
+      fakeCalKey,
+      JSON.stringify({ ts: Date.now() - 10 * 60 * 60 * 1000, byDay: [], days: [] })
+    );
+
+    await client.ensureLoaded();
+    // The fresh discovery should have written 2026-05-02 to the calendar AND
+    // dropped the empty short-circuit dayCache entry. The newest-day auto
+    // load should then have populated the day with the actual file.
+    expect(client.getDays()).toContain("2026-05-02");
+    const items = client.state.dayCache.get("2026-05-02") ?? [];
+    expect(items.length).toBe(1);
+    expect(items[0]?.id).toBe(`${root}/20260502/120030.mp4`);
+  });
+
+  it("clears the calendar + day caches when media_sources changes (review A1)", () => {
+    const a = "media-source://media_source/local/a";
+    const b = "media-source://media_source/local/b";
+    client.load(baseConfig({ media_sources: [a] }));
+    client.state.dayCache.set("2026-04-30", [
+      { id: `${a}/x.mp4`, title: "x", cls: "video", mime: "video/mp4", thumb: "" },
+    ]);
+    client.state.calendar = {
+      byDay: new Map([
+        ["2026-04-30", [{ leafId: `${a}/2026/04/30`, leafName: "30", dayKey: "2026-04-30" }]],
+      ]),
+      days: ["2026-04-30"],
+    };
+
+    client.load(baseConfig({ media_sources: [b] }));
+
+    expect(client.state.dayCache.size).toBe(0);
+    expect(client.state.calendar.days).toEqual([]);
+    expect(client.getDays()).toEqual([]);
+  });
+
   it("does not clear when load(config) is called with the same roots", () => {
     const root = "media-source://media_source/local/a";
     client.load(baseConfig({ media_sources: [root] }));
@@ -572,30 +640,5 @@ describe("MediaSourceClient.ensureLoaded", () => {
     while (client.resolveInFlight) await new Promise((r) => setTimeout(r, 1));
     expect(handler).toHaveBeenCalledTimes(1);
     expect(client.getUrlCache().get(id)).toBe("/api/recoverable");
-  });
-
-  it("serves from the persistent walk cache when available", async () => {
-    const root = "media-source://media_source/local/recordings";
-    const cacheKey = walkCacheKey(keyFromRoots([root]));
-    const cached: MsItem[] = [
-      {
-        id: `${root}/cached.mp4`,
-        title: "cached.mp4",
-        cls: "video",
-        mime: "video/mp4",
-        thumb: "",
-      },
-    ];
-    localStorage.setItem(cacheKey, JSON.stringify({ ts: Date.now(), list: cached }));
-
-    const browse = vi.fn();
-    hass.registerWs("media_source/browse_media", browse);
-
-    client.load(baseConfig({ media_sources: [root] }));
-    await client.ensureLoaded();
-
-    expect(client.getIds()).toEqual([`${root}/cached.mp4`]);
-    // Fresh cache → no synchronous walk on the first call.
-    expect(browse).not.toHaveBeenCalled();
   });
 });
