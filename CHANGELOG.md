@@ -1,5 +1,32 @@
 # Changelog
 
+## [2.10.0](https://github.com/TheScubaDiver/camera-gallery-card/compare/v2.9.0...v2.10.0) (2026-05-12)
+
+
+### Features
+
+* calendar-first media walker with lazy day loading ([#101](https://github.com/TheScubaDiver/camera-gallery-card/issues/101)) ([a0362d7](https://github.com/TheScubaDiver/camera-gallery-card/commit/a0362d71303f8a6d6fbba486e4df898cb6d44ea2))
+* configurable card height ([#93](https://github.com/TheScubaDiver/camera-gallery-card/issues/93)) ([9adf0d5](https://github.com/TheScubaDiver/camera-gallery-card/commit/9adf0d595687e1ad2d499004ec69e49ebdf3e200))
+* debug mode with diagnostics modal ([#96](https://github.com/TheScubaDiver/camera-gallery-card/issues/96)) ([76e5307](https://github.com/TheScubaDiver/camera-gallery-card/commit/76e530738e3a060f038f69f3f654b96aa8b95bc4))
+* delete frigate clips from the gallery ([#113](https://github.com/TheScubaDiver/camera-gallery-card/issues/113)) ([8064208](https://github.com/TheScubaDiver/camera-gallery-card/commit/80642087cbfcea06afc29d51f69310d6e7ee09e4))
+* multi-camera grid layout for live view ([#94](https://github.com/TheScubaDiver/camera-gallery-card/issues/94)) ([3c2c662](https://github.com/TheScubaDiver/camera-gallery-card/commit/3c2c662f6d5a8c81f495ba99057c703e850b82e5))
+* red selection style and matching delete button ([#114](https://github.com/TheScubaDiver/camera-gallery-card/issues/114)) ([acbbe00](https://github.com/TheScubaDiver/camera-gallery-card/commit/acbbe007a691f503b8b7afd108dfc1a8301709e6))
+* sort order toggle for thumbnails ([#116](https://github.com/TheScubaDiver/camera-gallery-card/issues/116)) ([48af8ff](https://github.com/TheScubaDiver/camera-gallery-card/commit/48af8ff5965b0c4af88d36d6fce41d44f6381110))
+
+
+### Bug Fixes
+
+* extract pairing helpers and favorites storage ([#85](https://github.com/TheScubaDiver/camera-gallery-card/issues/85)) ([8ffffa6](https://github.com/TheScubaDiver/camera-gallery-card/commit/8ffffa6cfcba461b1e41685becf894c0ccd28671))
+* extract sensor/media/combined data clients with audited fixes ([#100](https://github.com/TheScubaDiver/camera-gallery-card/issues/100)) ([f8cb64e](https://github.com/TheScubaDiver/camera-gallery-card/commit/f8cb64e9580cd7e1e09081f20b501a4f6a37d86f))
+* keep WebSocket fallback alive when Direct API fails ([#112](https://github.com/TheScubaDiver/camera-gallery-card/issues/112)) ([3a54b92](https://github.com/TheScubaDiver/camera-gallery-card/commit/3a54b92aab85c9cfbb7870e59eb01afe4b0350c6))
+* tear down live stream when leaving live view ([#109](https://github.com/TheScubaDiver/camera-gallery-card/issues/109)) ([#110](https://github.com/TheScubaDiver/camera-gallery-card/issues/110)) ([8bff099](https://github.com/TheScubaDiver/camera-gallery-card/commit/8bff09942efea6143a0ea5dcc5e75fd1bc638195))
+* use CSS fallback for fullscreen in HA Android Companion ([#97](https://github.com/TheScubaDiver/camera-gallery-card/issues/97)) ([50bdc2e](https://github.com/TheScubaDiver/camera-gallery-card/commit/50bdc2e8c0baa6b499486bd622c4a809806c07fc))
+
+
+### Code Refactoring
+
+* drop redundant allow_delete config flag ([#115](https://github.com/TheScubaDiver/camera-gallery-card/issues/115)) ([62bd5b1](https://github.com/TheScubaDiver/camera-gallery-card/commit/62bd5b18e87ab38118e48d184b56f17b845d77e4))
+
 ## [2.9.0](https://github.com/TheScubaDiver/camera-gallery-card/compare/v2.8.0...v2.9.0) (2026-05-04)
 
 
