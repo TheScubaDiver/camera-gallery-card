@@ -30,7 +30,7 @@ export interface CanDeleteArgs {
   /** Normalized config — only the fields below are read. */
   config: Pick<
     CameraGalleryCardConfig,
-    "source_mode" | "allow_delete" | "delete_service" | "frigate_delete_service"
+    "source_mode" | "delete_service" | "frigate_delete_service"
   > | null;
   /** From `SensorSourceClient.getSrcEntityMap()`. Required for combined-mode gate. */
   srcEntityMap: ReadonlyMap<string, string>;
@@ -54,16 +54,15 @@ function isFrigateDeleteEligible(
 
 /**
  * Return `true` iff the thumb's trash icon should appear:
- *   - sensor item: mode is `sensor` or `combined` (with sensor-backed src),
- *     `allow_delete` is on, and `delete_service` parses.
- *   - Frigate event item (any mode): `frigate_delete_service` is configured
- *     and `allow_delete` is on. The two paths are independent — a setup
- *     can have only-sensor-delete, only-Frigate-delete, or both.
+ *   - sensor item: mode is `sensor` or `combined` (with sensor-backed src)
+ *     and `delete_service` parses.
+ *   - Frigate event item (any mode): `frigate_delete_service` is configured.
+ *     The two paths are independent — a setup can have only-sensor-delete,
+ *     only-Frigate-delete, or both.
  */
 export function canDeleteItem(args: CanDeleteArgs): boolean {
   const { src, config, srcEntityMap } = args;
   if (!src) return false;
-  if (!config?.allow_delete) return false;
   // Frigate path — works in any mode where the item is a Frigate event.
   if (isFrigateDeleteEligible(src, config)) return true;
   // Sensor / combined-sensor-backed path.
@@ -78,7 +77,7 @@ export interface DeleteItemArgs {
   src: string;
   config: Pick<
     CameraGalleryCardConfig,
-    "source_mode" | "allow_delete" | "delete_service" | "frigate_delete_service" | "delete_confirm"
+    "source_mode" | "delete_service" | "frigate_delete_service" | "delete_confirm"
   > | null;
   srcEntityMap: ReadonlyMap<string, string>;
   /** Confirm prompt; defaults to `window.confirm`. Inject for tests. */

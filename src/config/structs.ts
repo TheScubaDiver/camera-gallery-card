@@ -35,7 +35,6 @@ import {
   BAR_POSITIONS,
   CONTROLS_MODES,
   DEFAULT_ALLOW_BULK_DELETE,
-  DEFAULT_ALLOW_DELETE,
   DEFAULT_ASPECT_RATIO,
   DEFAULT_AUTOMUTED,
   DEFAULT_AUTOPLAY,
@@ -174,7 +173,6 @@ export const cameraGalleryCardConfigStruct = type({
   start_mode: defaulted(enums(START_MODES), "gallery"),
 
   // ─── Delete ────────────────────────────────────────────────
-  allow_delete: defaulted(boolean(), DEFAULT_ALLOW_DELETE),
   allow_bulk_delete: defaulted(boolean(), DEFAULT_ALLOW_BULK_DELETE),
   delete_confirm: defaulted(boolean(), DEFAULT_DELETE_CONFIRM),
   delete_service: defaulted(serviceId, DEFAULT_DELETE_SERVICE),

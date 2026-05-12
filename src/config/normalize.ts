@@ -115,7 +115,6 @@ export interface InputConfig {
   start_mode?: string;
 
   // ─── Delete ────────────────────────────────────────────────
-  allow_delete?: boolean;
   allow_bulk_delete?: boolean;
   delete_confirm?: boolean;
   delete_service?: string;
@@ -544,22 +543,18 @@ function applyPreviewCloseOnTapDefault(
 }
 
 /**
- * Apply mode-aware delete gating:
- *   - Pure `media` mode can't delete (URIs aren't filesystem paths).
- *   - Sensor/combined modes need a `delete_service` for delete to work; if
- *     missing, both `allow_delete` and `allow_bulk_delete` are forced off.
+ * Apply mode-aware delete gating: pure `media` mode can't delete (URIs
+ * aren't filesystem paths), so the delete_service is cleared and the
+ * bulk-select UI is suppressed. Other modes rely on `delete_service`
+ * being empty to disable delete — no separate flag needed.
  */
 function applyDeleteGating(config: CameraGalleryCardConfig): CameraGalleryCardConfig {
   if (config.source_mode === "media") {
     return {
       ...config,
-      allow_delete: false,
       allow_bulk_delete: false,
       delete_service: "",
     };
-  }
-  if (config.allow_delete && !config.delete_service) {
-    return { ...config, allow_delete: false, allow_bulk_delete: false };
   }
   return config;
 }

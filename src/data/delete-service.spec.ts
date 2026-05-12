@@ -6,13 +6,12 @@ import { canDeleteItem, deleteItem } from "./delete-service";
 
 type Config = Pick<
   CameraGalleryCardConfig,
-  "source_mode" | "allow_delete" | "delete_service" | "frigate_delete_service" | "delete_confirm"
+  "source_mode" | "delete_service" | "frigate_delete_service" | "delete_confirm"
 >;
 
 const cfg = (overrides: Partial<Config> = {}): Config =>
   ({
     source_mode: "sensor",
-    allow_delete: true,
     delete_service: "shell_command.delete_clip",
     frigate_delete_service: "",
     delete_confirm: false,
@@ -62,11 +61,11 @@ describe("canDeleteItem — matrix gate", () => {
     ).toBe(true);
   });
 
-  it("returns false when allow_delete is false", () => {
+  it("returns false when delete_service is empty", () => {
     expect(
       canDeleteItem({
         src: "/local/a.mp4",
-        config: cfg({ allow_delete: false }),
+        config: cfg({ delete_service: "" }),
         srcEntityMap: new Map(),
       })
     ).toBe(false);
@@ -209,20 +208,6 @@ describe("Frigate delete path", () => {
           srcEntityMap: new Map(),
         })
       ).toBe(true);
-    });
-
-    it("respects allow_delete=false even when frigate_delete_service is set", () => {
-      expect(
-        canDeleteItem({
-          src: FRIGATE_SRC,
-          config: cfg({
-            allow_delete: false,
-            source_mode: "media",
-            frigate_delete_service: "rest_command.delete_frigate",
-          }),
-          srcEntityMap: new Map(),
-        })
-      ).toBe(false);
     });
 
     it("rejects Frigate URIs with no parseable event id", () => {

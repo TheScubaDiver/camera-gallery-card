@@ -290,36 +290,22 @@ describe("Cross-field rules", () => {
 });
 
 describe("Delete gating", () => {
-  it("media mode forces delete OFF and clears delete_service", () => {
+  it("media mode clears delete_service and forces bulk OFF", () => {
     const { config } = normalizeConfig({
       source_mode: "media",
       media_sources: ["frigate/x"],
       path_datetime_format: "YYYY-MM-DD",
-      allow_delete: true,
       delete_service: "shell.delete_file",
     });
-    expect(config.allow_delete).toBe(false);
     expect(config.allow_bulk_delete).toBe(false);
     expect(config.delete_service).toBe("");
   });
 
-  it("sensor mode without delete_service forces delete OFF", () => {
+  it("sensor mode keeps a valid delete_service intact", () => {
     const { config } = normalizeConfig({
       ...minimalSensor,
-      allow_delete: true,
-      delete_service: "",
-    });
-    expect(config.allow_delete).toBe(false);
-    expect(config.allow_bulk_delete).toBe(false);
-  });
-
-  it("sensor mode with valid delete_service keeps allow_delete true", () => {
-    const { config } = normalizeConfig({
-      ...minimalSensor,
-      allow_delete: true,
       delete_service: "shell.delete_file",
     });
-    expect(config.allow_delete).toBe(true);
     expect(config.delete_service).toBe("shell.delete_file");
   });
 
@@ -457,7 +443,6 @@ describe("Defaults are applied", () => {
     expect(config.autoplay).toBe(false);
     expect(config.auto_muted).toBe(true);
     expect(config.live_auto_muted).toBe(true);
-    expect(config.allow_delete).toBe(false); // gated off — no delete_service in minimal
   });
 
   it("fills missing numeric fields with their DEFAULT_*", () => {
