@@ -7,22 +7,15 @@ import { LitElement, html, css } from "lit";
 import {
   dayKeyFromMs,
   dtKeyFromMs,
-  dtMsFromSrc,
-  uniqueDays,
 } from "./data/datetime-parsing";
 import { configDiff } from "./config/diff";
 import { migrateLegacyKeys, normalizeConfig } from "./config/normalize";
 import {
   filterLabel,
   filterLabelList,
-  getFilterAliases,
-  itemFilenameForFilter,
-  matchesObjectFilterForFileSensor,
   objectColor,
   objectIcon,
-  sensorTextForFilter,
 } from "./data/object-filters";
-import { dedupeByRelPath } from "./data/pairing";
 import { FavoritesStore } from "./data/favorites";
 import {
   parseServiceParts,
@@ -38,11 +31,33 @@ import { collectMediaSamples, scoreSamples } from "./data/path-format-detect";
 import { CombinedSourceClient } from "./data/combined-source";
 import { canDeleteItem, deleteItem } from "./data/delete-service";
 import { PendingPosterCollector, PosterCacheClient } from "./data/poster-cache";
-import { isVideo } from "./util/media-type";
+import { ItemPipelineClient } from "./data/item-pipeline";
+import {
+  detectObjectForSrc,
+  isVideoForSrc as viewIsVideoForSrc,
+  isVideoSmart,
+  matchesObjectFilter as viewMatchesObjectFilter,
+  matchesTypeFilter,
+  normalizeFilterArray,
+} from "./data/view-filters";
+import {
+  circularNav,
+  nextInList,
+  prevInList,
+  stepDay,
+} from "./data/navigation";
+import {
+  friendlyCameraName as liveFriendlyCameraName,
+  getAllLiveCameraEntities,
+  getLiveCameraOptions,
+  getStreamEntries,
+  getStreamEntryById,
+  hasLiveConfig,
+} from "./data/live-config";
+import { buildDiagnostics, diagnosticsToText } from "./data/diagnostics";
 import {
   FRIGATE_URI_PREFIX,
   frigateEventIdFromSrc,
-  frigateEventIdMs,
   hasFrigateConfig,
   isFrigateRecordingsRoot,
   isFrigateRoot,
@@ -206,7 +221,7 @@ class CameraGalleryCard extends LitElement {
     this._pillsHideActive = false;
     this._sensorClient = new SensorSourceClient({
       onChange: () => {
-        this._invalidateItems();
+        this._pipeline?.invalidate();
         this.requestUpdate();
       },
     });
@@ -354,30 +369,39 @@ class CameraGalleryCard extends LitElement {
 
     this._mediaClient = new MediaSourceClient({
       onChange: () => {
-        this._invalidateItems();
+        // Audit-fix #1: object detection caches `src → ObjectFilter`. When
+        // the media client re-resolves a media-source ID the recorded
+        // title/mime can change, so any cached detection must be flushed
+        // alongside the items rev bump.
+        this._objectCache?.clear?.();
+        this._pipeline?.invalidate();
         this.requestUpdate();
       },
       getDtOpts: () => this._dtOpts,
-      resolveItemMs: (src) => this._resolveItemMs(src),
+      resolveItemMs: (src) => this._pipeline?.resolveItemMs(src) ?? null,
     });
     this._combinedClient = new CombinedSourceClient(this._sensorClient, this._mediaClient);
 
-    // Items cache. The two source clients fire `onChange` when their
-    // contents change, which bumps this rev. `_items()` returns the cached
-    // result while the rev is unchanged — so the duplicate `_items()` call
-    // pattern in `updated()` + `render()` no longer rebuilds twice per cycle,
-    // and irrelevant hass pushes don't pay the cost at all.
-    this._itemsRev = 0;
-    this._cachedItemsRev = -1;
-    this._cachedItems = [];
-    // Base list cache (sorted+day+object-filter). `updated()` and `render()`
-    // both walk the same map→sort→day-filter→object-filter prefix; this
-    // caches that result so each render cycle pays the O(n log n) sort
-    // exactly once. Invalidated by items rev / selected day / objectFilters.
-    this._cachedBaseListItemsRev = -1;
-    this._cachedBaseListSelectedDay = null;
-    this._cachedBaseListObjFilters = null;
-    this._cachedBaseList = null;
+    // Items + base-list cache live on the pipeline client (see
+    // `src/data/item-pipeline.ts`). The two source clients fire `onChange`
+    // when their contents change → `invalidate()` on the pipeline →
+    // `requestUpdate()`. Cache key is (itemsRev, selectedDay, objectFilters
+    // ref, sortOrder) so each render pays the sort exactly once.
+    this._pipeline = new ItemPipelineClient({
+      sensorClient: this._sensorClient,
+      mediaClient: this._mediaClient,
+      combinedClient: this._combinedClient,
+      getSourceMode: () => this.config?.source_mode,
+      getSortOrder: () => this.config?.thumb_sort_order,
+      getSelectedDay: () => this._selectedDay ?? null,
+      getObjectFilters: () => this._objectFilters ?? [],
+      getDtOpts: () => this._dtOpts,
+      getDeleted: () => this._deleted ?? new Set(),
+      getDeletedFrigateEventIds: () => this._deletedFrigateEventIds ?? new Set(),
+      matchesObjectFilter: (src) => this._matchesObjectFilter(src),
+      isVideoForSrc: (src) => this._isVideoForSrc(src),
+      onChange: () => this.requestUpdate(),
+    });
     this._previewLoadTimer = null;
 
     this._revealedThumbs = new Set();
@@ -614,45 +638,14 @@ class CameraGalleryCard extends LitElement {
     if (!this._hass || !this.config) return;
 
     const usingMediaSource = this.config?.source_mode === "media" || this.config?.source_mode === "combined";
-    const rawItems = this._items();
+    const base = this._pipeline.getBaseList();
 
-    if (!rawItems.length) {
+    if (!base.rawItems.length) {
       this._clearPreviewVideoHostPlayback();
       return;
     }
 
-    const withDt = rawItems.map((it, idx) => {
-      const dtMs = Number.isFinite(it.dtMs) ? it.dtMs : null;
-      const dayKey = dtMs !== null ? dayKeyFromMs(dtMs) : null;
-      return { dayKey, dtMs, idx, src: it.src };
-    });
-
-    withDt.sort((a, b) => {
-      const aOk = Number.isFinite(a.dtMs);
-      const bOk = Number.isFinite(b.dtMs);
-      if (aOk && bOk && b.dtMs !== a.dtMs) return b.dtMs - a.dtMs;
-      if (aOk && !bOk) return -1;
-      if (!aOk && bOk) return 1;
-      return b.idx - a.idx;
-    });
-
-    if (this.config?.thumb_sort_order === "oldest") {
-      withDt.reverse();
-    }
-
-    const allWithDay = withDt.map((x) => ({ dayKey: x.dayKey, src: x.src, dtMs: x.dtMs }));
-    const days = this._allKnownDays(allWithDay);
-    const newestDay = days[0] ?? null;
-    const activeDay = this._selectedDay ?? newestDay;
-
-    const dayFiltered = !activeDay
-      ? allWithDay
-      : allWithDay.filter((x) => x.dayKey === activeDay);
-
-    const filteredAll = dayFiltered.filter(
-      (x) => this._matchesObjectFilter(x.src) && this._matchesTypeFilter(x.src)
-    );
-
+    const filteredAll = base.objFiltered.filter((x) => this._matchesTypeFilter(x.src));
     const cap = (this.config?.max_media ?? DEFAULT_MAX_MEDIA);
     const filtered = filteredAll.slice(0, Math.min(cap, filteredAll.length));
 
@@ -949,27 +942,14 @@ class CameraGalleryCard extends LitElement {
   }
 
   _getAllLiveCameraEntities() {
-    const states = this._hass?.states || {};
-    const allowed = this.config?.live_camera_entities;
-
-    // Geen expliciete cameras geconfigureerd = geen live cameras
-    if (!allowed?.length) return [];
-
-    return Object.keys(states)
-      .filter((entityId) => entityId.startsWith("camera."))
-      .filter((entityId) => {
-        const st = states[entityId];
-        if (!st) return false;
-
-        if (!allowed.includes(entityId)) return false;
-
-        return true;
-      })
-      .sort((a, b) => {
-        const an = this._friendlyCameraName(a).toLowerCase();
-        const bn = this._friendlyCameraName(b).toLowerCase();
-        return an.localeCompare(bn, resolveLocale(this._hass));
-      });
+    // Audit-fix #7: resolve locale once per call, not once per comparator
+    // tick. `getAllLiveCameraEntities` consults this once for sort.
+    return getAllLiveCameraEntities({
+      config: this.config,
+      hassStates: this._hass?.states,
+      localeTag: resolveLocale(this._hass),
+      friendlyName: (id) => this._friendlyCameraName(id),
+    });
   }
 
   _thumbCanMultipleDelete() {
@@ -980,17 +960,11 @@ class CameraGalleryCard extends LitElement {
   }
 
   _friendlyCameraName(entityId) {
-    const id = String(entityId || "").trim();
-    if (!id) return "";
-    if (id.startsWith("__cgc_stream")) { const se = this._getStreamEntryById(id); return se ? se.name : "Stream"; }
-
-    const st = this._hass?.states?.[id];
-    const friendly = String(st?.attributes?.friendly_name || "").trim();
-    if (friendly) return friendly;
-
-    const raw = id.split(".").pop() || id;
-    const label = raw.replace(/_/g, " ").trim();
-    return label ? label.charAt(0).toUpperCase() + label.slice(1) : id;
+    return liveFriendlyCameraName({
+      entityId,
+      config: this.config,
+      hassStates: this._hass?.states,
+    });
   }
 
   _isThumbLayoutVertical() {
@@ -1003,40 +977,6 @@ class CameraGalleryCard extends LitElement {
     return {
       pathFormat: this.config?.path_datetime_format ?? "",
     };
-  }
-
-  // Day-picker source. Three contributing layers, merged into one descending list:
-  //   1. Media calendar — days the media client discovered during Phase A.
-  //      For lazy modes (B/C), days appear here BEFORE their files are
-  //      loaded, so the picker is fully populated immediately.
-  //   2. Item-derived days — every loaded item with a dayKey contributes.
-  //      In `combined` mode this folds the sensor-side dayKeys (sensor
-  //      items aren't lazy-loaded; their dates come straight from the
-  //      filename via path_datetime_format) into the picker.
-  //   3. Frigate REST + sensor-only modes — when no calendar exists, we
-  //      fall back to item-derived only.
-  _allKnownDays(itemsWithDay) {
-    const calendarDays = this._mediaClient?.getDays?.() ?? [];
-    if (calendarDays.length === 0) return uniqueDays(itemsWithDay);
-    const merged = new Set(calendarDays);
-    for (const it of itemsWithDay) if (it?.dayKey) merged.add(it.dayKey);
-    return Array.from(merged).sort((a, b) => (a < b ? 1 : a > b ? -1 : 0));
-  }
-
-  // Resolve the best dtMs we know for a src. Order:
-  //   1. Authoritative timestamp attached at the source (e.g., Frigate REST
-  //      _loadFrigateApi sets dtMs from start_time).
-  //   2. Frigate event-id epoch parsed from the URI itself (covers paths that
-  //      didn't pass through the media client's listIndex).
-  //   3. User-format parsing of the path tail (path_datetime_format).
-  // Returns null when nothing matches.
-  _resolveItemMs(src) {
-    const pre = this._mediaClient.getDtMsForId(src);
-    if (pre !== null) return pre;
-    const fid = frigateEventIdMs(src);
-    if (typeof fid === "number" && Number.isFinite(fid)) return fid;
-    const parsed = dtMsFromSrc(src, this._dtOpts);
-    return typeof parsed === "number" && Number.isFinite(parsed) ? parsed : null;
   }
 
   _pathHasClass(path = [], cls = "") {
@@ -1160,9 +1100,11 @@ class CameraGalleryCard extends LitElement {
   }
 
   _hasLiveConfig() {
-    if (!this.config?.live_enabled) return false;
-    if (this._getStreamEntries().length > 0) return true;
-    return this._getLiveCameraOptions().length > 0;
+    const streamCount = getStreamEntries(this.config).length;
+    const cameraCount = streamCount > 0
+      ? 0
+      : this._getAllLiveCameraEntities().length;
+    return hasLiveConfig({ config: this.config, streamCount, cameraCount });
   }
 
   _isLiveActive() {
@@ -1252,126 +1194,34 @@ class CameraGalleryCard extends LitElement {
     this.requestUpdate();
   }
 
-  _formatAspectRatio(w, h) {
-    if (!w || !h) return "?";
-    const gcd = (a, b) => (b === 0 ? a : gcd(b, a % b));
-    const g = gcd(w, h);
-    return `${w / g}:${h / g}`;
-  }
-
   _buildDiagnostics() {
-    const cfg = this.config || {};
-    const hass = this._hass;
-    const frigateInstalled = !!hass?.config?.components?.includes?.("frigate");
-    // Read media-client state directly. The legacy `this._ms` proxy was never
-    // wired on the card, so the diagnostics panel previously showed all zero/—
-    // values regardless of actual state.
-    const ms = this._mediaClient?.state || {};
-    const list = Array.isArray(ms.list) ? ms.list : [];
-    const loadedAt = ms.loadedAt || 0;
-    const failedAt = ms.frigateApiFailedAt || 0;
-    const calendarDays = ms.calendar?.days?.length ?? 0;
-    const dayCacheSize = ms.dayCache?.size ?? 0;
-    const ageS = (ts) => (ts ? Math.round((Date.now() - ts) / 1000) + "s ago" : "—");
-    const fmtTs = (ts) => (ts ? new Date(ts).toLocaleTimeString() + " (" + ageS(ts) + ")" : "—");
+    // Kick off async probes for every configured camera. The probes mutate
+    // `_diagResolutions` and call `requestUpdate()` when results arrive;
+    // the pure builder below just reads the latched results.
+    const cams = Array.isArray(this.config?.live_camera_entities)
+      ? this.config.live_camera_entities
+      : [];
+    for (const id of cams) this._probeCameraResolution(id);
 
-    // Each row: [key, value, status?]
-    //   status = "ok" | "warn" | "bad" | undefined
-    // ok   = healthy / configured / active
-    // warn = degraded but functional (e.g. fallback path)
-    // bad  = broken / missing / failed
-
-    return [
-      ["Card", "mdi:card-outline", [
-        ["Version", typeof CARD_VERSION === "string" ? CARD_VERSION : "(unknown)"],
-        ["View mode", this._viewMode || "—"],
-      ]],
-      ["Home Assistant", "mdi:home-assistant", [
-        ["Version", hass?.config?.version || "—"],
-      ]],
-      ["Frigate integration", "mdi:cctv", [
-        ["Installed", frigateInstalled ? "yes" : "no", frigateInstalled ? "ok" : "bad"],
-      ]],
-      ["Config summary", "mdi:cog-outline", [
-        ["source_mode", cfg.source_mode || "—"],
-        ["max_media", String(cfg.max_media ?? "—")],
-        ["frigate_url", cfg.frigate_url ? "set" : "(not set)"],
-        ["media_sources", String((cfg.media_sources || []).length)],
-        ["entities (sensor)", String((cfg.entities || []).length)],
-        ["live_enabled", cfg.live_enabled ? "yes" : "no", cfg.live_enabled ? "ok" : null],
-        ["live_camera_entities", String((cfg.live_camera_entities || []).length)],
-        ["live_layout", cfg.live_layout || "single"],
-      ]],
-      ["Runtime state", "mdi:pulse", [
-        ["Items in gallery", String(list.length), list.length > 0 ? "ok" : "warn"],
-        ["Calendar days", String(calendarDays), calendarDays > 0 ? "ok" : null],
-        ["Days loaded", String(dayCacheSize)],
-        ["Last fetch", fmtTs(loadedAt), loadedAt && (Date.now() - loadedAt < 5 * 60 * 1000) ? "ok" : loadedAt ? "warn" : "bad"],
-        ["Direct API", ms.frigateApiFailed ? `failed (${ageS(failedAt)})` : "ok", ms.frigateApiFailed ? "warn" : "ok"],
-        ["WS subscribe (frigate/events)", this._frigateEventsUnsub ? "active" : "inactive", this._frigateEventsUnsub ? "ok" : (frigateInstalled ? "warn" : null)],
-        ["Live card mounted", this._liveCard ? "yes" : "no", this._liveCard ? "ok" : (cfg.live_enabled && this._viewMode === "live" ? "warn" : null)],
-        ["Live layout override", this._liveLayoutOverride || "—"],
-      ]],
-      ["Live cameras", "mdi:cctv", (() => {
-        const cams = Array.isArray(cfg.live_camera_entities) ? cfg.live_camera_entities : [];
-        if (!cams.length) return [["(no cameras configured)", "—"]];
-        const rows = [];
-        for (const id of cams) {
-          const st = hass?.states?.[id];
-          if (!st) {
-            rows.push([id, "(entity not found)", "bad"]);
-            continue;
-          }
-          // Prefer the explicit attribute when present (older HA versions);
-          // newer HA exposes streaming via supported_features bits only:
-          //   1 = STREAM (HLS), 2 = WEB_RTC.
-          let streamType = st.attributes?.frontend_stream_type;
-          if (!streamType) {
-            const sf = Number(st.attributes?.supported_features ?? 0);
-            if (sf & 2) streamType = "web_rtc";
-            else if (sf & 1) streamType = "hls";
-          }
-          const display = streamType
-            ? streamType + (streamType === "web_rtc" ? " (low-latency)" : streamType === "hls" ? " (~2-5s buffer)" : "")
-            : "(no streaming)";
-          // web_rtc = ok (fast), hls = warn (slow), unknown/missing = bad
-          const status = streamType === "web_rtc" ? "ok" : streamType === "hls" ? "warn" : "bad";
-          const name = st.attributes?.friendly_name || id;
-          rows.push([name, display, status]);
-          this._probeCameraResolution(id);
-          const r = this._diagResolutions?.[id];
-          let resText = "(loading…)";
-          let resStatus = null;
-          if (r?.state === "ok") {
-            resText = `${r.w}×${r.h} (${this._formatAspectRatio(r.w, r.h)})`;
-            resStatus = "ok";
-          } else if (r?.state === "error") {
-            resText = r.reason ? `(snapshot failed: ${r.reason})` : "(snapshot failed)";
-            resStatus = "warn";
-          } else if (r?.state === "unavailable") {
-            resText = "(no entity_picture)";
-            resStatus = "warn";
-          }
-          rows.push(["  resolution", resText, resStatus]);
-        }
-        return rows;
-      })()],
-      ["Browser", "mdi:cellphone", [
-        ["User agent", navigator.userAgent || "—"],
-        ["Connection", navigator.onLine === false ? "offline" : "online", navigator.onLine === false ? "bad" : "ok"],
-      ]],
-    ];
+    return buildDiagnostics({
+      cardVersion: typeof CARD_VERSION === "string" ? CARD_VERSION : "",
+      viewMode: this._viewMode,
+      hass: this._hass,
+      config: this.config,
+      mediaState: this._mediaClient?.state ?? {},
+      frigateEventsActive: !!this._frigateEventsUnsub,
+      liveCardMounted: !!this._liveCard,
+      liveLayoutOverride: this._liveLayoutOverride ?? null,
+      cameraResolutions: this._diagResolutions ?? {},
+      navigatorInfo: {
+        userAgent: navigator.userAgent,
+        onLine: navigator.onLine !== false,
+      },
+    });
   }
 
   _diagnosticsToText() {
-    const sections = this._buildDiagnostics();
-    const lines = [`Camera Gallery Card — Diagnostics`, `Generated: ${new Date().toISOString()}`, ""];
-    for (const [title, , rows] of sections) {
-      lines.push(`## ${title}`);
-      for (const [k, v] of rows) lines.push(`  ${k}: ${v}`);
-      lines.push("");
-    }
-    return lines.join("\n");
+    return diagnosticsToText(this._buildDiagnostics(), new Date());
   }
 
   async _copyDebug() {
@@ -1592,30 +1442,20 @@ class CameraGalleryCard extends LitElement {
   }
 
   _getStreamEntries() {
-    const urls = this.config?.live_stream_urls;
-    if (Array.isArray(urls) && urls.length > 0) {
-      return urls
-        .filter(e => e && String(e.url || "").trim())
-        .map((e, i) => ({ id: `__cgc_stream_${i}__`, url: String(e.url).trim(), name: String(e.name || "").trim() || `Stream ${i + 1}` }));
-    }
-    if (this.config?.live_stream_url) {
-      return [{ id: "__cgc_stream_0__", url: this.config.live_stream_url, name: this.config.live_stream_name || "Stream" }];
-    }
-    return [];
+    return getStreamEntries(this.config);
   }
 
   _getStreamEntryById(id) {
-    const sid = String(id || "");
-    if (!sid.startsWith("__cgc_stream")) return null;
-    const entries = this._getStreamEntries();
-    // exact match first, then fallback __cgc_stream__ → index 0
-    return entries.find(e => e.id === sid) || (sid === "__cgc_stream__" ? (entries[0] || null) : null);
+    return getStreamEntryById(this.config, id);
   }
 
   _getLiveCameraOptions() {
-    const entities = this._getAllLiveCameraEntities();
-    const streamIds = this._getStreamEntries().map(e => e.id);
-    return [...streamIds, ...entities];
+    return getLiveCameraOptions({
+      config: this.config,
+      hassStates: this._hass?.states,
+      localeTag: resolveLocale(this._hass),
+      friendlyName: (id) => this._friendlyCameraName(id),
+    });
   }
 
   _hideLiveQuickSwitchButton() {
@@ -2414,10 +2254,11 @@ class CameraGalleryCard extends LitElement {
     const options = this._getLiveCameraOptions();
     if (options.length <= 1) return;
     const current = this._getEffectiveLiveCamera();
-    const idx = options.indexOf(current);
-    const next = options[(idx + dir + options.length) % options.length];
-    this._selectLiveCamera(next);
-    this._showPills();
+    const next = options[circularNav(options.indexOf(current), dir, options.length)];
+    if (next) {
+      this._selectLiveCamera(next);
+      this._showPills();
+    }
   }
 
   _setViewMode(nextMode) {
@@ -2663,7 +2504,7 @@ class CameraGalleryCard extends LitElement {
           </button>
         </div>
         <div class="cgc-debug-body">
-          ${sections.map(([title, icon, rows]) => html`
+          ${sections.map(({ title, icon, rows }) => html`
             <div class="cgc-debug-section">
               <div class="cgc-debug-section-head">
                 <ha-icon icon=${icon}></ha-icon>
@@ -2894,172 +2735,32 @@ class CameraGalleryCard extends LitElement {
 
 
 
-  /**
-   * @typedef {{ src: string, dtMs?: number }} CardItem
-   *
-   * Returns the unified list of items the gallery should render. Sources that
-   * have an authoritative timestamp (Frigate REST API; Frigate media-source
-   * URIs via event-id) attach `dtMs` here so render paths can prefer it over
-   * filename/folder parsing. Sensor items have no authoritative timestamp and
-   * arrive as `{ src }` only — gallery falls back to path parsing.
-   */
-  /** Bump the items revision so the next `_items()` call rebuilds. Wired
-   * from both source clients' `onChange`, plus `setConfig` and any direct
-   * `_deleted` mutation. */
+  // Pipeline pass-throughs. The pipeline client owns the items+base-list
+  // cache and the deletion filter; the card's `_pipeline.invalidate()` is
+  // fired from setConfig, the source clients' onChange, and direct
+  // `_deleted` mutations.
   _invalidateItems() {
-    this._itemsRev++;
+    this._pipeline.invalidate();
   }
 
   _items() {
-    if (this._cachedItemsRev === this._itemsRev) return this._cachedItems;
-
-    const mode = this.config?.source_mode;
-    const usingMediaSource = mode === "media";
-
-    // Resolve the best dtMs each src can yield (source-attached → Frigate
-    // event-id parse → user-format parse). Items without a parseable time
-    // surface as plain `{ src }`.
-    const enrich = (src) => {
-      const dtMs = this._resolveItemMs(src);
-      return dtMs !== null ? { src, dtMs } : { src };
-    };
-
-    const isItemDeleted = (it) => {
-      if (this._deleted?.has(it.src)) return true;
-      if (this._deletedFrigateEventIds?.size) {
-        const eid = frigateEventIdFromSrc(it.src);
-        if (eid && this._deletedFrigateEventIds.has(eid)) return true;
-      }
-      return false;
-    };
-    const filterDeleted = (arr) =>
-      this._deleted?.size || this._deletedFrigateEventIds?.size
-        ? arr.filter((it) => !isItemDeleted(it))
-        : arr;
-
-    let result;
-    if (mode === "combined") {
-      result = filterDeleted(this._combinedClient.getItems(enrich));
-    } else if (usingMediaSource) {
-      result = filterDeleted(dedupeByRelPath(this._mediaClient.getIds()).map(enrich));
-    } else {
-      // Sensor (and the implicit fall-through default) — delegate.
-      // Render-side reads of srcEntityMap / sensorPairedThumbs route through
-      // `this._sensorClient.getSrcEntityMap()` and `getSensorPairedThumbs()`
-      // directly; no mirror-back needed.
-      result = filterDeleted(this._sensorClient.getItems(enrich));
-    }
-
-    this._cachedItems = result;
-    this._cachedItemsRev = this._itemsRev;
-    return result;
+    return this._pipeline.getItems();
   }
 
-  /**
-   * Shared sort+day+object-filter pipeline used by both `updated()` and
-   * `render()`. Returns the intermediate stages so each call site picks
-   * what it needs without recomputing the prefix.
-   *
-   * Returns `{ rawItems, allWithDay, days, newestDay, activeDay, dayFiltered,
-   * objFiltered }`. `objFiltered` is `dayFiltered` with `_matchesObjectFilter`
-   * applied — both call sites consume this stage.
-   */
   _computeBaseList() {
-    const sortOrder = this.config?.thumb_sort_order === "oldest" ? "oldest" : "newest";
-    if (
-      this._cachedBaseList &&
-      this._cachedBaseListItemsRev === this._itemsRev &&
-      this._cachedBaseListSelectedDay === this._selectedDay &&
-      this._cachedBaseListObjFilters === this._objectFilters &&
-      this._cachedBaseListSortOrder === sortOrder
-    ) {
-      return this._cachedBaseList;
-    }
+    return this._pipeline.getBaseList();
+  }
 
-    const rawItems = this._items();
+  _allKnownDays(itemsWithDay) {
+    return this._pipeline.getAllDays(itemsWithDay);
+  }
 
-    if (!rawItems.length) {
-      const empty = {
-        rawItems,
-        allWithDay: [],
-        days: [],
-        newestDay: null,
-        activeDay: null,
-        dayFiltered: [],
-        objFiltered: [],
-      };
-      this._cachedBaseList = empty;
-      this._cachedBaseListItemsRev = this._itemsRev;
-      this._cachedBaseListSelectedDay = this._selectedDay;
-      this._cachedBaseListObjFilters = this._objectFilters;
-      this._cachedBaseListSortOrder = sortOrder;
-      return empty;
-    }
-
-    const withDt = rawItems.map((it, idx) => {
-      const dtMs = Number.isFinite(it.dtMs) ? it.dtMs : null;
-      const dayKey = dtMs !== null ? dayKeyFromMs(dtMs) : null;
-      return { dayKey, dtMs, idx, src: it.src };
-    });
-
-    withDt.sort((a, b) => {
-      const aOk = Number.isFinite(a.dtMs);
-      const bOk = Number.isFinite(b.dtMs);
-      if (aOk && bOk && b.dtMs !== a.dtMs) return b.dtMs - a.dtMs;
-      if (aOk && !bOk) return -1;
-      if (!aOk && bOk) return 1;
-      return b.idx - a.idx;
-    });
-
-    if (this.config?.thumb_sort_order === "oldest") {
-      withDt.reverse();
-    }
-
-    const allWithDay = withDt.map((x) => ({ dayKey: x.dayKey, src: x.src, dtMs: x.dtMs }));
-    const days = this._allKnownDays(allWithDay);
-    const newestDay = days[0] ?? null;
-    const activeDay = this._selectedDay ?? newestDay;
-
-    const dayFiltered = !activeDay
-      ? allWithDay
-      : allWithDay.filter((x) => x.dayKey === activeDay);
-
-    const objFiltered = dayFiltered.filter((x) => this._matchesObjectFilter(x.src));
-
-    // Pre-count videos vs images in one pass — render() needs both for
-    // the type-filter pill visibility, and the legacy two-filter pattern
-    // walked the list twice + called `_isVideoForSrc` per item per pass.
-    let videoCount = 0;
-    for (const x of objFiltered) {
-      if (this._isVideoForSrc(x.src)) videoCount++;
-    }
-    const imageCount = objFiltered.length - videoCount;
-
-    const result = {
-      rawItems,
-      allWithDay,
-      days,
-      newestDay,
-      activeDay,
-      dayFiltered,
-      objFiltered,
-      videoCount,
-      imageCount,
-    };
-    this._cachedBaseList = result;
-    this._cachedBaseListItemsRev = this._itemsRev;
-    this._cachedBaseListSelectedDay = this._selectedDay;
-    this._cachedBaseListObjFilters = this._objectFilters;
-    this._cachedBaseListSortOrder = sortOrder;
-    return result;
+  _resolveItemMs(src) {
+    return this._pipeline.resolveItemMs(src);
   }
 
   _isVideoSmart(urlOrTitle, mime, cls) {
-    const m = String(mime || "").toLowerCase();
-    const c = String(cls || "").toLowerCase();
-    if (m.startsWith("video/")) return true;
-    if (c === "video") return true;
-    return isVideo(String(urlOrTitle || ""));
+    return isVideoSmart(urlOrTitle, mime, cls);
   }
 
   _resetThumbScrollToStart() {
@@ -3152,10 +2853,8 @@ class CameraGalleryCard extends LitElement {
   }
 
   _stepDay(delta, days, activeDay) {
-    if (!days?.length) return;
-    const current = activeDay && days.includes(activeDay) ? activeDay : days[0];
-    const i = days.indexOf(current);
-    const next = days[Math.min(Math.max(i + delta, 0), days.length - 1)];
+    const next = stepDay(activeDay ?? null, delta, days ?? []);
+    if (next === null) return;
 
     this._selectedDay = next;
     this._selectedIndex = 0;
@@ -3185,16 +2884,13 @@ class CameraGalleryCard extends LitElement {
   // ─── Object filters ───────────────────────────────────────────────
 
   _activeObjectFilters() {
-    return Array.isArray(this._objectFilters)
-      ? this._objectFilters
-          .map((x) => String(x || "").toLowerCase().trim())
-          .filter(Boolean)
-      : [];
+    return normalizeFilterArray(this._objectFilters);
   }
 
   _isObjectFilterActive(value) {
-    const v = String(value || "").toLowerCase().trim();
-    return this._activeObjectFilters().includes(v);
+    return this._activeObjectFilters().includes(
+      String(value || "").toLowerCase().trim()
+    );
   }
 
   _matchesObjectFilter(src) {
@@ -3202,80 +2898,49 @@ class CameraGalleryCard extends LitElement {
   }
 
   _isVideoForSrc(src) {
-    if (isMediaSourceId(src)) {
-      const meta = this._mediaClient.getMetaById(src);
-      return this._isVideoSmart(meta.title || src, meta.mime, meta.cls);
-    }
-    return isVideo(src);
+    return viewIsVideoForSrc({
+      src,
+      isMediaSource: isMediaSourceId,
+      getMeta: (id) => this._mediaClient.getMetaById(id),
+    });
   }
 
   _matchesTypeFilter(src) {
-    // both on or both off = show all
-    if (this._filterVideo === this._filterImage) return true;
-    const isVid = this._isVideoForSrc(src);
-    return isVid ? this._filterVideo : this._filterImage;
+    return matchesTypeFilter({
+      src,
+      filterVideo: !!this._filterVideo,
+      filterImage: !!this._filterImage,
+      isVideo: (s) => this._isVideoForSrc(s),
+    });
   }
 
   _matchesObjectFilterValue(src, filterValues) {
-    const active = Array.isArray(filterValues)
-      ? filterValues
-          .map((x) => String(x || "").toLowerCase().trim())
-          .filter(Boolean)
-      : [];
-
-    if (!active.length) return true;
-
-    if (this.config?.source_mode === "sensor") {
-      const sourceEntity = this._sensorClient.getSrcEntityMap().get(src) || "";
-      const sensorStateObj = sourceEntity
-        ? this._hass?.states?.[sourceEntity]
-        : null;
-
-      return active.some((filter) =>
-        matchesObjectFilterForFileSensor(
-          src,
-          filter,
-          sourceEntity,
-          sensorStateObj
-        )
-      );
-    }
-
-    const obj = this._objectForSrc(src);
-    return !!obj && active.includes(obj);
+    return viewMatchesObjectFilter({
+      src,
+      filters: filterValues ?? [],
+      sourceMode: this.config?.source_mode ?? "sensor",
+      getSrcEntity: (s) => this._sensorClient.getSrcEntityMap().get(s),
+      getSensorState: (entityId) => this._hass?.states?.[entityId],
+      getObjectForSrc: (s) => this._objectForSrc(s),
+    });
   }
 
   _objectForSrc(src) {
-      const key = String(src || "").trim();
-      if (!key) return null;
-      if (this._objectCache.has(key)) return this._objectCache.get(key);
+    const key = String(src || "").trim();
+    if (!key) return null;
+    if (this._objectCache.has(key)) return this._objectCache.get(key);
 
-      let detected = null;
-      
-      const activeFilters = this._getVisibleObjectFilters();
-      
-      let sourceText = "";
-      if (this.config?.source_mode === "sensor") {
-        const sourceEntity = this._sensorClient.getSrcEntityMap().get(src) || "";
-        const sensorStateObj = sourceEntity ? this._hass?.states?.[sourceEntity] : null;
-        sourceText = [itemFilenameForFilter(src), sensorTextForFilter(sourceEntity, sensorStateObj)].join(" ");
-      } else {
-        const meta = this._mediaClient.getMetaById(src);
-        sourceText = [meta?.title, src].join(" ");
-      }
-      sourceText = sourceText.toLowerCase();
-
-      for (const filter of activeFilters) {
-        const aliases = getFilterAliases(filter);
-        if (aliases.some(alias => sourceText.includes(alias))) {
-          detected = filter;
-          break;
-        }
-      }
-
-      this._objectCache.set(key, detected);
-      return detected;
-    }
+    const detected = detectObjectForSrc({
+      src: key,
+      sourceMode: this.config?.source_mode ?? "sensor",
+      visibleFilters: this._getVisibleObjectFilters(),
+      getSrcEntity: (s) => this._sensorClient.getSrcEntityMap().get(s),
+      getSensorState: (entityId) => this._hass?.states?.[entityId],
+      getMediaTitle: (s) => this._mediaClient.getMetaById(s)?.title,
+    });
+    this._objectCache.set(key, detected);
+    return detected;
+  }
 
 
   _setObjectFilter(next) {
@@ -3295,36 +2960,11 @@ class CameraGalleryCard extends LitElement {
 
     const nextFilters = Array.from(set);
 
-    const rawItems = this._items();
-    const withDt = rawItems.map((it, idx) => {
-      const dtMs = Number.isFinite(it.dtMs) ? it.dtMs : null;
-      const dayKey = dtMs !== null ? dayKeyFromMs(dtMs) : null;
-      return { dayKey, dtMs, idx, src: it.src };
-    });
-
-    withDt.sort((a, b) => {
-      const aOk = Number.isFinite(a.dtMs);
-      const bOk = Number.isFinite(b.dtMs);
-      if (aOk && bOk && b.dtMs !== a.dtMs) return b.dtMs - a.dtMs;
-      if (aOk && !bOk) return -1;
-      if (!aOk && bOk) return 1;
-      return b.idx - a.idx;
-    });
-
-    if (this.config?.thumb_sort_order === "oldest") {
-      withDt.reverse();
-    }
-
-    const allWithDay = withDt.map((x) => ({ dayKey: x.dayKey, src: x.src, dtMs: x.dtMs }));
-    const days = this._allKnownDays(allWithDay);
-    const newestDay = days[0] ?? null;
-    const activeDay = this._selectedDay ?? newestDay;
-
-    const dayFiltered = !activeDay
-      ? allWithDay
-      : allWithDay.filter((x) => x.dayKey === activeDay);
-
-    const currentFiltered = dayFiltered.filter((x) =>
+    // Pre-toggle slice — the pipeline's cached base list reflects the
+    // current `_objectFilters`. We need the selected src under the current
+    // filter set to figure out where it lands after the toggle.
+    const base = this._pipeline.getBaseList();
+    const currentFiltered = base.dayFiltered.filter((x) =>
       this._matchesObjectFilterValue(x.src, currentFilters)
     );
 
@@ -3336,7 +2976,7 @@ class CameraGalleryCard extends LitElement {
     const currentSelectedSrc =
       currentFiltered.length > 0 ? currentFiltered[currentIdx]?.src : "";
 
-    const nextFiltered = dayFiltered.filter((x) =>
+    const nextFiltered = base.dayFiltered.filter((x) =>
       this._matchesObjectFilterValue(x.src, nextFilters)
     );
 
@@ -3468,10 +3108,10 @@ class CameraGalleryCard extends LitElement {
 
   _navNext(listLen) {
     if (this._selectMode || this._isLiveActive()) return;
-    const i = this._selectedIndex ?? 0;
-    if (i >= listLen - 1) return;
+    const next = nextInList(this._selectedIndex, listLen);
+    if (next === null) return;
     this._resetZoom();
-    this._selectedIndex = i + 1;
+    this._selectedIndex = next;
     this._pendingScrollToI = this._selectedIndex;
     this.requestUpdate();
     this._showNavChevrons();
@@ -3480,10 +3120,10 @@ class CameraGalleryCard extends LitElement {
 
   _navPrev() {
     if (this._selectMode || this._isLiveActive()) return;
-    const i = this._selectedIndex ?? 0;
-    if (i <= 0) return;
+    const prev = prevInList(this._selectedIndex);
+    if (prev === null) return;
     this._resetZoom();
-    this._selectedIndex = i - 1;
+    this._selectedIndex = prev;
     this._pendingScrollToI = this._selectedIndex;
     this.requestUpdate();
     this._showNavChevrons();
@@ -3831,7 +3471,7 @@ class CameraGalleryCard extends LitElement {
       // idempotent, but iterating up to ~50 items per hass push when
       // the slice is the same is wasted CPU. Gate on items rev + the
       // composition keys that drive `_computeBaseList`.
-      const queueKey = `${this._itemsRev}|${this._selectedDay}|${this._selectedIndex}`;
+      const queueKey = `${this._pipeline.rev}|${this._selectedDay}|${this._selectedIndex}`;
       if (queueKey !== this._lastPosterQueueKey) {
         this._lastPosterQueueKey = queueKey;
         this._queueSnapshotResolveForVisibleThumbs(visibleThumbSlice);
