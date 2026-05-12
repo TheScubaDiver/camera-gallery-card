@@ -75,6 +75,37 @@ describe("parsePathFormat — segment shape", () => {
     expect(fmt?.segments[0]?.regex.test("cameras")).toBe(true);
     expect(fmt?.segments[0]?.regex.test("c")).toBe(false);
   });
+
+  describe("escaped slash (title-style formats)", () => {
+    it("`\\/` does not split the format into segments", () => {
+      const fmt = parsePathFormat("MM\\/DD\\/YY HH:mm:ss");
+      expect(fmt?.segments.length).toBe(1);
+      expect(fmt?.directoryDepth).toBe(0);
+      expect(fmt?.leafIsFile).toBe(true);
+    });
+
+    it("mixes escaped and unescaped slashes correctly", () => {
+      // Real-world-ish: a folder prefix followed by a date-with-slashes title.
+      const fmt = parsePathFormat("camera/MM\\/DD\\/YY HH:mm:ss");
+      expect(fmt?.segments.length).toBe(2);
+      expect(fmt?.segments[0]?.raw).toBe("camera");
+      expect(fmt?.segments[1]?.raw).toBe("MM/DD/YY HH:mm:ss");
+    });
+
+    it("matches a UniFi-style title in a single segment", () => {
+      const fmt = parsePathFormat("MM\\/DD\\/YY HH:mm:ss")!;
+      const title = "05/12/26 09:46:45 28s Object Detection - Person";
+      const fields = matchPathTail(title, fmt);
+      expect(fields).toEqual({
+        month: 5,
+        day: 12,
+        year: 2026,
+        hour: 9,
+        minute: 46,
+        second: 45,
+      });
+    });
+  });
 });
 
 describe("matchPathTail — full-path matching", () => {
