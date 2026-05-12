@@ -1307,7 +1307,19 @@ class CameraGalleryCard extends LitElement {
         ["Calendar days", String(calendarDays), calendarDays > 0 ? "ok" : null],
         ["Days loaded", String(dayCacheSize)],
         ["Last fetch", fmtTs(loadedAt), loadedAt && (Date.now() - loadedAt < 5 * 60 * 1000) ? "ok" : loadedAt ? "warn" : "bad"],
-        ["Direct API", ms.frigateApiFailed ? `failed (${ageS(failedAt)})` : "ok", ms.frigateApiFailed ? "warn" : "ok"],
+        ["Direct API", (() => {
+          // Three states: not configured (frigate_url empty) / failed / ok.
+          // Without this split, an empty `frigate_url` shows "ok" because
+          // the failure flag defaults to false — misleading users who don't
+          // even have direct REST enabled. And a stale flag from a prior
+          // `frigate_url` value persists after the URL is removed.
+          if (!cfg.frigate_url) return "not configured";
+          if (ms.frigateApiFailed) return `failed (${ageS(failedAt)})`;
+          return "ok";
+        })(), (() => {
+          if (!cfg.frigate_url) return null;
+          return ms.frigateApiFailed ? "warn" : "ok";
+        })()],
         ["WS subscribe (frigate/events)", this._frigateEventsUnsub ? "active" : "inactive", this._frigateEventsUnsub ? "ok" : (frigateInstalled ? "warn" : null)],
         ["Live card mounted", this._liveCard ? "yes" : "no", this._liveCard ? "ok" : (cfg.live_enabled && this._viewMode === "live" ? "warn" : null)],
         ["Live layout override", this._liveLayoutOverride || "—"],
