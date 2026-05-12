@@ -221,3 +221,35 @@ describe("Cancellation — isStale aborts mid-walk", () => {
     expect(browsedIds.length).toBeGreaterThan(0);
   });
 });
+
+describe("discoverTree — title-style format (UniFi Protect)", () => {
+  const fmt = parsePathFormat("MM\\/DD\\/YY HH:mm:ss")!;
+  const ROOT = "media-source://unifiprotect/69738a9f0219ca03e40003ec:browse:all:all:recent:7";
+  const tree: Record<string, MediaSourceItem> = {
+    [ROOT]: folder(ROOT, "Recent", [
+      file(`${ROOT}/evt1`, "05/12/26 09:46:45 28s Object Detection - Person"),
+      file(`${ROOT}/evt2`, "05/10/26 19:49:02 24s Object Detection - Animal"),
+      file(`${ROOT}/evt3`, "05/11/26 13:12:19 1m 34s Object Detection - Person"),
+      file(`${ROOT}/evt4`, "05/12/26 14:22:01 12s Object Detection - Vehicle"),
+    ]),
+  };
+
+  it("attaches dtMs to each event from the title", async () => {
+    const { browse } = makeBrowse(tree);
+    const result = await discoverTree([ROOT], fmt, browse);
+    expect(result.isLazy).toBe(false);
+    expect(result.eagerItems.length).toBe(4);
+    const evt1 = result.eagerItems.find((i) => i.id.endsWith("evt1"));
+    expect(evt1?.dtMs).toBe(new Date(2026, 4, 12, 9, 46, 45).getTime());
+  });
+
+  it("buckets events by dayKey", async () => {
+    const { browse } = makeBrowse(tree);
+    const result = await discoverTree([ROOT], fmt, browse);
+    expect(Array.from(result.calendar.byDay.keys()).sort()).toEqual([
+      "2026-05-10",
+      "2026-05-11",
+      "2026-05-12",
+    ]);
+  });
+});

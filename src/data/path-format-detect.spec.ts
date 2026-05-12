@@ -225,3 +225,32 @@ describe("collectMediaSamples", () => {
     expect(samples.length).toBe(5);
   });
 });
+
+describe("UniFi Protect — title-based detection", () => {
+  // UniFi Protect returns a flat list of events with opaque IDs and
+  // human-readable titles like `05/12/26 09:46:45 28s Object Detection - Person`.
+  const ROOT = "media-source://unifiprotect/69738a9f0219ca03e40003ec:browse:all:all:recent:7";
+
+  const unifiTree: Record<string, MediaSourceItem> = {
+    [ROOT]: folder(ROOT, "Recent", [
+      file(`${ROOT}/evt1`, "05/12/26 09:46:45 28s Object Detection - Person"),
+      file(`${ROOT}/evt2`, "05/10/26 19:49:02 24s Object Detection - Animal"),
+      file(`${ROOT}/evt3`, "05/11/26 13:12:19 1m 34s Object Detection - Person"),
+      file(`${ROOT}/evt4`, "05/12/26 14:22:01 12s Object Detection - Vehicle"),
+    ]),
+  };
+
+  it("collects titles as samples alongside opaque IDs", async () => {
+    const samples = await collectMediaSamples([ROOT], makeBrowse(unifiTree), 50);
+    // Opaque IDs and the title strings both appear.
+    expect(samples.some((s) => s.startsWith("media-source://unifiprotect"))).toBe(true);
+    expect(samples).toContain("05/12/26 09:46:45 28s Object Detection - Person");
+  });
+
+  it("picks `MM\\/DD\\/YY HH:mm:ss` for UniFi-style titles", async () => {
+    const result = await detectPathFormat([ROOT], makeBrowse(unifiTree));
+    expect(result.format).toBe("MM\\/DD\\/YY HH:mm:ss");
+    // All 4 events matched.
+    expect(result.matches).toBe(4);
+  });
+});

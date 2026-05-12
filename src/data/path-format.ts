@@ -50,6 +50,10 @@ export interface PathFormat {
   /** `true` when the format includes a literal extension on the leaf filename (e.g. `.mp4`).
    * When false, the leaf segment matches as a substring of the filename stem (legacy behaviour). */
   readonly leafHasExtension: boolean;
+  /** `true` when the single-segment format contains a literal `/` (from `\/` escape).
+   * Such formats (UniFi-style titles like `MM\/DD\/YY HH:mm:ss`) match against
+   * the full input string rather than the last `/`-separated component. */
+  readonly leafSpansSlashes: boolean;
 }
 
 /** Build a per-segment regex. Anchored unless `unanchored` is set.
@@ -87,19 +91,31 @@ function segmentLooksLikeFile(raw: string): boolean {
   return TIME_TOKEN_RE.test(raw) || FILE_EXT_RE.test(raw);
 }
 
+/** Placeholder for escaped slashes during segment splitting. NUL byte is
+ * not a realistic user-input character. Replaced back to `/` once split. */
+const ESC_SLASH_PLACEHOLDER = "\x00";
+
 /**
  * Parse a `path_datetime_format` string into a compiled `PathFormat`.
  * Returns `null` on malformed input (empty, no segments resolve, regex
  * compile fails). Trims leading/trailing slashes; collapses internal `//`.
+ *
+ * Supports `\/` as an escape for a literal slash inside a segment — used
+ * by title-style formats like `MM\/DD\/YY HH:mm:ss` (UniFi Protect)
+ * where the date contains `/` characters that must NOT split the format.
  */
 export function parsePathFormat(format: string | null | undefined): PathFormat | null {
-  const cleaned = String(format ?? "")
-    .trim()
+  const trimmed = String(format ?? "").trim();
+  if (!trimmed) return null;
+  // Protect `\/` from the collapse/split logic, then restore after.
+  const protectedStr = trimmed.replace(/\\\//g, ESC_SLASH_PLACEHOLDER);
+  const cleaned = protectedStr
     .replace(/\/{2,}/g, "/")
     .replace(/^\/+/, "")
     .replace(/\/+$/, "");
   if (!cleaned) return null;
-  const rawSegs = cleaned.split("/");
+  const rawSegs = cleaned.split("/").map((s) => s.split(ESC_SLASH_PLACEHOLDER).join("/"));
+  const lastSegHasLiteralSlash = (rawSegs[rawSegs.length - 1] ?? "").includes("/");
   if (rawSegs.length === 0) return null;
   const lastRaw = rawSegs[rawSegs.length - 1] ?? "";
   const leafIsFile = segmentLooksLikeFile(lastRaw);
@@ -116,7 +132,8 @@ export function parsePathFormat(format: string | null | undefined): PathFormat |
     segs.push(compiled);
   }
   const directoryDepth = leafIsFile ? segs.length - 1 : segs.length;
-  return { segments: segs, directoryDepth, leafIsFile, leafHasExtension };
+  const leafSpansSlashes = lastSegHasLiteralSlash;
+  return { segments: segs, directoryDepth, leafIsFile, leafHasExtension, leafSpansSlashes };
 }
 
 /**
@@ -185,6 +202,14 @@ export function pathTailSegments(src: string, n: number): string[] {
  */
 export function matchPathTail(path: string, fmt: PathFormat): PartialDateFields | null {
   const cleaned = String(path ?? "").replace(/^media-source:\/\//, "");
+  // Title-style single-segment formats (`\/` escapes restore `/` inside
+  // the segment): match the regex against the full input rather than
+  // splitting on `/`. The whole string is the "leaf".
+  if (fmt.segments.length === 1 && fmt.leafSpansSlashes) {
+    const seg = fmt.segments[0];
+    if (!seg) return null;
+    return matchSegment(cleaned, seg);
+  }
   const allParts = cleaned.split("/").filter(Boolean);
   // For directory-only formats, drop the file basename so the format
   // anchors against the leaf directory rather than the file.

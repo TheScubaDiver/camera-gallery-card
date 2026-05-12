@@ -95,6 +95,15 @@ const CANDIDATES: readonly string[] = [
   "YYYYMMDD_HHmmss",
   "YYYYMMDD-HHmmss",
   "YYYYMMDDHHmmss",
+  // ─── Title-style — single segment with literal `/` (UniFi Protect,
+  // any other integration that exposes the timestamp only in the
+  // human-readable title). `\/` escapes the slash so the parser keeps
+  // these as one segment instead of splitting them. ───
+  "MM\\/DD\\/YYYY HH:mm:ss",
+  "MM\\/DD\\/YY HH:mm:ss",
+  "DD\\/MM\\/YYYY HH:mm:ss",
+  "DD\\/MM\\/YY HH:mm:ss",
+  "YYYY-MM-DD HH:mm:ss",
 ];
 
 /**
@@ -137,6 +146,15 @@ async function probeRoot(rootId: string, browse: BrowseFn): Promise<string[]> {
         dirs.push({ id, name: String(ch.title ?? "").trim() });
       } else if (samples.length < PROBE_SAMPLE_LIMIT) {
         samples.push(id);
+        // Some integrations (UniFi Protect, etc.) carry the timestamp
+        // only in the human-readable title — the URI is opaque. Add the
+        // title as a separate sample only when it isn't just the file
+        // basename echoed in the id (which would double-count for
+        // traditional path formats). The substring check is cheap.
+        const title = String(ch.title ?? "").trim();
+        if (title && !id.includes(title) && samples.length < PROBE_SAMPLE_LIMIT) {
+          samples.push(title);
+        }
       }
     }
     dirs.sort((a, b) => {
