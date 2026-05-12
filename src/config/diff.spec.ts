@@ -16,7 +16,6 @@ const baseConfig = (overrides: Partial<CameraGalleryCardConfig> = {}): CameraGal
     live_camera_entity: "",
     live_camera_entities: [],
     start_mode: "gallery",
-    allow_delete: true,
     allow_bulk_delete: true,
     delete_confirm: true,
     delete_service: "",

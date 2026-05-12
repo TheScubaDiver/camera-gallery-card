@@ -17,7 +17,6 @@ type ConfigKey = keyof CameraGalleryCardConfig;
  */
 const SOURCE_KEYS = new Set<ConfigKey>([
   "allow_bulk_delete",
-  "allow_delete",
   "delete_confirm",
   "delete_service",
   "entities",

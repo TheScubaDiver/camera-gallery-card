@@ -136,7 +136,6 @@ export type ObjectFilter = (typeof AVAILABLE_OBJECT_FILTERS)[number];
 
 // -------- Config defaults (DEFAULT_*) --------
 export const DEFAULT_ALLOW_BULK_DELETE = true;
-export const DEFAULT_ALLOW_DELETE = true;
 export const DEFAULT_AUTOMUTED = true;
 export const DEFAULT_AUTOPLAY = false;
 export const DEFAULT_ASPECT_RATIO = "16:9" satisfies AspectRatio;

@@ -58,7 +58,6 @@ import {
 import {
   AVAILABLE_OBJECT_FILTERS,
   DEFAULT_ALLOW_BULK_DELETE,
-  DEFAULT_ALLOW_DELETE,
   DEFAULT_AUTOMUTED,
   DEFAULT_AUTOPLAY,
   DEFAULT_BAR_OPACITY,
@@ -1136,7 +1135,7 @@ class CameraGalleryCard extends LitElement {
   }
 
   _thumbCanMultipleDelete() {
-    if (!this.config?.allow_delete || !this.config?.allow_bulk_delete) return false;
+    if (!this.config?.allow_bulk_delete) return false;
     const hasSensorService = !!parseServiceParts(this.config?.delete_service);
     const hasFrigateService = !!parseServiceParts(this.config?.frigate_delete_service);
     return hasSensorService || hasFrigateService;
@@ -4193,7 +4192,7 @@ class CameraGalleryCard extends LitElement {
   // ─── Selection / bulk delete ──────────────────────────────────────
 
   async _bulkDelete(selectedSrcList) {
-    if (!this.config?.allow_delete || !this.config?.allow_bulk_delete) return;
+    if (!this.config?.allow_bulk_delete) return;
 
     const srcs = Array.from(selectedSrcList || []);
     if (!srcs.length) return;
@@ -4809,9 +4808,7 @@ class CameraGalleryCard extends LitElement {
     const sp = parseServiceParts(this.config?.delete_service);
     const fsp = parseServiceParts(this.config?.frigate_delete_service);
 
-    const canDelete =
-      !!this.config?.allow_delete &&
-      (!!sp || !!fsp);
+    const canDelete = !!sp || !!fsp;
     const canBulkDelete =
       !!this.config?.allow_bulk_delete &&
       (!!sp || !!fsp);
