@@ -7160,8 +7160,9 @@ class CameraGalleryCard extends LitElement {
       }
 
       .bulkdelete {
-        background: color-mix(in srgb, var(--error-color, #c62828) 18%, transparent);
-        border: 1px solid color-mix(in srgb, var(--error-color, #c62828) 35%, transparent);
+        background: var(--cgc-delete-bg, var(--cgc-live-active-bg, var(--error-color, #c62828)));
+        color: var(--text-primary-color, #fff);
+        border: 1px solid var(--cgc-delete-bg, var(--cgc-live-active-bg, var(--error-color, #c62828)));
       }
 
       @media (max-width: 700px) {
@@ -7658,6 +7659,7 @@ const STYLE_SECTIONS = [
       { type: "color",  hostId: "ctrl-txt-host",     variable: "--cgc-ctrl-txt",       label: "Text color" },
       { type: "color",  hostId: "ctrl-chevron-host", variable: "--cgc-ctrl-chevron",   label: "Chevron color" },
       { type: "color",  hostId: "live-active-host",  variable: "--cgc-live-active-bg", label: "Live active color" },
+      { type: "color",  hostId: "delete-bg-host",    variable: "--cgc-delete-bg",      label: "Delete button color" },
       { type: "radius", variable: "--cgc-ctrl-radius", label: "Border radius", min: 0, max: 16, default: 10 },
     ],
   },
