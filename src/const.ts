@@ -13,6 +13,7 @@ export const SOURCE_MODES = ["sensor", "media", "combined"] as const;
 export const PREVIEW_POSITIONS = ["top", "bottom"] as const;
 export const THUMB_BAR_POSITIONS = ["top", "bottom", "hidden"] as const;
 export const THUMB_LAYOUTS = ["horizontal", "vertical"] as const;
+export const THUMB_SORT_ORDERS = ["newest", "oldest"] as const;
 export const BAR_POSITIONS = ["top", "bottom", "hidden"] as const;
 export const START_MODES = ["gallery", "live"] as const;
 export const OBJECT_FITS = ["cover", "contain"] as const;
@@ -24,6 +25,7 @@ export type SourceMode = (typeof SOURCE_MODES)[number];
 export type PreviewPosition = (typeof PREVIEW_POSITIONS)[number];
 export type ThumbBarPosition = (typeof THUMB_BAR_POSITIONS)[number];
 export type ThumbLayout = (typeof THUMB_LAYOUTS)[number];
+export type ThumbSortOrder = (typeof THUMB_SORT_ORDERS)[number];
 export type BarPosition = (typeof BAR_POSITIONS)[number];
 export type StartMode = (typeof START_MODES)[number];
 export type ObjectFit = (typeof OBJECT_FITS)[number];
@@ -193,6 +195,7 @@ export const DEFAULT_RESOLVE_BATCH = 32;
 export const DEFAULT_SOURCE_MODE = "sensor" satisfies SourceMode;
 export const DEFAULT_THUMB_BAR_POSITION = "bottom" satisfies ThumbBarPosition;
 export const DEFAULT_THUMB_LAYOUT = "horizontal" satisfies ThumbLayout;
+export const DEFAULT_THUMB_SORT_ORDER = "newest" satisfies ThumbSortOrder;
 export const DEFAULT_THUMBNAIL_FRAME_PCT = 0; // 0% = first frame, 100% = last frame
 export const DEFAULT_VISIBLE_OBJECT_FILTERS: readonly ObjectFilter[] = [];
 

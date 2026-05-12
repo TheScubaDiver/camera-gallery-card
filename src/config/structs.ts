@@ -51,6 +51,7 @@ import {
   DEFAULT_SOURCE_MODE,
   DEFAULT_THUMB_BAR_POSITION,
   DEFAULT_THUMB_LAYOUT,
+  DEFAULT_THUMB_SORT_ORDER,
   DEFAULT_THUMBNAIL_FRAME_PCT,
   DEFAULT_LIVE_LAYOUT,
   LIVE_LAYOUTS,
@@ -68,6 +69,7 @@ import {
   START_MODES,
   THUMB_BAR_POSITIONS,
   THUMB_LAYOUTS,
+  THUMB_SORT_ORDERS,
   THUMB_SIZE,
   THUMB_SIZE_MAX,
   THUMB_SIZE_MIN,
@@ -193,6 +195,7 @@ export const cameraGalleryCardConfigStruct = type({
   thumb_size: defaulted(intInRange(THUMB_SIZE_MIN, THUMB_SIZE_MAX), THUMB_SIZE),
   thumb_bar_position: defaulted(enums(THUMB_BAR_POSITIONS), DEFAULT_THUMB_BAR_POSITION),
   thumb_layout: defaulted(enums(THUMB_LAYOUTS), DEFAULT_THUMB_LAYOUT),
+  thumb_sort_order: defaulted(enums(THUMB_SORT_ORDERS), DEFAULT_THUMB_SORT_ORDER),
   thumbnail_frame_pct: defaulted(
     intInRange(THUMBNAIL_FRAME_PCT_MIN, THUMBNAIL_FRAME_PCT_MAX),
     DEFAULT_THUMBNAIL_FRAME_PCT

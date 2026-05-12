@@ -667,6 +667,10 @@ class CameraGalleryCard extends LitElement {
       return b.idx - a.idx;
     });
 
+    if (this.config?.thumb_sort_order === "oldest") {
+      withDt.reverse();
+    }
+
     const allWithDay = withDt.map((x) => ({ dayKey: x.dayKey, src: x.src, dtMs: x.dtMs }));
     const days = this._allKnownDays(allWithDay);
     const newestDay = days[0] ?? null;
@@ -3781,11 +3785,13 @@ class CameraGalleryCard extends LitElement {
    * applied — both call sites consume this stage.
    */
   _computeBaseList() {
+    const sortOrder = this.config?.thumb_sort_order === "oldest" ? "oldest" : "newest";
     if (
       this._cachedBaseList &&
       this._cachedBaseListItemsRev === this._itemsRev &&
       this._cachedBaseListSelectedDay === this._selectedDay &&
-      this._cachedBaseListObjFilters === this._objectFilters
+      this._cachedBaseListObjFilters === this._objectFilters &&
+      this._cachedBaseListSortOrder === sortOrder
     ) {
       return this._cachedBaseList;
     }
@@ -3806,6 +3812,7 @@ class CameraGalleryCard extends LitElement {
       this._cachedBaseListItemsRev = this._itemsRev;
       this._cachedBaseListSelectedDay = this._selectedDay;
       this._cachedBaseListObjFilters = this._objectFilters;
+      this._cachedBaseListSortOrder = sortOrder;
       return empty;
     }
 
@@ -3823,6 +3830,10 @@ class CameraGalleryCard extends LitElement {
       if (!aOk && bOk) return 1;
       return b.idx - a.idx;
     });
+
+    if (this.config?.thumb_sort_order === "oldest") {
+      withDt.reverse();
+    }
 
     const allWithDay = withDt.map((x) => ({ dayKey: x.dayKey, src: x.src, dtMs: x.dtMs }));
     const days = this._allKnownDays(allWithDay);
@@ -3859,6 +3870,7 @@ class CameraGalleryCard extends LitElement {
     this._cachedBaseListItemsRev = this._itemsRev;
     this._cachedBaseListSelectedDay = this._selectedDay;
     this._cachedBaseListObjFilters = this._objectFilters;
+    this._cachedBaseListSortOrder = sortOrder;
     return result;
   }
 
@@ -4118,6 +4130,10 @@ class CameraGalleryCard extends LitElement {
       if (!aOk && bOk) return 1;
       return b.idx - a.idx;
     });
+
+    if (this.config?.thumb_sort_order === "oldest") {
+      withDt.reverse();
+    }
 
     const allWithDay = withDt.map((x) => ({ dayKey: x.dayKey, src: x.src, dtMs: x.dtMs }));
     const days = this._allKnownDays(allWithDay);
@@ -8814,6 +8830,11 @@ class CameraGalleryCardEditor extends HTMLElement {
       return v === "vertical" ? "vertical" : "horizontal";
     })();
 
+    const thumbSortOrder = (() => {
+      const v = String(c.thumb_sort_order || "newest").toLowerCase().trim();
+      return v === "oldest" ? "oldest" : "newest";
+    })();
+
     const thumbSizeMuted = thumbLayout === "vertical";
 
     const allServices = this._hass?.services || {};
@@ -9687,6 +9708,14 @@ class CameraGalleryCardEditor extends HTMLElement {
                   <button class="seg ${thumbBarPos === "top" ? "on" : ""}" data-tbpos="top">Top</button>
                   <button class="seg ${thumbBarPos === "bottom" ? "on" : ""}" data-tbpos="bottom">Bottom</button>
                   <button class="seg ${thumbBarPos === "hidden" ? "on" : ""}" data-tbpos="hidden">Hidden</button>
+                </div>
+              </div>
+
+              <div class="row">
+                <div class="lbl">Sort order</div>
+                <div class="segwrap">
+                  <button class="seg ${thumbSortOrder === "newest" ? "on" : ""}" data-tsort="newest">Newest first</button>
+                  <button class="seg ${thumbSortOrder === "oldest" ? "on" : ""}" data-tsort="oldest">Oldest first</button>
                 </div>
               </div>
 
@@ -11944,6 +11973,13 @@ if (oldPanel && tmp.firstElementChild) {
     this.shadowRoot.querySelectorAll(".seg[data-tlayout]").forEach((btn) => {
       btn.addEventListener("click", () => {
         this._set("thumb_layout", btn.dataset.tlayout);
+        btn.closest(".segwrap")?.querySelectorAll(".seg").forEach((s) => s.classList.toggle("on", s === btn));
+      });
+    });
+
+    this.shadowRoot.querySelectorAll(".seg[data-tsort]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        this._set("thumb_sort_order", btn.dataset.tsort);
         btn.closest(".segwrap")?.querySelectorAll(".seg").forEach((s) => s.classList.toggle("on", s === btn));
       });
     });
