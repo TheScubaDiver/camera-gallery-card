@@ -147,6 +147,74 @@ describe("buildDiagnostics", () => {
     expect(never[4]?.rows[3]?.[2]).toBe("bad");
   });
 
+  it("Direct API: 'not configured' when frigate_url is absent", () => {
+    const sections = buildDiagnostics({
+      cardVersion: "2.10.0",
+      viewMode: "media",
+      hass: hassWith(),
+      config: cfg(),
+      mediaState: { frigateApiFailed: false },
+      frigateEventsActive: false,
+      liveCardMounted: false,
+      liveLayoutOverride: null,
+      cameraResolutions: baseCameraResolutions,
+      navigatorInfo: baseNavigator,
+      now: fakeNow,
+    });
+    expect(sections[4]?.rows[4]).toEqual(["Direct API", "not configured", null]);
+  });
+
+  it("Direct API: 'not configured' even when stale failure flag set after URL removed", () => {
+    const sections = buildDiagnostics({
+      cardVersion: "2.10.0",
+      viewMode: "media",
+      hass: hassWith(),
+      config: cfg(),
+      mediaState: { frigateApiFailed: true, frigateApiFailedAt: fakeNow() - 60_000 },
+      frigateEventsActive: false,
+      liveCardMounted: false,
+      liveLayoutOverride: null,
+      cameraResolutions: baseCameraResolutions,
+      navigatorInfo: baseNavigator,
+      now: fakeNow,
+    });
+    expect(sections[4]?.rows[4]).toEqual(["Direct API", "not configured", null]);
+  });
+
+  it("Direct API: 'failed (<age>)' / warn when frigate_url set and REST latched a failure", () => {
+    const sections = buildDiagnostics({
+      cardVersion: "2.10.0",
+      viewMode: "media",
+      hass: hassWith(),
+      config: cfg({ frigate_url: "http://frigate.local" }),
+      mediaState: { frigateApiFailed: true, frigateApiFailedAt: fakeNow() - 30_000 },
+      frigateEventsActive: false,
+      liveCardMounted: false,
+      liveLayoutOverride: null,
+      cameraResolutions: baseCameraResolutions,
+      navigatorInfo: baseNavigator,
+      now: fakeNow,
+    });
+    expect(sections[4]?.rows[4]).toEqual(["Direct API", "failed (30s ago)", "warn"]);
+  });
+
+  it("Direct API: 'ok' when frigate_url set and no failure latched", () => {
+    const sections = buildDiagnostics({
+      cardVersion: "2.10.0",
+      viewMode: "media",
+      hass: hassWith(),
+      config: cfg({ frigate_url: "http://frigate.local" }),
+      mediaState: { frigateApiFailed: false },
+      frigateEventsActive: false,
+      liveCardMounted: false,
+      liveLayoutOverride: null,
+      cameraResolutions: baseCameraResolutions,
+      navigatorInfo: baseNavigator,
+      now: fakeNow,
+    });
+    expect(sections[4]?.rows[4]).toEqual(["Direct API", "ok", "ok"]);
+  });
+
   it("Live cameras: emits placeholder row when none configured", () => {
     const sections = buildDiagnostics({
       cardVersion: "2.10.0",

@@ -79,23 +79,27 @@ FileTrack is a fork of the archived [files integration by TarheelGrad1998](https
 - **Aspect ratio toggle** — quickly switch between 16:9, 4:3 and 1:1, remembered per camera
 - Live badge
 - **Multiple live cameras** — configure several cameras and switch between them using chevron arrows
+- **Multi-camera grid layout** (`live_layout: grid`) — show all cameras at once, tap a tile to focus on one
 - **Multiple RTSP streams** — configure multiple named RTSP streams via `live_stream_urls`
 - Default live camera
 - Camera friendly names and entity IDs in selector
-- **Live pre-warming** — the stream starts loading in the background before you open live view
+- Auto-teardown of stream + push-to-talk on view switch (no audio/bandwidth leak)
 
 ### Actions
 
 - **Menu buttons** — configure custom action buttons (toggle, navigate, perform action, etc.) accessible via a hamburger menu during live view
-- Delete
-- Multiple delete
+- Delete (sensor files + Frigate clips)
+- Multiple delete with red selection style
 - Download
 - Long-press action menu
 
 ### Frigate
 
-- **Direct Frigate HTTP API** (`frigate_url`) — load clips directly from Frigate's REST API instead of walking the media browser, resulting in significantly faster load times
+- **WebSocket via HA integration** (default) — uses the official Frigate HA integration's WS API. CORS-free, no `frigate_url` required, works with standalone Frigate containers
+- **Direct REST API** (`frigate_url`, optional) — even faster if your Frigate is reachable from the browser
+- Automatic fallback: if REST fails, WS path takes over
 - Automatic Frigate snapshot thumbnails
+- **Frigate clip delete** via `rest_command` — see [Delete setup](#delete-setup)
 
 ### Thumbnails
 
@@ -131,9 +135,14 @@ Features:
 - Controls mode dropdown (Overlay / Fixed)
 - Menu buttons tab — configure action buttons with entity, icon, label and on/off icon
 - Frigate URL field — set the direct Frigate API URL (shown in media and combined mode)
+- **Auto-detect path datetime format** — scans your sources and suggests a working format
 - Cleanup of legacy config keys
 - Live preview in the HA card picker
 - Create new FileTrack sensor from the General tab
+
+### Debug mode
+
+Enable **Debug mode** in the General tab to surface a debug pill in live view. Tapping it opens a diagnostics modal with card version, HA info, Frigate state, runtime queue stats, and the active source/path. Useful for support questions and issue reports.
 
 ### Styling
 
@@ -156,21 +165,42 @@ The **Styling** tab provides a visual editor for colors and border radius.
 
 ## Delete setup
 
-> [!IMPORTANT]
-> Delete is not available in `source_mode: media`. In media mode the option is hidden in the thumbnail menu and disabled in the editor — media-source items (Frigate, network shares, etc.) don't map to filesystem paths the shell command can delete.
+The card supports two independent delete paths. Configure either or both — they're complementary:
+
+### Sensor file delete (shell_command)
+
+For sensor mode items (and combined-mode sensor-backed items). Add a `shell_command` to your `configuration.yaml`:
+
+```yaml
+shell_command:
+  gallery_delete: 'rm -f "{{ path }}"'
+```
+
+Then in the card editor: **General → Delete services → Sensor** → pick `shell_command.gallery_delete`.
+
+> [!NOTE]
+> Sensor delete is path-based. The path must start with `/config/www/` (or resolve from `/local/`). Media-source URIs without a filesystem mapping can't use this path.
+
+### Frigate clip delete (rest_command)
+
+For Frigate event items in any source mode. Add a `rest_command` that calls Frigate's `DELETE /api/events/<id>` endpoint:
+
+```yaml
+rest_command:
+  delete_frigate:
+    url: "http://frigate.local:5000/api/events/{{ event_id }}"
+    method: DELETE
+```
+
+Then in the card editor: **General → Delete services → Frigate** → pick `rest_command.delete_frigate`.
 
 > [!TIP]
-> To enable delete actions, configure a shell command in Home Assistant and provide the service name in the card editor under **General → Delete service**.
+> Frigate's DELETE event endpoint wipes the clip, snapshot, and thumbnail in one call. The card hides paired items together after a successful delete.
 
-> [!IMPORTANT]
-> Delete is only supported in **sensor mode**. Media source and combined mode do not support delete actions.
-Optional delete options (YAML only — not currently exposed in the editor):
+### Confirmation & bulk
 
-- `delete_confirm: false` — skip the confirmation dialog
-- `allow_bulk_delete: true` — enable multi-select bulk delete
-
-- `delete_confirm` — confirm before deleting
-- `allow_bulk_delete` — enable bulk delete
+- `delete_confirm` — show confirmation dialog (default: `true`)
+- `allow_bulk_delete` — enable multi-select bulk delete (default: `true`)
 
 ---
 
@@ -181,39 +211,97 @@ Optional delete options (YAML only — not currently exposed in the editor):
 
 | Option | Description |
 |------|------|
+| **Source** | |
 | `source_mode` | `sensor`, `media`, or `combined` |
-| `entity / entities` | Sensor source |
-| `media_source / media_sources` | Media browser source |
+| `entity / entities` | Sensor source(s) |
+| `media_source / media_sources` | Media browser source(s) |
+| `path_datetime_format` | Format pattern for parsing timestamps from paths (required for `media` / `combined`) |
+| `max_media` | Max media items |
+| **Frigate** | |
+| `frigate_url` | Optional direct Frigate REST API URL (e.g. `http://192.168.1.x:5000`). If omitted, the card uses the HA Frigate integration via WebSocket |
+| **Gallery view** | |
 | `start_mode` | Default view: `gallery` or `live` |
-| `controls_mode` | Live controls display: `overlay` or `fixed` |
-| `aspect_ratio` | Preview aspect ratio: `16:9`, `4:3`, or `1:1` |
 | `preview_position` | `top` or `bottom` |
-| `bar_position` | Timestamp bar position |
-| `bar_opacity` | Timestamp bar opacity |
+| `clean_mode` | Hide overlays when preview is closed |
+| `object_fit` | Media display mode: `cover` or `contain` |
+| `aspect_ratio` | Preview aspect ratio: `16:9`, `4:3`, or `1:1` |
+| `autoplay` | Auto-play videos in gallery |
+| `auto_muted` | Auto-mute videos in gallery |
+| **Thumbnails** | |
 | `thumb_layout` | `horizontal` or `vertical` |
-| `thumb_size` | Thumbnail size |
-| `thumb_bar_position` | Thumb timestamp bar |
-| `max_media` | Max media items (default: 50) |
-| `object_filters` | Filter buttons (built-in and custom) |
-| `object_colors` | Color per object filter |
-| `entity_filter_map` | Map entity to object type |
+| `thumb_size` | Thumbnail size in px |
+| `thumb_bar_position` | Thumb timestamp bar position |
+| `thumb_sort_order` | `newest_first` or `oldest_first` |
+| `bar_position` | Preview timestamp bar position |
+| `bar_opacity` | Preview timestamp bar opacity |
+| **Live view** | |
 | `live_enabled` | Enable live mode |
 | `live_camera_entity` | Default camera entity for live view |
 | `live_camera_entities` | Camera entities visible in the live picker |
+| `live_layout` | `single` or `grid` (multi-camera) |
+| `live_grid_labels` | Show camera name labels in grid mode |
 | `live_stream_urls` | Array of named RTSP streams: `[{url, name}]` |
 | `live_auto_muted` | Auto-mute audio in live view |
-| `frigate_url` | Direct Frigate REST API URL (e.g. `http://192.168.1.x:5000`) |
+| `controls_mode` | Live controls display: `overlay` or `fixed` |
+| `show_camera_title` | Show camera name in controls bar |
+| `persistent_controls` | Always show controls (don't fade out) |
 | `menu_buttons` | Configurable action buttons in the hamburger menu |
-| `autoplay` | Auto-play videos in gallery |
-| `auto_muted` | Auto-mute videos in gallery |
-| `object_fit` | Media display mode: `cover` or `contain` |
-| `allow_delete` | Enable delete action |
-| `allow_bulk_delete` | Enable bulk delete |
-| `delete_confirm` | Show confirmation before deleting |
-| `delete_service` | Delete file service |
+| **Filters** | |
+| `object_filters` | Filter buttons (built-in and custom) |
+| `object_colors` | Color per object filter |
+| **Delete** | |
+| `delete_service` | Sensor file delete service (`shell_command.*`) |
+| `frigate_delete_service` | Frigate clip delete service (`rest_command.*`) |
+| `delete_confirm` | Show confirmation before deleting (default: `true`) |
+| `allow_bulk_delete` | Enable bulk delete (default: `true`) |
+| **Layout & misc** | |
+| `card_height` | Card height in px |
+| `pill_size` | Pill text size (px) — pills scale around this |
+| `debug_enabled` | Show debug pill with diagnostics in live view |
 | `style_variables` | Custom CSS variable overrides |
 
 </details>
+
+---
+
+## Example configurations
+
+### Minimal — sensor mode
+
+For users with file sensors (FileTrack) pointing at local camera storage:
+
+```yaml
+type: custom:camera-gallery-card
+source_mode: sensor
+entities:
+  - sensor.frontdoor_files
+  - sensor.driveway_files
+delete_service: shell_command.gallery_delete
+object_filters:
+  - person
+  - car
+```
+
+### Frigate via HA integration (no `frigate_url` needed)
+
+For Frigate add-on or standalone container — uses the HA WebSocket path, CORS-free:
+
+```yaml
+type: custom:camera-gallery-card
+source_mode: media
+media_sources:
+  - media-source://frigate/main/event/clips/all/all/recent/7
+path_datetime_format: YYYY/MM/DD/HHmmss
+frigate_delete_service: rest_command.delete_frigate
+live_enabled: true
+live_camera_entities:
+  - camera.frontdoor
+  - camera.driveway
+live_layout: single
+object_filters:
+  - person
+  - car
+```
 
 ---
 
@@ -243,6 +331,7 @@ All visual styling can be customized via the **Styling** tab in the editor.
 | `--cgc-ctrl-chevron` | Date navigation chevron color | theme text color |
 | `--cgc-live-active-bg` | Live button active background | error color |
 | `--cgc-ctrl-radius` | Controls bar border radius | `10px` |
+| `--cgc-pill-size` | Pill text size (px). Fixed-mode pill height scales as `2 ×` this value | `14px` |
 
 </details>
 

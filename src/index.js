@@ -5178,7 +5178,7 @@ class CameraGalleryCard extends LitElement {
       .controls-bar-fixed .gallery-pill,
       .controls-bar-fixed .live-pill-btn {
         flex: 1;
-        height: 28px;
+        height: calc(var(--cgc-pill-size, 14px) * 2);
         min-width: 0;
         background: var(--cgc-obj-btn-bg, var(--cgc-ui-bg));
         border-radius: var(--cgc-obj-btn-radius, 10px);

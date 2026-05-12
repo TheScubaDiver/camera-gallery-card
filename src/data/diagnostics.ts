@@ -64,6 +64,29 @@ const fmtAgeSeconds = (ts: number, now: number): string =>
 const fmtTimestamp = (ts: number, now: number): string =>
   ts ? `${new Date(ts).toLocaleTimeString()} (${fmtAgeSeconds(ts, now)})` : "—";
 
+/**
+ * Three-state Direct API status — "not configured" when `frigate_url` is
+ * absent, "failed (<age>)" when the REST path latched a failure, "ok"
+ * otherwise. Without splitting these, an empty `frigate_url` would show
+ * "ok" purely because the failure flag defaults to `false`, misleading
+ * users who don't have direct REST enabled at all. A stale flag from a
+ * removed `frigate_url` would also persist as "ok".
+ */
+function directApiCell(
+  config: CameraGalleryCardConfig | null,
+  ms: DiagMediaState,
+  now: number
+): { value: string; status: DiagStatus } {
+  if (!config?.frigate_url) return { value: "not configured", status: null };
+  if (ms.frigateApiFailed) {
+    return {
+      value: `failed (${fmtAgeSeconds(ms.frigateApiFailedAt ?? 0, now)})`,
+      status: "warn",
+    };
+  }
+  return { value: "ok", status: "ok" };
+}
+
 function gcd(a: number, b: number): number {
   let x = a;
   let y = b;
@@ -151,9 +174,9 @@ export function buildDiagnostics(opts: BuildDiagnosticsOptions): DiagSection[] {
     (hass?.config?.components as ReadonlyArray<string>).includes("frigate");
   const list = Array.isArray(ms.list) ? ms.list : [];
   const loadedAt = ms.loadedAt ?? 0;
-  const failedAt = ms.frigateApiFailedAt ?? 0;
   const calendarDays = ms.calendar?.days?.length ?? 0;
   const dayCacheSize = ms.dayCache?.size ?? 0;
+  const directApi = directApiCell(cfg, ms, now);
 
   return [
     {
@@ -200,11 +223,7 @@ export function buildDiagnostics(opts: BuildDiagnosticsOptions): DiagSection[] {
           fmtTimestamp(loadedAt, now),
           loadedAt && now - loadedAt < FRESH_FETCH_WINDOW_MS ? "ok" : loadedAt ? "warn" : "bad",
         ],
-        [
-          "Direct API",
-          ms.frigateApiFailed ? `failed (${fmtAgeSeconds(failedAt, now)})` : "ok",
-          ms.frigateApiFailed ? "warn" : "ok",
-        ],
+        ["Direct API", directApi.value, directApi.status],
         [
           "WS subscribe (frigate/events)",
           opts.frigateEventsActive ? "active" : "inactive",
