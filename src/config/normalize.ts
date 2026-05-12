@@ -130,6 +130,7 @@ export interface InputConfig {
   thumb_size?: number;
   thumb_bar_position?: string;
   thumb_layout?: string;
+  thumb_sort_order?: string;
   thumbnail_frame_pct?: number;
   capture_video_thumbnails?: boolean;
   pill_size?: number;

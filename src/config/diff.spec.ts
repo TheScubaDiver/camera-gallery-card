@@ -27,6 +27,7 @@ const baseConfig = (overrides: Partial<CameraGalleryCardConfig> = {}): CameraGal
     thumb_size: 86,
     thumb_bar_position: "bottom",
     thumb_layout: "horizontal",
+    thumb_sort_order: "newest",
     thumbnail_frame_pct: 0,
     pill_size: 14,
     aspect_ratio: "16:9",
