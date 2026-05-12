@@ -37,9 +37,8 @@ import {
 import { collectMediaSamples, scoreSamples } from "./data/path-format-detect";
 import { CombinedSourceClient } from "./data/combined-source";
 import { canDeleteItem, deleteItem } from "./data/delete-service";
-import { fnv1aHash } from "./util/hash";
+import { PendingPosterCollector, PosterCacheClient } from "./data/poster-cache";
 import { isVideo } from "./util/media-type";
-import { posterStore } from "./util/poster-store";
 import {
   FRIGATE_URI_PREFIX,
   frigateEventIdFromSrc,
@@ -76,12 +75,6 @@ import {
   DEFAULT_VISIBLE_OBJECT_FILTERS,
   MAX_VISIBLE_OBJECT_FILTERS,
   PREVIEW_WIDTH,
-  POSTER_CAPTURE_TIMEOUT_MS,
-  POSTER_FETCH_TIMEOUT_MS,
-  POSTER_MAX_ATTEMPTS,
-  POSTER_RETRY_DELAY_MS,
-  SENSOR_POSTER_CONCURRENCY,
-  SENSOR_POSTER_QUEUE_LIMIT,
   STYLE,
   THUMB_GAP,
   THUMB_LONG_PRESS_MOVE_PX,
@@ -190,29 +183,6 @@ class CameraGalleryCard extends LitElement {
     this._filterImage = false;
     this._filterFavorites = false;
     this._pendingScrollToI = null;
-    this._posterCache = new Map();
-    this._posterPending = new Set();
-    // Per-URL capture-attempt ledger. Replaces the previous binary
-    // `_posterFailed` set, which couldn't distinguish "definitively
-    // broken" (404, codec error → permanent broken-icon) from "timed
-    // out this attempt on slow network" (would re-attempt fine on a
-    // good connection).
-    //
-    // Shape: Map<url, { count, lastAt, hard }>
-    //   - count: number of failed attempts so far
-    //   - lastAt: timestamp of the last attempt (ms)
-    //   - hard: true once we've classified the failure as permanent
-    //
-    // Skip logic:
-    //   - hard=true OR count >= POSTER_MAX_ATTEMPTS → never retry,
-    //     thumbnail renders the broken-icon state.
-    //   - soft + lastAt within POSTER_RETRY_DELAY_MS → skip this round
-    //     (rate-limit retries so we don't spin on a flaky connection).
-    //   - soft + lastAt older than the delay → eligible for re-attempt.
-    this._posterAttempts = new Map();
-    /** Single rolling timer that schedules a requestUpdate at the next
-     * soft-fail cooldown expiry. See `_scheduleSoftRetryRender`. */
-    this._softRetryTimer = null;
     // Unsubscribe callback for HA WS Frigate-event-push subscription.
     // null = not subscribed, function = active subscription.
     this._frigateEventsUnsub = null;
@@ -410,38 +380,31 @@ class CameraGalleryCard extends LitElement {
     this._cachedBaseList = null;
     this._previewLoadTimer = null;
 
-    this._posterQueue = [];
-    this._posterQueued = new Set();
-    this._posterInFlight = new Set();
-    // In-memory mirror of the IDB-backed `posterStore`. Holds Blob refs
-    // alongside lazily-created `URL.createObjectURL` strings — render
-    // reads return the URL string synchronously, writes persist the
-    // Blob to IDB asynchronously without blocking the render task. URL
-    // lifecycle is owned here: revoke on overwrite / delete / clear.
-    //   Map<lsKey, { blob: Blob; url: string | null }>
-    this._posterMirror = null;
-    // For media-source items, HA's `media_source/resolve_media` returns
-    // a *signed* URL that varies every session (expires:60*60). Hashing
-    // that URL as our IDB key meant yesterday's captured frame was
-    // unreachable today — the key changed even though the underlying
-    // file didn't. This Map records "when you enqueue/fetch THIS url,
-    // persist the blob under THAT stable key (mediaId)". Lookups in
-    // `_lsThumbGet`/`_lsThumbSet`/`_ensurePoster` go through it; falls
-    // back to the URL itself when no stable key is provided (sensor
-    // mode and other paths where the URL IS the stable identifier).
-    this._posterStableKeys = new Map();
-    // Promise that resolves once the IDB prewarm has populated
-    // `_posterMirror`. `_ensurePoster` awaits this before deciding
-    // whether to fetch — without it, the render→enqueue→fetch race
-    // beats `posterStore.readAll()` on cold loads (cmd-r) and we
-    // re-download blobs that are already cached.
-    this._prewarmReadyPromise = null;
-    this._prewarmDone = false;
-
     this._revealedThumbs = new Set();
     this._thumbObserver = null;
     this._thumbObserverRoot = null;
     this._observedThumbs = new WeakSet();
+
+    // Poster pipeline lives in its own client. Inputs are closures over the
+    // sensor/media clients + config so the poster module never imports them
+    // directly. See `src/data/poster-cache.ts`.
+    this._posterClient = new PosterCacheClient({
+      inputs: {
+        getSensorPairedThumbs: () => this._sensorClient.getSensorPairedThumbs(),
+        getMediaPairedThumbs: () => this._mediaClient.getPairedThumbs(),
+        getMediaUrlCache: () => this._mediaClient.getUrlCache(),
+        findMatchingSnapshotMediaId: (src) =>
+          this._mediaClient.findMatchingSnapshotMediaId(src),
+        isResolveFailed: (id) => this._mediaClient.isResolveFailed(id),
+        hasFrigate: () => hasFrigateConfig(this.config),
+        captureAllowed: () => this.config?.capture_video_thumbnails !== false,
+        framePct: () => this.config?.thumbnail_frame_pct ?? DEFAULT_THUMBNAIL_FRAME_PCT,
+        isRevealed: (src) => this._revealedThumbs.has(src),
+        getAuthToken: () => this._hass?.auth?.data?.access_token ?? null,
+        getOrigin: () => window.location.origin,
+      },
+      onChange: () => this.requestUpdate(),
+    });
   }
 
   _startMediaPoll() {
@@ -518,6 +481,11 @@ class CameraGalleryCard extends LitElement {
       this._thumbObserver = null;
     }
 
+    // Aborts in-flight captures and revokes every mirrored blob URL.
+    // Without this, every captured poster's `URL.createObjectURL` leaked
+    // on card teardown.
+    this._posterClient.dispose();
+
     this._stopMicStream();
   }
 
@@ -527,6 +495,7 @@ class CameraGalleryCard extends LitElement {
     this._hass = hass;
     this._sensorClient.setHass(hass);
     this._mediaClient.setHass(hass);
+    this._posterClient.setHass(hass);
 
     if (firstHass) {
       if (this.config?.start_mode === "live" && this._hasLiveConfig()) {
@@ -750,137 +719,6 @@ class CameraGalleryCard extends LitElement {
     this._ensurePreviewVideoHostPlayback(selectedUrl);
   }
 
-  /** True iff this URL has hit its hard-fail criteria — we should not
-   * retry. Used by `_enqueuePoster` / `_drainPosterQueue` to skip and
-   * by `_isThumbBroken` to flip render to the broken-icon state. */
-  _isPosterHardFailed(src) {
-    const a = this._posterAttempts.get(src);
-    if (!a) return false;
-    return a.hard || a.count >= POSTER_MAX_ATTEMPTS;
-  }
-
-  /** True iff a soft-failed URL is inside its retry-cooldown window.
-   * Returning true skips this attempt; render keeps showing the
-   * skeleton until the cooldown expires and a re-enqueue takes hold. */
-  _isPosterCoolingDown(src) {
-    const a = this._posterAttempts.get(src);
-    if (!a || a.hard) return false;
-    if (a.count === 0) return false;
-    return Date.now() - a.lastAt < POSTER_RETRY_DELAY_MS;
-  }
-
-  /** Record a capture failure. `hard` is true for definitive errors
-   * (404, MEDIA_ERR_SRC_NOT_SUPPORTED) — skips straight to the broken
-   * state. Soft failures (timeout, decode) accumulate up to
-   * POSTER_MAX_ATTEMPTS before being treated as hard. Schedules an
-   * auto-retry render so soft fails recover even on idle screens. */
-  _recordPosterFailure(src, { hard = false } = {}) {
-    const prev = this._posterAttempts.get(src);
-    const count = (prev?.count ?? 0) + 1;
-    const isHardNow = hard || count >= POSTER_MAX_ATTEMPTS;
-    this._posterAttempts.set(src, { count, lastAt: Date.now(), hard: isHardNow });
-    if (!isHardNow) this._scheduleSoftRetryRender();
-  }
-
-  _clearPosterFailure(src) {
-    this._posterAttempts.delete(src);
-  }
-
-  /** Schedule a single requestUpdate at the earliest expiring soft-fail
-   * cooldown, then re-arm itself if any soft fails are still cooling
-   * after that render. Without this, a slow-network blip on an idle
-   * dashboard would leave the thumb on its skeleton forever — the
-   * cooldown expires but no render is triggered to re-enqueue. */
-  _scheduleSoftRetryRender() {
-    if (this._softRetryTimer) return;
-    let earliest = Infinity;
-    const now = Date.now();
-    for (const a of this._posterAttempts.values()) {
-      if (a.hard) continue;
-      const expiry = a.lastAt + POSTER_RETRY_DELAY_MS;
-      if (expiry < earliest) earliest = expiry;
-    }
-    if (earliest === Infinity) return;
-    const delay = Math.max(100, earliest - now + 100);
-    this._softRetryTimer = setTimeout(() => {
-      this._softRetryTimer = null;
-      this.requestUpdate();
-      // The render above may re-fail items (still slow); reschedule
-      // for whatever cooldown is still pending.
-      this._scheduleSoftRetryRender();
-    }, delay);
-  }
-
-  _enqueuePoster(src, stableKey) {
-    const key = String(src || "").trim();
-    if (!key) return;
-    // Record the persistent-cache identifier if it differs from the
-    // fetch URL (media-source items: stable mediaId vs ephemeral
-    // signed URL). `_ensurePoster` reads this on dequeue.
-    if (stableKey && stableKey !== key) {
-      this._posterStableKeys.set(key, stableKey);
-    }
-    if (this._posterCache.has(key)) return;
-    if (this._posterPending.has(key)) return;
-    if (this._posterQueued.has(key)) return;
-    if (this._posterInFlight.has(key)) return;
-    if (this._isPosterHardFailed(key)) return;
-    if (this._isPosterCoolingDown(key)) return;
-
-    this._posterQueued.add(key);
-    this._posterQueue.push(key);
-
-    if (this._posterQueue.length > SENSOR_POSTER_QUEUE_LIMIT) {
-      this._posterQueue.length = SENSOR_POSTER_QUEUE_LIMIT;
-    }
-
-    this._drainPosterQueue();
-  }
-
-  _drainPosterQueue() {
-    while (
-      this._posterInFlight.size < SENSOR_POSTER_CONCURRENCY &&
-      this._posterQueue.length
-    ) {
-      // FIFO drain: items are pushed in render order (newest-first
-      // by day-sort), so `shift()` here makes the user see the
-      // top-of-gallery (most recent) thumbnails resolve first. The
-      // O(n) shift cost on a small queue is negligible vs the
-      // capture work itself.
-      const src = this._posterQueue.shift();
-      this._posterQueued.delete(src);
-
-      if (!src) continue;
-      if (this._posterCache.has(src)) continue;
-      if (this._posterPending.has(src)) continue;
-      if (this._posterInFlight.has(src)) continue;
-      if (this._isPosterHardFailed(src)) continue;
-      if (this._isPosterCoolingDown(src)) continue;
-
-      this._posterInFlight.add(src);
-
-      this._ensurePoster(src)
-        .catch(() => {})
-        .finally(() => {
-          this._posterInFlight.delete(src);
-          this._drainPosterQueue();
-        });
-    }
-  }
-
-  _resetPosterQueue() {
-    this._posterQueue = [];
-    this._posterQueued.clear();
-    this._posterInFlight.clear();
-    this._posterPending.clear();
-    this._posterAttempts.clear();
-    this._posterStableKeys.clear();
-    if (this._softRetryTimer) {
-      clearTimeout(this._softRetryTimer);
-      this._softRetryTimer = null;
-    }
-  }
-
   _queueSensorPosterWork(items) {
     if (!Array.isArray(items) || !items.length) return;
     if (this.config?.source_mode !== "sensor" && this.config?.source_mode !== "combined") return;
@@ -889,14 +727,14 @@ class CameraGalleryCard extends LitElement {
     // The raw video URL would require pulling the entire file just
     // to extract a single frame; that capture is deferred until the
     // user actually selects the item (preview-video `canplay` fires
-    // `_enqueuePoster` then).
+    // `client.enqueue` then).
     const pairedThumbs = this._sensorClient.getSensorPairedThumbs();
     for (const it of items) {
       const src = String(it?.src || "");
       if (!src) continue;
       if (!isVideo(src)) continue;
       const pairedJpg = pairedThumbs.get(src);
-      if (pairedJpg) this._enqueuePoster(pairedJpg);
+      if (pairedJpg) this._posterClient.enqueue(pairedJpg);
     }
   }
 
@@ -940,8 +778,8 @@ class CameraGalleryCard extends LitElement {
       // canplay/error listeners are still attached — and the
       // `removeAttribute("src") + load()` we're about to do can fire
       // `error` for the aborted load, which the stale closure would
-      // attribute to the OLD url (poisoning `_posterFailed` for a
-      // perfectly good URL the user just navigated away from).
+      // attribute to the OLD url (poisoning the poster-client failure
+      // ledger for a perfectly good URL the user just navigated away from).
       this._previewLoadAbort?.abort();
       const abortController = new AbortController();
       this._previewLoadAbort = abortController;
@@ -958,7 +796,7 @@ class CameraGalleryCard extends LitElement {
 
       video.src = selectedUrl;
 
-      const poster = this._posterCache.get(selectedUrl) || "";
+      const poster = this._posterClient.getPosterUrl(selectedUrl) || "";
       if (poster) {
         video.poster = poster;
       } else {
@@ -966,15 +804,14 @@ class CameraGalleryCard extends LitElement {
         // Enqueue poster pas na laden: voorkomt dat de capture de preview-verbinding blokkeert
         const urlForPoster = selectedUrl;
         video.addEventListener("canplay", () => {
-          if (!this._posterCache.has(urlForPoster)) this._enqueuePoster(urlForPoster);
+          if (!this._posterClient.getPosterUrl(urlForPoster)) {
+            this._posterClient.enqueue(urlForPoster);
+          }
         }, { once: true, signal: sig });
         // If the preview can't load (broken / corrupt / slow-network),
         // record the failure so the thumb gets a broken icon (hard
         // errors) or stays on the skeleton until the cooldown lapses
         // (soft errors — which is what 99% of slow-network blips are).
-        // Without this hook, the selected thumb sat on plain `.tph`
-        // because `_resolveVideoPoster` skips the capture for the
-        // selected URL (preview canplay was meant to handle it).
         video.addEventListener("error", () => {
           const code = video.error?.code;
           // MediaError.code: 1=ABORTED, 2=NETWORK, 3=DECODE, 4=SRC_NOT_SUPPORTED.
@@ -982,11 +819,8 @@ class CameraGalleryCard extends LitElement {
           // mark hard so we don't retry. 1 (aborted) & 2 (network)
           // can recover on a retry once the connection improves.
           const isHard = code === 3 || code === 4;
-          this._recordPosterFailure(urlForPoster, { hard: isHard });
-          if (isHard) {
-            const stableKey = this._posterStableKeys.get(urlForPoster) || urlForPoster;
-            this._lsThumbDelete(stableKey, urlForPoster);
-          }
+          this._posterClient.recordFailure(urlForPoster, { hard: isHard });
+          if (isHard) this._posterClient.dropCachedThumb(urlForPoster);
           this.requestUpdate();
         }, { once: true, signal: sig });
       }
@@ -1006,7 +840,7 @@ class CameraGalleryCard extends LitElement {
         video.load();
       } catch (_) {}
     } else {
-      const poster = this._posterCache.get(selectedUrl) || "";
+      const poster = this._posterClient.getPosterUrl(selectedUrl) || "";
       if (poster && video.poster !== poster) {
         video.poster = poster;
       }
@@ -3058,660 +2892,6 @@ class CameraGalleryCard extends LitElement {
     }
   }
 
-  // ─── Poster helpers ───────────────────────────────────────────────
-
-  /** True iff every URL we'd attempt to capture a poster from for this
-   * thumb has been recorded in `_posterFailed`. The render path uses
-   * this to swap an empty `.tph` for the broken-thumbnail UI instead.
-   *
-   * Why "every URL we'd attempt" rather than just one: poster capture
-   * for media-source items is keyed by the resolved URL (Frigate clip
-   * MP4, paired-jpg URL, browse_media thumb URL) — never by the raw
-   * `media-source://` id that the gallery item carries. Without
-   * walking the same fallback chain `_resolveVideoPoster` walks, MS
-   * failures just ghost as plain `.tph`. */
-  _isThumbBroken(it, isMs, thumbUrl, tThumb) {
-    // Only render the broken-icon state for *hard* failures (definitive
-    // 404 / codec / repeated soft fail past the attempt cap). Items
-    // still-soft-failed keep the skeleton — they'll re-attempt after
-    // the retry cooldown, which is the right answer for slow networks.
-    if (this._isPosterHardFailed(it.src)) return true;
-    if (!isMs) {
-      const pairedJpg = this._sensorClient.getSensorPairedThumbs().get(it.src);
-      return !!(pairedJpg && this._isPosterHardFailed(pairedJpg));
-    }
-    if (thumbUrl && this._isPosterHardFailed(thumbUrl)) return true;
-    if (tThumb && this._isPosterHardFailed(tThumb)) return true;
-    const pairedJpgId = this._mediaClient.getPairedThumbs().get(it.src);
-    if (pairedJpgId) {
-      const jpgUrl = this._mediaClient.getUrlCache().get(pairedJpgId) || "";
-      if (jpgUrl && this._isPosterHardFailed(jpgUrl)) return true;
-    }
-    // Frigate snapshot URL is the poster directly when configured —
-    // a 404 on that URL fires `<img onerror>` (see thumb render) which
-    // hard-marks it; surface that so the broken state lights up.
-    if (hasFrigateConfig(this.config)) {
-      const snapshotId = this._mediaClient.findMatchingSnapshotMediaId(it.src);
-      if (snapshotId) {
-        const snapshotUrl = this._mediaClient.getUrlCache().get(snapshotId) || "";
-        if (snapshotUrl && this._isPosterHardFailed(snapshotUrl)) return true;
-      }
-    }
-    return false;
-  }
-
-  /** True iff a fetch / capture is currently in flight (or queued)
-   * for any URL that could produce this item's poster. Walks the
-   * same fallback chain as `_resolveVideoPoster` so a download in
-   * progress on the paired-jpg or browse_media thumbnail counts.
-   *
-   * Render uses this to switch from the (idle) skeleton to the
-   * (active) spinner state — communicates "we're working on it"
-   * instead of "this might never load". */
-  _isPosterLoading(it, isMs, thumbUrl, tThumb) {
-    const isUrlLoading = (url) =>
-      !!url &&
-      (this._posterPending.has(url) ||
-        this._posterInFlight.has(url) ||
-        this._posterQueued.has(url));
-    if (isUrlLoading(it.src)) return true;
-    if (!isMs) {
-      const pairedJpg = this._sensorClient.getSensorPairedThumbs().get(it.src);
-      return isUrlLoading(pairedJpg);
-    }
-    if (isUrlLoading(thumbUrl)) return true;
-    if (isUrlLoading(tThumb)) return true;
-    const pairedJpgId = this._mediaClient.getPairedThumbs().get(it.src);
-    if (pairedJpgId) {
-      const jpgUrl = this._mediaClient.getUrlCache().get(pairedJpgId) || "";
-      if (isUrlLoading(jpgUrl)) return true;
-    }
-    return false;
-  }
-
-  /** True iff this video item has no possible poster source under the
-   * current config: no server-side thumbnail AND
-   * `capture_video_thumbnails` is explicitly off. Render shows a
-   * static "disabled" icon for these so users understand the absence
-   * is a config choice, not a failure. */
-  _willNeverLoad(it, isMs, tThumb) {
-    if (this.config?.capture_video_thumbnails !== false) return false;
-    return !this._hasServerThumbForVideo(it, isMs, tThumb);
-  }
-
-  /** True iff the gallery has a server-provided thumbnail for this
-   * item that we can fetch cheaply (small HTTP request) — meaning we
-   * don't need to fall back to expensive `<video>` frame capture.
-   *
-   * "Server-provided" = sensor paired-jpg sibling, Frigate snapshot,
-   * media-source `thumbnail` field, or a paired-jpg under a media
-   * root. When NONE of these exist for a video item, the only way to
-   * generate a poster is to download (potentially MBs of) the video
-   * file just to extract one frame. We defer that to the moment the
-   * user actually clicks the item — preview-video `canplay` then
-   * fires `_enqueuePoster(thumbUrl)` and the capture runs once.
-   *
-   * Render uses this to choose between the loading-skeleton (server
-   * thumb in flight) and the video-placeholder icon (no server thumb,
-   * waiting on click). */
-  _hasServerThumbForVideo(it, isMs, tThumb) {
-    if (!isMs) {
-      return !!this._sensorClient.getSensorPairedThumbs().get(it.src);
-    }
-    if (tThumb) return true;
-    if (hasFrigateConfig(this.config)) {
-      if (this._mediaClient.findMatchingSnapshotMediaId(it.src)) return true;
-    }
-    if (this._mediaClient.getPairedThumbs().get(it.src)) return true;
-    return false;
-  }
-
-  /** Called from the thumbnail `<img>` onerror. The browser's `<img>`
-   * decoder rejected the URL — usually a definitive failure (404 /
-   * decode error), so mark it hard right away. Don't bother with the
-   * soft-retry path since `<img>` won't retry on its own and we've
-   * already given the browser the URL once. */
-  _onThumbImgError(posterUrl) {
-    if (!posterUrl) return;
-    if (this._isPosterHardFailed(posterUrl)) return;
-    this._recordPosterFailure(posterUrl, { hard: true });
-    this.requestUpdate();
-  }
-
-  // Resolve the poster URL to render for a video thumb.
-  //
-  // Read-only: enqueues that previously fired inside this function are
-  // deferred via `_pendingResolveIds` / `_pendingPosterUrls` and
-  // dispatched from `updated()` after render commits. Keeps render()
-  // pure of network/queue side effects.
-  //
-  // Strategy:
-  //   1. Server-provided thumbnails (paired-jpg, Frigate snapshot,
-  //      browse_media `thumbnail`) are cheap HTTP fetches — enqueue
-  //      eagerly so they appear as the user scrolls.
-  //   2. The raw video URL (`thumbUrl`) is NEVER enqueued
-  //      speculatively. Pulling a frame out of the video means
-  //      downloading the full file (often MBs) just for one image —
-  //      brutal on slow connections and almost always wasted on
-  //      items the user never clicks. Instead, we surface any frame
-  //      previously captured (sitting in the IDB-backed mirror) and
-  //      otherwise return `""` so the render falls through to the
-  //      video-placeholder icon. The capture happens later, on
-  //      `<video>`'s `canplay` event from `_ensurePreviewVideoHostPlayback`,
-  //      which fires only when the user actually selects the item.
-  _resolveVideoPoster(it, isMs, thumbUrl, tThumb /* selectedUrl unused */) {
-    // Honor the user's "low-bandwidth" preference: when
-    // `capture_video_thumbnails` is false, the expensive `<video>`
-    // frame-extraction fallback is disabled entirely. Items without
-    // a server thumbnail stay on the placeholder icon.
-    const captureAllowed = this.config?.capture_video_thumbnails !== false;
-
-    if (!isMs) {
-      const pairedJpg = this._sensorClient.getSensorPairedThumbs().get(it.src);
-      if (pairedJpg) return this._posterCache.get(pairedJpg) || "";
-      // No paired jpg → would need video-frame capture (expensive).
-      // Surface any previously-captured frame from the IDB mirror;
-      // otherwise enqueue a fresh capture but ONLY when the thumb
-      // is currently in the viewport. Off-screen items stay on the
-      // placeholder so we don't burn bandwidth on items the user
-      // may never scroll to.
-      const cached = this._posterCache.get(it.src);
-      if (cached) return cached;
-      const mirrored = this._lsThumbGet(it.src);
-      if (mirrored) {
-        this._posterCache.set(it.src, mirrored);
-        return mirrored;
-      }
-      if (captureAllowed && this._revealedThumbs.has(it.src)) {
-        this._pendingPosterUrls?.add(it.src);
-      }
-      return "";
-    }
-
-    if (hasFrigateConfig(this.config)) {
-      const snapshotId = this._mediaClient.findMatchingSnapshotMediaId(it.src);
-      if (snapshotId) {
-        const snapshotUrl = this._mediaClient.getUrlCache().get(snapshotId) || "";
-        if (snapshotUrl) return snapshotUrl;
-        this._pendingResolveIds?.add(snapshotId);
-      }
-    }
-
-    // Paired thumbnail: same-stem jpg next to the mp4 (server thumbnail).
-    const pairedJpgId = this._mediaClient.getPairedThumbs().get(it.src);
-    if (pairedJpgId && !this._mediaClient.isResolveFailed(pairedJpgId)) {
-      const jpgUrl = this._mediaClient.getUrlCache().get(pairedJpgId) || "";
-      if (jpgUrl) {
-        // Persistent-cache key: the paired jpg's mediaId is stable;
-        // jpgUrl is a signed-and-expiring URL that would invalidate
-        // the cached blob on every session.
-        this._posterStableKeys.set(jpgUrl, pairedJpgId);
-        const cached = this._posterCache.get(jpgUrl);
-        if (cached) return cached;
-        const mirrored = this._lsThumbGet(pairedJpgId);
-        if (mirrored) {
-          this._posterCache.set(jpgUrl, mirrored);
-          return mirrored;
-        }
-        this._pendingPosterUrls?.add(jpgUrl);
-        return "";
-      }
-      this._pendingResolveIds?.add(pairedJpgId);
-      return "";
-    }
-
-    // browse_media `thumbnail` URL — server thumbnail, cheap.
-    if (tThumb) {
-      const cached = this._posterCache.get(tThumb);
-      if (cached) return cached;
-      this._pendingPosterUrls?.add(tThumb);
-      return "";
-    }
-
-    // Last resort: the resolved video URL. Same as the sensor branch
-    // above: prefer cached / IDB-mirrored frames; otherwise enqueue
-    // a capture only when the thumb is currently visible AND the
-    // user hasn't disabled the expensive capture path via the
-    // `capture_video_thumbnails` flag.
-    if (thumbUrl) {
-      // For media-source video frames the resolved URL is signed and
-      // expires every session — hash by `it.src` (mediaId) so the
-      // captured blob survives cmd-r and the disabled-config case
-      // can still show previously-captured frames.
-      this._posterStableKeys.set(thumbUrl, it.src);
-      const cached = this._posterCache.get(thumbUrl);
-      if (cached) return cached;
-      const mirrored = this._lsThumbGet(it.src);
-      if (mirrored) {
-        this._posterCache.set(thumbUrl, mirrored);
-        return mirrored;
-      }
-      if (captureAllowed && this._revealedThumbs.has(it.src)) {
-        this._pendingPosterUrls?.add(thumbUrl);
-      }
-    }
-    return "";
-  }
-
-  _captureFrame(src, pct = 0) {
-    return new Promise((resolve, reject) => {
-      const v = document.createElement("video");
-      v.muted = true;
-      v.setAttribute("muted", "");
-      v.playsInline = true;
-      v.preload = "metadata";
-
-      let timeout;
-      let retried = false;
-      // Single-shot guard: browsers can fire `seeked` synchronously
-      // (when the seek is a no-op) or twice for keyframe-bracketing
-      // seeks. Without this, the retry path could resolve and reject
-      // the same promise, or reject a frame `toBlob` is mid-encoding.
-      let settled = false;
-      const startedAt = (typeof performance !== "undefined" ? performance.now() : Date.now());
-      const cleanup = () => {
-        clearTimeout(timeout);
-        try { v.removeEventListener("seeked", onSeeked); } catch (_) {}
-        try { v.pause(); v.removeAttribute("src"); v.load(); } catch (_) {}
-      };
-      const fail = (err) => {
-        if (settled) return;
-        settled = true;
-        cleanup();
-        reject(err ?? new Error("poster fail"));
-      };
-      const ok = (blob) => {
-        if (settled) return;
-        settled = true;
-        cleanup();
-        resolve(blob);
-      };
-
-      // Sample the rendered frame to detect uniform decoder output —
-      // signature of a corrupt segment in an otherwise-decodable file.
-      // Three cases caught:
-      //   1. variance < 5      — uniform color (grey "no signal" tile,
-      //                          all-black, all-white).
-      //   2. mean < 6 && var < 30 — near-black with limited dithering.
-      //                          Real night cams run mean 10-30 with
-      //                          variance 50+ from sensor noise.
-      //   3. >97% near-black pixels — uniform black with a few stray
-      //                          noise pixels.
-      //
-      // Costly on mobile (`getImageData` forces a GPU→CPU readback),
-      // so we gate the call: run only when `pct > 0` (corruption risk
-      // exists since we seek into the middle/end), OR when the capture
-      // took unusually long (> 200ms — proxy for "decoder struggled").
-      // Returns `null` when the canvas is tainted (cross-origin), so
-      // the caller treats it as "assume valid".
-      const isBlankFrame = (ctx, w, h) => {
-        try {
-          const data = ctx.getImageData(0, 0, w, h).data;
-          let sum = 0;
-          let sumSq = 0;
-          let nearBlack = 0;
-          let n = 0;
-          for (let i = 0; i < data.length; i += 16) {
-            const luma = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
-            sum += luma;
-            sumSq += luma * luma;
-            if (luma < 8) nearBlack++;
-            n++;
-          }
-          if (!n) return false;
-          const mean = sum / n;
-          const variance = sumSq / n - mean * mean;
-          if (variance < 5) return true;
-          if (mean < 6 && variance < 30) return true;
-          if (nearBlack / n > 0.97) return true;
-          return false;
-        } catch {
-          return null;
-        }
-      };
-
-      const onSeeked = () => {
-        if (settled) return;
-        try {
-          const w = v.videoWidth, h = v.videoHeight;
-          if (!w || !h) return fail(new Error("no video dimensions"));
-          const scale = Math.min(1, 320 / w);
-          const c = document.createElement("canvas");
-          c.width = Math.max(1, Math.round(w * scale));
-          c.height = Math.max(1, Math.round(h * scale));
-          const ctx = c.getContext("2d");
-          ctx.drawImage(v, 0, 0, c.width, c.height);
-
-          // Blank-frame retry path. Skip the GPU readback entirely on
-          // the fast, common case (pct=0, fast capture) — start frames
-          // are almost never corrupt, and the readback is the costly
-          // step on mobile.
-          const elapsed =
-            (typeof performance !== "undefined" ? performance.now() : Date.now()) - startedAt;
-          const shouldCheckBlank = (Number(pct) || 0) > 0 || elapsed > 200;
-          if (shouldCheckBlank) {
-            const blank = isBlankFrame(ctx, c.width, c.height);
-            if (blank === true) {
-              if (!retried && (Number(pct) || 0) > 0) {
-                retried = true;
-                // Re-arm the listener (was consumed by `{ once: true }`)
-                // and explicitly remove first in case the runtime hasn't
-                // yet — defensive against double-fire on the next seek.
-                v.removeEventListener("seeked", onSeeked);
-                v.addEventListener("seeked", onSeeked, { once: true });
-                try { v.currentTime = 0.01; } catch (e) { return fail(e); }
-                return;
-              }
-              return fail(new Error("blank frame"));
-            }
-          }
-
-          // Blob-shaped output skips the base64 round-trip and stores
-          // ~33% smaller than the legacy `toDataURL`. The render layer
-          // gets a synchronous object URL via `URL.createObjectURL`.
-          c.toBlob(
-            (blob) => {
-              if (!blob) return fail(new Error("toBlob returned null"));
-              ok(blob);
-            },
-            "image/jpeg",
-            0.6
-          );
-        } catch (e) {
-          fail(e);
-        }
-      };
-
-      timeout = setTimeout(() => fail(new Error("poster timeout")), POSTER_CAPTURE_TIMEOUT_MS);
-      v.addEventListener(
-        "error",
-        () => {
-          const err = new Error("video load error");
-          // MediaError.code: 2 = NETWORK (often 404), 4 = SRC_NOT_SUPPORTED
-          // (usually codec but browsers also report 4 for missing files).
-          // _ensurePoster uses this to decide whether to drop a stale
-          // cached thumb.
-          err.mediaErrorCode = v.error?.code;
-          fail(err);
-        },
-        { once: true }
-      );
-      v.addEventListener("loadedmetadata", () => {
-        const dur = Number.isFinite(v.duration) && v.duration > 0 ? v.duration : 0;
-        const p = Math.max(0, Math.min(100, Number(pct) || 0));
-        // Seek slightly off the boundaries — exact 0 or duration often yields no frame.
-        let t = 0.01;
-        if (dur && p > 0) t = p === 100 ? Math.max(0.01, dur - 0.05) : dur * (p / 100);
-        try { v.currentTime = t; } catch (_) { onSeeked(); }
-      }, { once: true });
-      v.addEventListener("seeked", onSeeked, { once: true });
-
-      v.src = src;
-      try { v.load(); } catch (_) {}
-    });
-  }
-
-  // Salt the localStorage key with the current frame %, so changing the % invalidates
-  // cached frames without needing to wipe storage.
-  _lsKey(url) {
-    const pct = this.config?.thumbnail_frame_pct ?? DEFAULT_THUMBNAIL_FRAME_PCT;
-    return "cgc_p_" + fnv1aHash(url + "|" + pct);
-  }
-
-  // ─── Poster persistent cache ──────────────────────────────────────
-  //
-  // Backing store is IndexedDB via `posterStore` (binary `Blob` records,
-  // ~33% smaller on disk than the legacy base64 dataUrl shape). The
-  // render layer needs a synchronous string URL, so the in-memory
-  // `_posterMirror` map keeps `Blob` refs alongside lazily-created
-  // `URL.createObjectURL` strings. Reads return the cached URL or
-  // create one on demand; writes overwrite-revoke before persisting.
-  //
-  // If IDB is unavailable (private-browsing Safari, sandboxed embeds)
-  // the in-memory mirror still works for the lifetime of the page —
-  // just nothing crosses page reloads. That's acceptable for thumbnails.
-  _prewarmPosterLs() {
-    if (!this._posterMirror) this._posterMirror = new Map();
-    // Single shared promise — `_ensurePoster` and the render branch
-    // both observe it. Resolves regardless of success so awaits never
-    // hang on storage failures.
-    this._prewarmReadyPromise = posterStore
-      .readAll()
-      .then((records) => {
-        if (this._posterMirror) {
-          // In-flight captures during prewarm have already populated
-          // their entries — preserve those (fresh > disk).
-          for (const rec of records) {
-            if (this._posterMirror.has(rec.key)) continue;
-            this._posterMirror.set(rec.key, { blob: rec.blob, url: null });
-          }
-        }
-      })
-      .catch(() => {})
-      .finally(() => {
-        this._prewarmDone = true;
-        // Pull freshly-warmed posters into view without waiting for
-        // the next hass push.
-        this.requestUpdate();
-      });
-    // Trim disk store so it never exceeds the cap. Best-effort.
-    posterStore.evictExcess(500).catch(() => {});
-  }
-
-  _posterMirrorEnsureUrl(entry) {
-    if (entry.url) return entry.url;
-    try {
-      entry.url = URL.createObjectURL(entry.blob);
-    } catch (_) {
-      return null;
-    }
-    return entry.url;
-  }
-
-  _lsThumbGet(url) {
-    if (!this._posterMirror) return null;
-    const key = this._lsKey(url);
-    const entry = this._posterMirror.get(key);
-    if (!entry) return null;
-    // LRU: move the entry to the end of the Map so eviction (which
-    // pops `keys().next().value`) drops the genuinely-coldest entry.
-    // `Map.set` on an existing key keeps insertion position, so we
-    // delete-then-set to relocate.
-    this._posterMirror.delete(key);
-    this._posterMirror.set(key, entry);
-    // Mirror the bump on disk too (best-effort) so cold restarts inherit
-    // hot/cold ordering.
-    posterStore.touch(key).catch(() => {});
-    return this._posterMirrorEnsureUrl(entry);
-  }
-
-  /** Persist a captured Blob under `stableKey` and return a usable
-   * object URL. `stableKey` is what we hash for IDB lookup (stable
-   * across sessions for media-source items); `displayUrl` is what
-   * the render layer hands to `<img src>` — stored in the mirror
-   * entry so eviction can clear the right `_posterCache` slot.
-   * When the two are the same (sensor mode), pass `undefined` for
-   * `displayUrl` and stableKey will be used for both.
-   * Revokes any prior URL for the same key so we don't leak
-   * browser-side blob references. Caps the mirror at 500 entries
-   * (LRU eviction). */
-  _lsThumbSet(stableKey, blob, displayUrl) {
-    if (!blob) return null;
-    const back = displayUrl ?? stableKey;
-    const key = this._lsKey(stableKey);
-    if (!this._posterMirror) this._posterMirror = new Map();
-    const prev = this._posterMirror.get(key);
-    if (prev?.url) {
-      try { URL.revokeObjectURL(prev.url); } catch (_) {}
-    }
-    // Delete first so re-setting moves the key to the end of the Map's
-    // insertion order — keeps the LRU semantics aligned with `_lsThumbGet`.
-    this._posterMirror.delete(key);
-    const MAX_MIRROR = 500;
-    while (this._posterMirror.size >= MAX_MIRROR) {
-      const firstKey = this._posterMirror.keys().next().value;
-      if (!firstKey) break;
-      const oldest = this._posterMirror.get(firstKey);
-      if (oldest?.url) {
-        try { URL.revokeObjectURL(oldest.url); } catch (_) {}
-      }
-      if (oldest?.src) this._posterCache.delete(oldest.src);
-      this._posterMirror.delete(firstKey);
-    }
-    const entry = { src: back, blob, url: null };
-    this._posterMirror.set(key, entry);
-    posterStore.set(key, blob).catch(() => {});
-    return this._posterMirrorEnsureUrl(entry);
-  }
-
-  // Drops a cached thumbnail. Used when the underlying file is
-  // confirmed missing (HTTP 404 / MediaError NETWORK) so a deleted
-  // file's stale cached thumb stops being shown on next render.
-  //
-  // `stableKey` matches what was used in `_lsThumbSet` (mediaId for
-  // media-source items, file path for sensor). `displayUrl` is the
-  // URL currently stored in `_posterCache` and gets cleared too —
-  // `_ensurePoster` early-returns on a cache hit, so leaving the
-  // (now-revoked) URL there would block the next capture attempt and
-  // render a broken `<img src="blob:revoked">`.
-  _lsThumbDelete(stableKey, displayUrl) {
-    const back = displayUrl ?? stableKey;
-    const key = this._lsKey(stableKey);
-    const prev = this._posterMirror?.get(key);
-    if (prev?.url) {
-      try { URL.revokeObjectURL(prev.url); } catch (_) {}
-    }
-    this._posterMirror?.delete(key);
-    this._posterCache.delete(back);
-    posterStore.delete(key).catch(() => {});
-  }
-
-  async _fetchProtectedAsBlob(src) {
-    const token = this._hass?.auth?.data?.access_token;
-    if (!token) return null;
-    // Bound the wait. Without this, a slow-network fetch sits open
-    // indefinitely while the queue is starved on the connection limit.
-    // AbortError surfaces as `name === "AbortError"` so `_ensurePoster`
-    // can classify it as soft (timeout) rather than hard (broken file).
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), POSTER_FETCH_TIMEOUT_MS);
-    try {
-      const res = await fetch(window.location.origin + src, {
-        headers: { Authorization: `Bearer ${token}` },
-        signal: ctrl.signal,
-      });
-      if (res.status === 404) {
-        // Throw with a marker so _ensurePoster can drop the stale cached
-        // thumb for files that have been deleted on disk.
-        const err = new Error("not found");
-        err.status = 404;
-        throw err;
-      }
-      if (!res.ok) return null;
-      return await res.blob();
-    } finally {
-      clearTimeout(timer);
-    }
-  }
-
-  async _ensurePoster(src) {
-    if (!src || this._posterCache.has(src) || this._posterPending.has(src)) return;
-    if (this._isPosterHardFailed(src)) return;
-    if (this._isPosterCoolingDown(src)) return;
-
-    // Persistent-cache identifier (defaults to the fetch URL for
-    // paths where the URL is itself stable — sensor mode). For
-    // media-source items this is the mediaId, so a cached frame
-    // survives across sessions even though the signed URL changes.
-    const stableKey = this._posterStableKeys.get(src) || src;
-
-    // Wait for the IDB prewarm to land before checking cache. On cmd-r
-    // the render that triggered this call sees an empty mirror because
-    // `posterStore.readAll()` is async — without the await we'd race
-    // the network and re-download blobs that are already on disk.
-    if (this._prewarmReadyPromise && !this._prewarmDone) {
-      await this._prewarmReadyPromise;
-      // State may have changed during the await (selection moved,
-      // failure recorded by another path, cache populated by prewarm).
-      if (this._posterCache.has(src)) return;
-      if (this._isPosterHardFailed(src)) return;
-      if (this._isPosterCoolingDown(src)) return;
-    }
-
-    const cached = this._lsThumbGet(stableKey);
-    if (cached) {
-      this._posterCache.set(src, cached);
-      // Successful read clears any prior soft-fail state so a previously
-      // flaky URL gets a clean slate next time.
-      this._clearPosterFailure(src);
-      this.requestUpdate();
-      return;
-    }
-
-    this._posterPending.add(src);
-    try {
-      // Auth-protected HA image thumbnails (browse_media) need a Bearer fetch.
-      // Videos always go through _captureFrame to extract a still — never inline the file.
-      const blob = src.startsWith("/") && !isVideo(src)
-        ? await this._fetchProtectedAsBlob(src)
-        : await this._captureFrame(
-            src,
-            this.config?.thumbnail_frame_pct ?? DEFAULT_THUMBNAIL_FRAME_PCT
-          );
-      if (blob) {
-        // Persist by stableKey (mediaId for MS items, URL for sensor)
-        // but cache the resulting object URL by `src` so render's
-        // `<img src>` lookup hits.
-        const objectUrl = this._lsThumbSet(stableKey, blob, src);
-        if (objectUrl) {
-          this._posterCache.set(src, objectUrl);
-          this._clearPosterFailure(src);
-        } else {
-          // toBlob/createObjectURL produced nothing usable — soft fail
-          // (likely a transient resource issue, not a broken file).
-          this._recordPosterFailure(src);
-        }
-      } else {
-        // !res.ok branch in `_fetchProtectedAsBlob` (non-404). Could
-        // be a 5xx that'll recover, so soft-fail and let the cooldown
-        // gate retries.
-        this._recordPosterFailure(src);
-      }
-    } catch (e) {
-      const status = e?.status;
-      const code = e?.mediaErrorCode;
-      const msg = String(e?.message ?? "");
-      // Hard failures: anything that won't recover on retry. The
-      // rule of thumb is "the file got here but we can't make a
-      // frame out of it" — retrying won't help. That covers 404
-      // (file gone), codec errors (3, 4), and post-download
-      // extraction failures (blank frame, toBlob null, tainted
-      // canvas).
-      //
-      // Soft failures stay soft: capture timeout, fetch AbortError,
-      // MEDIA_ERR_NETWORK (2), MEDIA_ERR_ABORTED (1), 5xx — these
-      // are likely to succeed on a retry once the connection
-      // catches up.
-      const isExtractionFail =
-        msg === "blank frame" ||
-        msg === "toBlob returned null" ||
-        msg === "no video dimensions";
-      const isHard =
-        status === 404 ||
-        code === 3 /* MEDIA_ERR_DECODE */ ||
-        code === 4 /* MEDIA_ERR_SRC_NOT_SUPPORTED */ ||
-        isExtractionFail;
-      this._recordPosterFailure(src, { hard: isHard });
-      if (status === 404) this._lsThumbDelete(stableKey, src);
-    } finally {
-      this._posterPending.delete(src);
-      // Mapping is per-fetch; drop it now that this fetch has settled.
-      // Render will re-populate on next cycle if the item still needs
-      // a capture.
-      this._posterStableKeys.delete(src);
-      this.requestUpdate();
-    }
-  }
 
 
   /**
@@ -4450,12 +3630,12 @@ class CameraGalleryCard extends LitElement {
     this._favorites.load(this.config);
     this._sensorClient.load(this.config);
     this._mediaClient.load(this.config);
+    this._posterClient.load(this.config);
     this._startMediaPoll();
 
-    // Prewarm the poster localStorage cache once on the first setConfig.
-    // Reads up to 150 cached entries into memory in a single sync batch so
-    // subsequent renders can answer `_lsThumbGet` without touching LS.
-    if (!prevConfig) this._prewarmPosterLs();
+    // Prewarm the IDB-backed poster mirror once. `prewarm()` is idempotent;
+    // the client coalesces concurrent calls into a single shared promise.
+    if (!prevConfig) void this._posterClient.prewarm();
 
     const { changedKeys, isSourceChange: sourceChange, isUiOnly: uiOnlyChange } =
       configDiff(prevConfig, nextConfig);
@@ -4528,10 +3708,7 @@ class CameraGalleryCard extends LitElement {
       this._selectedIndex = 0;
       this._selectedSet.clear();
       this._hideBulkDeleteHint();
-      this._resetPosterQueue();
-      this._posterCache.clear();
-      this._posterPending.clear();
-      this._posterAttempts.clear();
+      this._posterClient.clearPosterCache();
       this._objectCache.clear();
     }
 
@@ -4662,18 +3839,19 @@ class CameraGalleryCard extends LitElement {
       }
     }
 
-    // Drain the pending work `_resolveVideoPoster` collected during
-    // render(). Both queues internally dedup; this is a deduplicated
-    // batch dispatch that runs after the DOM commit, so any
+    // Drain the pending work `client.resolveVideoPoster` collected during
+    // render(). Batch dispatch runs after the DOM commit, so any
     // `requestUpdate` triggered by the queue draining doesn't re-enter
-    // the current render cycle.
-    if (this._pendingResolveIds && this._pendingResolveIds.size) {
-      this._mediaClient.queueResolve([...this._pendingResolveIds]);
-      this._pendingResolveIds.clear();
-    }
-    if (this._pendingPosterUrls && this._pendingPosterUrls.size) {
-      for (const url of this._pendingPosterUrls) this._enqueuePoster(url);
-      this._pendingPosterUrls.clear();
+    // the current render cycle. The collector also carries (url, stableKey)
+    // tuples for media-source items whose resolved URL rotates each session.
+    if (this._pendingPoster) {
+      if (this._pendingPoster.resolveIds.size) {
+        this._mediaClient.queueResolve([...this._pendingPoster.resolveIds]);
+      }
+      for (const { url, stableKey } of this._pendingPoster.posters) {
+        this._posterClient.enqueue(url, stableKey);
+      }
+      this._pendingPoster = null;
     }
 
     if (this._isLiveActive()) {
@@ -4718,7 +3896,7 @@ class CameraGalleryCard extends LitElement {
               // in `_ensurePreviewVideoHostPlayback`.
               if (isSensor && key && isVideo(key)) {
                 const pairedJpg = this._sensorClient.getSensorPairedThumbs().get(key);
-                if (pairedJpg) this._enqueuePoster(pairedJpg);
+                if (pairedJpg) this._posterClient.enqueue(pairedJpg);
               }
             }
           }
@@ -4741,11 +3919,11 @@ class CameraGalleryCard extends LitElement {
   render() {
     if (!this._hass || !this.config) return html``;
 
-    // Reset per-render pending-work collectors. `_resolveVideoPoster`
-    // pushes work into these instead of side-effecting the queues
-    // mid-render; `updated()` drains them after the DOM is committed.
-    this._pendingResolveIds = new Set();
-    this._pendingPosterUrls = new Set();
+    // Per-render pending-work collector. `client.resolveVideoPoster` pushes
+    // (url, stableKey?) tuples and snapshot mediaIds into this instead of
+    // side-effecting the client mid-render; `updated()` drains it after the
+    // DOM is committed.
+    this._pendingPoster = new PendingPosterCollector();
 
     const usingMediaSource = this.config?.source_mode === "media" || this.config?.source_mode === "combined";
     const thumbRatio = "1 / 1";
@@ -5179,13 +4357,13 @@ class CameraGalleryCard extends LitElement {
                     );
 
                     let poster = isVid
-                      ? this._resolveVideoPoster(it, isMs, thumbUrl, tThumb, selectedUrl)
+                      ? this._posterClient.resolveVideoPoster(it, isMs, thumbUrl, tThumb, this._pendingPoster)
                       : thumbUrl;
                     // For unresolved MS images, use the browse_media thumbnail as fallback
                     // so the thumbnail appears immediately while the full URL is still resolving
                     if (!isVid && !poster && isMs && tThumb) {
-                      poster = this._posterCache.get(tThumb) || "";
-                      if (!poster) this._enqueuePoster(tThumb);
+                      poster = this._posterClient.getPosterUrl(tThumb) || "";
+                      if (!poster) this._posterClient.enqueue(tThumb);
                     }
 
                     const needsResolve = isMs;
@@ -5267,17 +4445,17 @@ class CameraGalleryCard extends LitElement {
                               class="timg"
                               src="${poster}"
                               alt=""
-                              @error=${() => this._onThumbImgError(poster)}
+                              @error=${() => this._posterClient.onThumbImgError(poster)}
                             />`
-                          : this._isThumbBroken(it, isMs, thumbUrl, tThumb)
+                          : this._posterClient.isThumbBroken(it, isMs, thumbUrl, tThumb)
                             ? html`<div class="tph broken" aria-hidden="true">
                                 <ha-icon icon="mdi:image-broken-variant"></ha-icon>
                               </div>`
-                            : isVid && this._prewarmDone && this._willNeverLoad(it, isMs, tThumb)
+                            : isVid && this._posterClient.isPrewarmDone() && this._posterClient.willNeverLoad(it, isMs, tThumb)
                               ? html`<div class="tph disabled" aria-hidden="true" title="Thumbnail capture is off">
                                   <ha-icon icon="mdi:cloud-off-outline"></ha-icon>
                                 </div>`
-                              : this._isPosterLoading(it, isMs, thumbUrl, tThumb)
+                              : this._posterClient.isPosterLoading(it, isMs, thumbUrl, tThumb)
                                 ? html`<div class="tph spinner" aria-hidden="true"></div>`
                                 : html`<div class="tph skeleton" aria-hidden="true"></div>`}
 

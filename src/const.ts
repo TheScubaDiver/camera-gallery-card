@@ -98,8 +98,31 @@ export const POSTER_FETCH_TIMEOUT_MS = 15_000;
  * and surface the broken-icon state. */
 export const POSTER_MAX_ATTEMPTS = 3;
 /** Minimum gap between retries for a soft-failed (timeout / network)
- * URL. Stops a flaky connection from spinning the queue. */
+ * URL after at least one prior attempt has cooled down once. Stops a
+ * flaky connection from spinning the queue. */
 export const POSTER_RETRY_DELAY_MS = 30_000;
+/**
+ * First-attempt retry floor. A single soft fail is almost always a
+ * transient blip (DNS, 502, mid-buffer abort) — gating it behind the
+ * full 30 s `POSTER_RETRY_DELAY_MS` left users staring at a skeleton
+ * for half a minute after a momentary glitch. Two seconds is long
+ * enough to avoid a tight retry loop, short enough that the next
+ * render cycle recovers the thumb. Audit A3.
+ */
+export const POSTER_RETRY_FIRST_DELAY_MS = 2_000;
+/** Maximum number of records held in the in-memory `_posterMirror`
+ * map (which bridges IDB blobs to render-side object URLs). Kept in
+ * sync with `posterStore`'s on-disk eviction target so the two never
+ * drift. Audit A18 / A21. */
+export const POSTER_MIRROR_MAX_ENTRIES = 500;
+/** Downscale ceiling for captured posters. The gallery thumb is
+ * smaller than this on every layout — capturing larger just wastes
+ * IDB quota. Audit A15. */
+export const MAX_POSTER_WIDTH_PX = 320;
+/** JPEG quality for captured posters. 0.6 balances visible quality
+ * against IDB footprint; bumped to 0.8+ shows no visible improvement
+ * at 320 px wide. Audit A15. */
+export const POSTER_JPEG_QUALITY = 0.6;
 
 // -------- Long-press gestures --------
 export const THUMB_LONG_PRESS_MOVE_PX = 12;
