@@ -183,9 +183,9 @@ export const cameraGalleryCardConfigStruct = type({
   // ─── Object filters ────────────────────────────────────────
   // The loose `string | { name: icon }` input shape is unwrapped in
   // `normalize.ts`'s pre-migrate step, which splits it into:
-  //   - `object_filters: string[]` (just the canonical names, here)
+  //   - `object_filters: string[]` (canonical names + user-defined customs)
   //   - `customIcons: Record<string, string>` (returned alongside the config)
-  object_filters: defaulted(array(enums(AVAILABLE_OBJECT_FILTERS)), []),
+  object_filters: defaulted(array(string()), []),
   object_colors: defaulted(record(string(), string()), {}),
   entity_filter_map: defaulted(record(string(), enums(AVAILABLE_OBJECT_FILTERS)), {}),
 

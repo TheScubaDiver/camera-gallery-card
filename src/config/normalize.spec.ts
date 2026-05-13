@@ -347,12 +347,12 @@ describe("object_filters loose input shape", () => {
     expect(customIcons).toEqual({ person: "mdi:walk" });
   });
 
-  it("silently drops unknown filter names (legacy behaviour)", () => {
+  it("preserves custom (non-canonical) filter names", () => {
     const { config } = normalizeConfig({
       ...minimalSensor,
       object_filters: ["person", "ufo", "car"],
     });
-    expect(config.object_filters).toEqual(["person", "car"]);
+    expect(config.object_filters).toEqual(["person", "ufo", "car"]);
   });
 });
 
