@@ -137,6 +137,16 @@ export const THUMB_LONG_PRESS_MS = 520;
  */
 export const YEAR_2DIGIT_PIVOT = 2000;
 
+// -------- Diagnostics --------
+
+/**
+ * Threshold for the diagnostics "Last fetch" row to render `ok` vs `warn`.
+ * Five minutes — longer than the longest healthy media-source refresh
+ * cadence on a busy install, short enough that a hung walker shows up as
+ * degraded before users hit reload.
+ */
+export const FRESH_FETCH_WINDOW_MS = 5 * 60 * 1000;
+
 // -------- Object-filter UI --------
 export const MAX_VISIBLE_OBJECT_FILTERS = 9;
 
