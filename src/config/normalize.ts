@@ -134,6 +134,7 @@ export interface InputConfig {
   thumbnail_frame_pct?: number;
   capture_video_thumbnails?: boolean;
   pill_size?: number;
+  row_gap?: number;
   card_height?: number;
   aspect_ratio?: string;
   object_fit?: string;

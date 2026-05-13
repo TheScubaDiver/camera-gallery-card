@@ -53,6 +53,7 @@ const UI_ONLY_KEYS = new Set<ConfigKey>([
   "preview_close_on_tap",
   "preview_position",
   "pill_size",
+  "row_gap",
   "thumb_bar_position",
   "thumb_layout",
   "thumb_size",

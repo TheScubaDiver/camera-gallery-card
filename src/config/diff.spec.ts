@@ -30,6 +30,7 @@ const baseConfig = (overrides: Partial<CameraGalleryCardConfig> = {}): CameraGal
     thumb_sort_order: "newest",
     thumbnail_frame_pct: 0,
     pill_size: 14,
+    row_gap: 8,
     aspect_ratio: "16:9",
     object_fit: "cover",
     controls_mode: "overlay",

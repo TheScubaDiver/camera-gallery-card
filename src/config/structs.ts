@@ -64,6 +64,9 @@ import {
   PILL_SIZE_DEFAULT,
   PILL_SIZE_MAX,
   PILL_SIZE_MIN,
+  ROW_GAP_DEFAULT,
+  ROW_GAP_MAX,
+  ROW_GAP_MIN,
   PREVIEW_POSITIONS,
   SOURCE_MODES,
   START_MODES,
@@ -207,6 +210,7 @@ export const cameraGalleryCardConfigStruct = type({
   // mp4 files just for one frame isn't worth the bandwidth.
   capture_video_thumbnails: defaulted(boolean(), true),
   pill_size: defaulted(intInRange(PILL_SIZE_MIN, PILL_SIZE_MAX), PILL_SIZE_DEFAULT),
+  row_gap: defaulted(intInRange(ROW_GAP_MIN, ROW_GAP_MAX), ROW_GAP_DEFAULT),
   card_height: defaulted(intInRange(CARD_HEIGHT_MIN, CARD_HEIGHT_MAX), CARD_HEIGHT_DEFAULT),
   aspect_ratio: defaulted(enums(ASPECT_RATIOS), DEFAULT_ASPECT_RATIO),
   object_fit: defaulted(enums(OBJECT_FITS), DEFAULT_OBJECT_FIT),
