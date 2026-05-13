@@ -466,9 +466,9 @@ function preMigrateConfig(input: InputConfig): PreMigrated {
   }
 
   // object_filters: unwrap the loose `string | {name: icon}` input shape into
-  // a clean string array + a `customIcons` side-output. Unknown filter names
-  // are silently dropped (legacy behaviour preserved — old configs may
-  // reference filters that have since been renamed).
+  // a clean string array + a `customIcons` side-output. Custom names that are
+  // not in `KNOWN_FILTERS` are kept as-is so users can add their own labels
+  // (e.g. matching custom Frigate object types or filename tokens).
   const customIcons: Record<string, string> = {};
   const ofIn = out.object_filters;
   const ofRaw: ObjectFilterEntry[] = Array.isArray(ofIn) ? ofIn : ofIn ? [ofIn] : [];
@@ -488,7 +488,7 @@ function preMigrateConfig(input: InputConfig): PreMigrated {
         icon = first[1];
       }
     }
-    if (!name || ofSeen.has(name) || !KNOWN_FILTERS.has(name)) continue;
+    if (!name || ofSeen.has(name)) continue;
     ofSeen.add(name);
     ofOut.push(name);
     if (icon) customIcons[name] = icon;
