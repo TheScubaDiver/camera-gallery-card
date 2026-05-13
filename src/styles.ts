@@ -168,7 +168,8 @@ export const cardStyles = css`
     width: 100dvw;
     height: 100dvh;
   }
-  .img-fs-overlay img {
+  .img-fs-overlay img,
+  .img-fs-overlay video {
     max-width: 100%;
     max-height: 100%;
     object-fit: contain;

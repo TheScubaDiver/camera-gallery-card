@@ -267,6 +267,20 @@ class CameraGalleryCard extends LitElement {
     this._zoomPanBaseY = 0;
 
 
+    this._onLiveCameraKeydown = (e) => {
+      if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+      if (!this._isLiveActive()) return;
+      if (this._imgFsOpen) return;
+      if (this._getLiveCameraOptions().length <= 1) return;
+      const tag = (e.target?.tagName || "").toLowerCase();
+      if (tag === "input" || tag === "textarea" || tag === "select" || e.target?.isContentEditable) return;
+      const focusInside = this.contains(document.activeElement);
+      const hovered = this.matches(":hover");
+      if (!focusInside && !hovered) return;
+      e.preventDefault();
+      this._navLiveCamera(e.key === "ArrowRight" ? 1 : -1);
+    };
+
     this._onFullscreenChange = () => {
       const isFs = document.fullscreenElement === this || document.webkitFullscreenElement === this;
       if (isFs) {
@@ -468,6 +482,7 @@ class CameraGalleryCard extends LitElement {
     this.addEventListener('mousedown', this._onZoomMouseDown);
     window.addEventListener('mousemove', this._onZoomMouseMove);
     window.addEventListener('mouseup', this._onZoomMouseUp);
+    window.addEventListener('keydown', this._onLiveCameraKeydown);
     if (navigator.maxTouchPoints > 0) this._showPills(5000);
     this._startMediaPoll();
     // Idempotent — if hass isn't set yet, returns early; the firstHass branch
@@ -489,6 +504,7 @@ class CameraGalleryCard extends LitElement {
     this.removeEventListener('mousedown', this._onZoomMouseDown);
     window.removeEventListener('mousemove', this._onZoomMouseMove);
     window.removeEventListener('mouseup', this._onZoomMouseUp);
+    window.removeEventListener('keydown', this._onLiveCameraKeydown);
     if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
 
     this._stopMediaPoll();
@@ -1651,13 +1667,34 @@ class CameraGalleryCard extends LitElement {
 
   _openImageFullscreen() {
     this._imgFsOpen = true;
+    try { this._previewVideoEl?.pause(); } catch (_) {}
     try { screen.orientation?.lock?.("landscape"); } catch (_) {}
     this._showPills();
+    if (!this._onImgFsKeydown) {
+      this._onImgFsKeydown = (e) => {
+        if (!this._imgFsOpen) return;
+        if (e.key === "Escape") {
+          e.preventDefault();
+          this._closeImageFullscreen();
+          return;
+        }
+        if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+          const dir = e.key === "ArrowRight" ? 1 : -1;
+          const { items } = this._currentFilteredItems();
+          this._navImgFs(dir, items.length);
+          e.preventDefault();
+        }
+      };
+    }
+    window.addEventListener("keydown", this._onImgFsKeydown);
     this.requestUpdate();
   }
 
   _closeImageFullscreen() {
     this._imgFsOpen = false;
+    if (this._onImgFsKeydown) {
+      window.removeEventListener("keydown", this._onImgFsKeydown);
+    }
     try { screen.orientation?.unlock?.(); } catch (_) {}
     this.requestUpdate();
   }
@@ -2710,6 +2747,18 @@ class CameraGalleryCard extends LitElement {
     return this._pipeline.getBaseList();
   }
 
+  _currentFilteredItems() {
+    const usingMediaSource = this.config?.source_mode === "media" || this.config?.source_mode === "combined";
+    const base = this._computeBaseList();
+    const filteredAll = (base?.objFiltered || []).filter((x) =>
+      this._matchesTypeFilter(x.src) &&
+      (!this._filterFavorites || this._favorites.has(x.src))
+    );
+    const cap = (this.config?.max_media ?? DEFAULT_MAX_MEDIA);
+    const items = filteredAll.slice(0, Math.min(cap, filteredAll.length));
+    return { items, usingMediaSource };
+  }
+
   _allKnownDays(itemsWithDay) {
     return this._pipeline.getAllDays(itemsWithDay);
   }
@@ -2720,6 +2769,17 @@ class CameraGalleryCard extends LitElement {
 
   _isVideoSmart(urlOrTitle, mime, cls) {
     return isVideoSmart(urlOrTitle, mime, cls);
+  }
+
+  _navImgFs(dir, listLen) {
+    if (!this._imgFsOpen) return;
+    const cur = this._selectedIndex ?? 0;
+    const target = cur + (dir > 0 ? 1 : -1);
+    if (target < 0 || target >= listLen) return;
+    this._resetZoom?.();
+    this._selectedIndex = target;
+    this._pendingScrollToI = this._selectedIndex;
+    this.requestUpdate();
   }
 
   _resetThumbScrollToStart() {
@@ -3681,7 +3741,7 @@ class CameraGalleryCard extends LitElement {
     `;
     const galleryPillsRight = html`
       <div class="gallery-pills-right">
-        ${!selectedIsVideo && selectedHasUrl && !noResultsForFilter ? html`
+        ${selectedHasUrl && !noResultsForFilter ? html`
           <button class="gallery-pill live-pill-btn" @pointerdown=${(e) => e.stopPropagation()} @click=${(e) => { e.stopPropagation(); this._openImageFullscreen(); }}>
             <ha-icon icon="mdi:fullscreen"></ha-icon>
           </button>
@@ -4250,7 +4310,19 @@ class CameraGalleryCard extends LitElement {
 
         ${this._imgFsOpen && selectedUrl ? html`
           <div class="img-fs-overlay" @click=${() => this._closeImageFullscreen()}>
-            <img src=${selectedUrl} alt="" @click=${(e) => e.stopPropagation()} />
+            ${selectedIsVideo
+              ? html`<video src=${selectedUrl} controls autoplay playsinline ?muted=${this._galleryMuted} @click=${(e) => e.stopPropagation()}></video>`
+              : html`<img src=${selectedUrl} alt="" @click=${(e) => e.stopPropagation()} />`}
+            ${filtered.length > 1 ? html`
+              <div class="pnav img-fs-nav">
+                <button class="pnavbtn left" ?disabled=${idx <= 0} @pointerdown=${(e) => e.stopPropagation()} @click=${(e) => { e.stopPropagation(); this._navImgFs(-1, filtered.length); }}>
+                  <ha-icon icon="mdi:chevron-left"></ha-icon>
+                </button>
+                <button class="pnavbtn right" ?disabled=${idx >= filtered.length - 1} @pointerdown=${(e) => e.stopPropagation()} @click=${(e) => { e.stopPropagation(); this._navImgFs(1, filtered.length); }}>
+                  <ha-icon icon="mdi:chevron-right"></ha-icon>
+                </button>
+              </div>
+            ` : html``}
             <button class="img-fs-close" @pointerdown=${(e) => e.stopPropagation()} @click=${(e) => { e.stopPropagation(); this._closeImageFullscreen(); }}>
               <ha-icon icon="mdi:fullscreen-exit"></ha-icon>
             </button>
