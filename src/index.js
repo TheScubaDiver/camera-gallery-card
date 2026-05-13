@@ -3742,7 +3742,7 @@ class CameraGalleryCard extends LitElement {
     const galleryPillsRight = html`
       <div class="gallery-pills-right">
         ${selectedHasUrl && !noResultsForFilter ? html`
-          <button class="gallery-pill live-pill-btn" @pointerdown=${(e) => e.stopPropagation()} @click=${(e) => { e.stopPropagation(); this._openImageFullscreen(); }}>
+          <button class="gallery-pill live-pill-btn" style="flex-shrink:0;width:calc(var(--cgc-pill-size,14px)*1.6 + 2px);height:calc(var(--cgc-pill-size,14px)*1.6 + 2px);padding:0" @pointerdown=${(e) => e.stopPropagation()} @click=${(e) => { e.stopPropagation(); this._openImageFullscreen(); }}>
             <ha-icon icon="mdi:fullscreen"></ha-icon>
           </button>
         ` : html``}
