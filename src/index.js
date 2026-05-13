@@ -241,6 +241,11 @@ class CameraGalleryCard extends LitElement {
     this._viewMode = "media";
     this._liveSelectedCamera = "";
     this._liveMuted = false;
+    // Gallery video mute state. Mirrors the live-view pattern: the
+    // initial value comes from `config.auto_muted` (default true), but
+    // the user can override at runtime via the gallery mute pill — that
+    // override sticks until the next config change.
+    this._galleryMuted = true;
     this._liveFullscreen = false;
     this._imgFsOpen = false;
     this._hamburgerOpen = false;
@@ -752,10 +757,9 @@ class CameraGalleryCard extends LitElement {
     }
 
     const shouldAutoplay = this.config?.autoplay === true;
-    const shouldMute =
-      this.config?.auto_muted !== undefined
-        ? this.config.auto_muted === true
-        : true;
+    // Honor the runtime mute toggle from the gallery pill — `_galleryMuted`
+    // is seeded from `config.auto_muted` and then overridden by user clicks.
+    const shouldMute = this._galleryMuted;
 
     // Don't use the `autoplay` attribute — when the browser starts an
     // internal play() because of `autoplay=true` and we then change `src`,
@@ -1585,6 +1589,12 @@ class CameraGalleryCard extends LitElement {
         preview.style.cursor = this._zoomIsPanning ? 'grabbing' : 'grab';
       }
     }
+  }
+
+  _toggleGalleryMute() {
+    this._galleryMuted = !this._galleryMuted;
+    if (this._previewVideoEl) this._previewVideoEl.muted = this._galleryMuted;
+    this.requestUpdate();
   }
 
   _toggleLiveMute() {
@@ -3433,12 +3443,17 @@ class CameraGalleryCard extends LitElement {
       }
     }
 
-    if (changedProps.has("config") && this._previewVideoEl) {
-      this._previewVideoEl.autoplay = this.config?.autoplay === true;
-      this._previewVideoEl.muted =
+    if (changedProps.has("config")) {
+      // Sync runtime gallery mute with config default whenever config
+      // changes — the pill toggle then overrides for this session.
+      this._galleryMuted =
         this.config?.auto_muted !== undefined
           ? this.config.auto_muted === true
           : true;
+      if (this._previewVideoEl) {
+        this._previewVideoEl.autoplay = this.config?.autoplay === true;
+        this._previewVideoEl.muted = this._galleryMuted;
+      }
     }
 
     const usingMediaSource = this.config?.source_mode === "media" || this.config?.source_mode === "combined";
@@ -3707,6 +3722,11 @@ class CameraGalleryCard extends LitElement {
           return html`<div class="gallery-pill live-pill-btn" style="flex-shrink:0;width:calc(var(--cgc-pill-size,14px)*1.6 + 2px);height:calc(var(--cgc-pill-size,14px)*1.6 + 2px);padding:0"><ha-icon icon="${icon}"></ha-icon></div>`;
         })()}
         <div class="gallery-pill live-pill-btn" style="flex-shrink:0;min-width:calc(var(--cgc-pill-size,14px)*1.6 + 2px);height:calc(var(--cgc-pill-size,14px)*1.6 + 2px);padding:0 8px;overflow:hidden"><span style="font-size:calc(var(--cgc-pill-size,14px) - 6px)">${idx + 1}/${filtered.length}</span></div>
+        ${selectedIsVideo ? html`
+          <button class="gallery-pill live-pill-btn" @pointerdown=${(e) => e.stopPropagation()} @click=${(e) => { e.stopPropagation(); this._toggleGalleryMute(); }}>
+            <ha-icon icon=${this._galleryMuted ? "mdi:volume-off" : "mdi:volume-high"}></ha-icon>
+          </button>
+        ` : html``}
       </div>
     `;
     const galleryPillsRight = html`
