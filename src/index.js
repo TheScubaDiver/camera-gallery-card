@@ -3699,6 +3699,7 @@ class CameraGalleryCard extends LitElement {
       --thumbsMaxHeight:${(this.config.card_height ?? 0) > 0 ? this.config.card_height + "px" : "320px"};
       --cgc-object-fit:${this.config.object_fit || "cover"};
       --cgc-pill-size:${this.config.pill_size}px;
+      --cgc-row-gap:${this.config.row_gap}px;
       ${this.config.style_variables || ""}
     `;
 
@@ -4432,7 +4433,7 @@ class CameraGalleryCard extends LitElement {
         padding: var(--cardPad, 4px 4px);
         display: flex;
         flex-direction: column;
-        gap: 8px;
+        gap: var(--cgc-row-gap, 8px);
       }
       .divider {
         display: none;
@@ -6512,6 +6513,14 @@ const STYLE_SECTIONS = [
       { type: "color",  hostId: "live-active-host",  variable: "--cgc-live-active-bg", label: "Live active color" },
       { type: "color",  hostId: "delete-bg-host",    variable: "--cgc-delete-bg",      label: "Delete button color" },
       { type: "radius", variable: "--cgc-ctrl-radius", label: "Border radius", min: 0, max: 16, default: 10 },
+    ],
+  },
+  {
+    id: "layout",
+    label: "Layout",
+    icon: "mdi:format-line-spacing",
+    controls: [
+      { type: "slider", id: "rowgap", valId: "rowgapval", configKey: "row_gap", label: "Row spacing", min: 0, max: 40, default: 8, unit: "px" },
     ],
   },
 ];

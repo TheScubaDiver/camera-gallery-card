@@ -451,6 +451,7 @@ describe("Defaults are applied", () => {
     expect(config.thumb_size).toBe(86);
     expect(config.max_media).toBe(50);
     expect(config.pill_size).toBe(14);
+    expect(config.row_gap).toBe(8);
   });
 
   it("fills missing enums with their DEFAULT_*", () => {
