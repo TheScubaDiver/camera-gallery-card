@@ -74,6 +74,22 @@ export const THUMBNAIL_FRAME_PCT_MAX = 100;
 export const BAR_OPACITY_MIN = 0;
 export const BAR_OPACITY_MAX = 100;
 
+// Radius slider ranges for the editor's Styling tab. Each cap is the point
+// where the rounded corner starts clipping content on the smallest practical
+// instance of its element — past these the controls visually break.
+export const CARD_RADIUS_MIN = 0;
+export const CARD_RADIUS_MAX = 32;
+export const CARD_RADIUS_DEFAULT = 10;
+export const THUMB_RADIUS_MIN = 0;
+export const THUMB_RADIUS_MAX = 20;
+// THUMB_RADIUS (=10) above is the slider default — no separate constant needed.
+export const OBJ_BTN_RADIUS_MIN = 0;
+export const OBJ_BTN_RADIUS_MAX = 14;
+export const OBJ_BTN_RADIUS_DEFAULT = 10;
+export const CTRL_RADIUS_MIN = 0;
+export const CTRL_RADIUS_MAX = 16;
+export const CTRL_RADIUS_DEFAULT = 10;
+
 // -------- Sensor poster generation --------
 //
 // Frame capture is CPU-bound (canvas decode + `toBlob`). On a 16-core
