@@ -133,9 +133,44 @@ export class SensorSourceClient {
     this._onChange = opts.onChange;
   }
 
-  /** Update the cached `hass` reference. Cheap; called from every hass setter. */
+  /**
+   * Update the cached `hass` reference + detect content changes.
+   *
+   * **Why the detect step matters:** the item-pipeline caches `getItems()`
+   * keyed on a rev counter. The rev only bumps when something explicitly
+   * invalidates — including this client's `onChange` callback. But
+   * `getItems()` only fires `onChange` when its rebuild produces a list
+   * different from the previous one. So the cold path is:
+   *
+   *   1. Card first-renders before `hass.states[<sensor>]` is populated.
+   *   2. Pipeline calls `getItems()` → fileList undefined → returns `[]`.
+   *   3. `sameAsPrev` check passes (prev was also `[]`) → no `onChange`.
+   *   4. Pipeline caches `[]` against the current rev.
+   *   5. HA later pushes the populated sensor state. `setHass` runs.
+   *   6. Without the detection below, *nothing* fires `onChange`. The
+   *      pipeline cache stays pinned to `[]` because the rev never bumps.
+   *      The card renders "No media found." indefinitely.
+   *
+   * The fileList attribute is a stable reference (HA pushes the same array
+   * until the sensor genuinely updates), so a single identity comparison
+   * per watched sensor is enough — no per-tick rebuild cost. Firing
+   * `onChange` here invalidates the pipeline cache; the next render's
+   * `getItems()` call will rebuild and pick up the fresh data.
+   */
   setHass(hass: HomeAssistant | null): void {
+    const prev = this._hass;
     this._hass = hass;
+    if (!prev || !hass || !this._onChange) return;
+    const entities = this.getEntityIds();
+    if (entities.length === 0) return;
+    for (const id of entities) {
+      const a = prev.states?.[id]?.attributes?.[ATTR_NAME];
+      const b = hass.states?.[id]?.attributes?.[ATTR_NAME];
+      if (a !== b) {
+        this._onChange();
+        return;
+      }
+    }
   }
 
   /**
