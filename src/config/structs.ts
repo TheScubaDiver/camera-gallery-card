@@ -24,6 +24,7 @@ import {
   refine,
   string,
   type,
+  union,
 } from "superstruct";
 import type { Struct } from "superstruct";
 
@@ -45,6 +46,10 @@ import {
   DEFAULT_DELETE_SERVICE,
   DEFAULT_LIVE_AUTO_MUTED,
   DEFAULT_LIVE_ENABLED,
+  DEFAULT_LIVE_MIC_AUTO_GAIN_CONTROL,
+  DEFAULT_LIVE_MIC_ECHO_CANCELLATION,
+  DEFAULT_LIVE_MIC_MODE,
+  DEFAULT_LIVE_MIC_NOISE_SUPPRESSION,
   DEFAULT_MAX_MEDIA,
   DEFAULT_OBJECT_FIT,
   DEFAULT_PREVIEW_POSITION,
@@ -55,6 +60,7 @@ import {
   DEFAULT_THUMBNAIL_FRAME_PCT,
   DEFAULT_LIVE_LAYOUT,
   LIVE_LAYOUTS,
+  MIC_MODES,
   MAX_MEDIA_MAX,
   MAX_MEDIA_MIN,
   OBJECT_FITS,
@@ -113,6 +119,31 @@ const nonEmptyString = refine(string(), "non_empty_string", (v) =>
 const liveStreamUrlEntry = object({
   url: nonEmptyString,
   name: defaulted(string(), ""),
+});
+
+/**
+ * Per-toggle Web Audio constraints for the mic. All three flags default to
+ * `true` at the read site (in `webrtc-mic.ts`) so the user only needs to
+ * write the keys they want to opt out of. Strict nested object — typos in
+ * the keys become validation errors.
+ */
+const liveMicAudioProcessing = object({
+  echo_cancellation: defaulted(boolean(), DEFAULT_LIVE_MIC_ECHO_CANCELLATION),
+  noise_suppression: defaulted(boolean(), DEFAULT_LIVE_MIC_NOISE_SUPPRESSION),
+  auto_gain_control: defaulted(boolean(), DEFAULT_LIVE_MIC_AUTO_GAIN_CONTROL),
+});
+
+/**
+ * Single ICE server entry (STUN / TURN). `urls` is `string | string[]` per
+ * the WebRTC spec. `username` / `credential` are required for TURN.
+ *
+ * Advanced — most users get along fine with the built-in STUN/TURN.
+ * Self-hosted Coturn or other private TURN setups need this override.
+ */
+const liveMicIceServer = object({
+  urls: union([string(), array(string())]),
+  username: optional(string()),
+  credential: optional(string()),
 });
 
 /** Menu button entry — same strictness rationale as `liveStreamUrlEntry`. */
@@ -175,6 +206,25 @@ export const cameraGalleryCardConfigStruct = type({
   live_stream_urls: optional(array(liveStreamUrlEntry)),
   live_go2rtc_url: optional(string()),
   live_go2rtc_stream: optional(string()),
+  live_mic_mode: defaulted(enums(MIC_MODES), DEFAULT_LIVE_MIC_MODE),
+  live_mic_audio_processing: optional(liveMicAudioProcessing),
+  // Per-camera mic backchannel map. Keys are camera entity ids
+  // (`camera.front_door`) or synthetic stream ids (`__cgc_stream_0__`).
+  // Values must be non-empty go2rtc stream names. Cameras absent from the
+  // map have no mic pill — the editor removes a key entirely when its
+  // input is cleared (rather than writing `""`), so the empty-string case
+  // shouldn't reach this struct in practice.
+  //
+  // Replaces the legacy single-global `live_go2rtc_stream` — the resolver
+  // in `live-config.ts` falls back to that string only when the map is
+  // entirely empty, so existing single-camera setups keep working
+  // without invading multi-camera setups.
+  live_mic_streams: defaulted(record(string(), nonEmptyString), {}),
+  // Advanced ICE config. Most setups don't need these — defaults work over
+  // residential NAT. Power users with a private TURN (Coturn etc.) or
+  // aggressive symmetric NAT use these to override.
+  live_mic_ice_servers: optional(array(liveMicIceServer)),
+  live_mic_force_relay: defaulted(boolean(), false),
   start_mode: defaulted(enums(START_MODES), "gallery"),
 
   // ─── Delete ────────────────────────────────────────────────

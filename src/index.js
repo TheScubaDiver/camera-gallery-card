@@ -52,11 +52,17 @@ import {
 import {
   friendlyCameraName as liveFriendlyCameraName,
   getAllLiveCameraEntities,
+  getGridCameraEntities,
   getLiveCameraOptions,
   getStreamEntries,
   getStreamEntryById,
+  gridDims,
+  hasAnyMicStream,
   hasLiveConfig,
+  isGridLayout,
+  micStreamForCamera,
 } from "./data/live-config";
+import { WebRtcMicClient } from "./data/webrtc-mic";
 import { buildDiagnostics, diagnosticsToText } from "./data/diagnostics";
 import {
   FRIGATE_URI_PREFIX,
@@ -139,7 +145,9 @@ class CameraGalleryCard extends LitElement {
       _liveFullscreen: { type: Boolean },
       _imgFsOpen: { type: Boolean },
       _aspectRatio: { type: String },
-      _liveMicActive: { type: Boolean },
+      _micState: { type: String },
+      _micErrorCode: { type: String },
+      _micLevelTick: { type: Number },
       _hamburgerOpen: { type: Boolean },
       _filterVideo: { type: Boolean },
       _filterImage: { type: Boolean },
@@ -187,11 +195,47 @@ class CameraGalleryCard extends LitElement {
     this._liveCardPending = null;
     this._rtcPeerConnection = null;
     this._rtcWebSocket = null;
-    this._micStream = null;
-    this._micPeerConnection = null;
-    this._micWebSocket = null;
     this._signedWsPath = null;
     this._signedWsPathTs = 0;
+    this._micState = "idle";
+    this._micErrorCode = "";
+    this._micLevelTick = 0;
+    this._micLevelRaf = null;
+    this._micClient = new WebRtcMicClient({
+      inputs: {
+        signPath: (path) =>
+          this._hass
+            ? this._hass.callWS({ type: "auth/sign_path", path })
+            : Promise.reject(new Error("hass not ready")),
+        buildWsUrl: (signed, streamName) =>
+          "ws" +
+          this._hass.hassUrl(signed.path).substring(4) +
+          "&url=" +
+          encodeURIComponent(streamName),
+        notify: (err) => {
+          try {
+            this._hass?.callService("persistent_notification", "create", {
+              title: "Camera Gallery Card — microphone",
+              message: this._micErrorLabelForCode(err.code, err.detail),
+              notification_id: "cgc_mic_error",
+            });
+          } catch (_) {
+            /* persistent_notification.create unavailable */
+          }
+        },
+      },
+      onChange: () => {
+        const next = this._micClient.state();
+        if (next !== this._micState) this._micState = next;
+        const errCode = this._micClient.error()?.code ?? "";
+        if (errCode !== this._micErrorCode) this._micErrorCode = errCode;
+        this._scheduleMicLevelRaf();
+        this.requestUpdate();
+      },
+      audioProcessing: this._micAudioProcessingFromConfig(),
+      iceServers: this._micIceServersFromConfig(),
+      iceTransportPolicy: this.config?.live_mic_force_relay ? "relay" : "all",
+    });
     this._autoAspectVideo = null;
     this._autoAspectObs = null;
     this._liveQuickSwitchTimer = null;
@@ -244,6 +288,28 @@ class CameraGalleryCard extends LitElement {
     this._viewMode = "media";
     this._liveSelectedCamera = "";
     this._liveMuted = false;
+    this._onMicPointerDown = (e) => {
+      e.stopPropagation();
+      // Resolve the mic stream for the camera that's currently in focus.
+      // Different cameras can have different backchannels; a camera with
+      // no entry in `live_mic_streams` (and no legacy fallback) returns ""
+      // and the pill should already be hidden — defensive check below.
+      const cameraId = this._getEffectiveLiveCamera();
+      const streamName = micStreamForCamera(cameraId, this.config);
+      if (!streamName) return;
+      const mode = this.config?.live_mic_mode ?? "toggle";
+      if (mode === "ptt") {
+        if (this._micState === "idle") void this._micClient.start(streamName);
+      } else {
+        void this._micClient.toggle(streamName);
+      }
+    };
+    this._onMicPointerUp = (e) => {
+      e.stopPropagation();
+      if (this.config?.live_mic_mode === "ptt" && this._micState !== "idle") {
+        this._micClient.stop();
+      }
+    };
     // Gallery video mute state. Mirrors the live-view pattern: the
     // initial value comes from `config.auto_muted` (default true), but
     // the user can override at runtime via the gallery mute pill — that
@@ -296,7 +362,7 @@ class CameraGalleryCard extends LitElement {
 
     this._onZoomTouchStart = (e) => {
       if (!this._isLiveActive() && !this._previewOpen) return;
-      if (this._isGridLayout()) return;
+      if (isGridLayout(this.config, this._liveLayoutOverride)) return;
       if (e.touches.length === 2) {
         e.preventDefault();
         this._zoomIsPinching = true;
@@ -317,7 +383,7 @@ class CameraGalleryCard extends LitElement {
 
     this._onZoomTouchMove = (e) => {
       if (!this._isLiveActive() && !this._previewOpen) return;
-      if (this._isGridLayout()) return;
+      if (isGridLayout(this.config, this._liveLayoutOverride)) return;
       if (this._zoomIsPinching && e.touches.length >= 2) {
         e.preventDefault();
         const t = e.touches;
@@ -343,7 +409,7 @@ class CameraGalleryCard extends LitElement {
 
     this._onZoomMouseDown = (e) => {
       if ((!this._isLiveActive() && !this._previewOpen) || this._zoomScale <= 1) return;
-      if (this._isGridLayout()) return;
+      if (isGridLayout(this.config, this._liveLayoutOverride)) return;
       e.preventDefault();
       this._zoomIsPanning = true;
       this._zoomPanStartX = e.clientX;
@@ -367,7 +433,7 @@ class CameraGalleryCard extends LitElement {
 
     this._onZoomWheel = (e) => {
       if (!this._isLiveActive() && !this._previewOpen) return;
-      if (this._isGridLayout()) return;
+      if (isGridLayout(this.config, this._liveLayoutOverride)) return;
       const host = this._getZoomHost();
       if (!host) return;
       const r = host.getBoundingClientRect();
@@ -512,12 +578,11 @@ class CameraGalleryCard extends LitElement {
     if (this._liveQuickSwitchTimer) clearTimeout(this._liveQuickSwitchTimer);
     if (this._navHideT) clearTimeout(this._navHideT);
     if (this._bulkHintTimer) clearTimeout(this._bulkHintTimer);
-    if (this._micErrorTimer) clearTimeout(this._micErrorTimer);
+    this._cancelMicLevelRaf();
 
     this._liveQuickSwitchTimer = null;
     this._navHideT = null;
     this._bulkHintTimer = null;
-    this._micErrorTimer = null;
 
     this._clearPreviewVideoHostPlayback();
     this._teardownLiveView();
@@ -534,7 +599,14 @@ class CameraGalleryCard extends LitElement {
     // on card teardown.
     this._posterClient.dispose();
 
-    this._stopMicStream();
+    // Aborts any pending mic handshake, closes PC/WS/tracks, suspends
+    // (but doesn't close) the AudioContext so a tab-switch / reconnect
+    // can resume cheaply. We call stop() rather than dispose() because
+    // HA Lovelace fires disconnect+connect on tab navigation without
+    // destroying the JS object — dispose() would leave the client
+    // permanently sealed and every subsequent mic toggle would silently
+    // no-op.
+    this._micClient.stop();
   }
 
   set hass(hass) {
@@ -1240,6 +1312,8 @@ class CameraGalleryCard extends LitElement {
         userAgent: navigator.userAgent,
         onLine: navigator.onLine !== false,
       },
+      micStats: this._micClient?.stats() ?? null,
+      micError: this._micClient?.error() ?? null,
     });
   }
 
@@ -1730,156 +1804,60 @@ class CameraGalleryCard extends LitElement {
     }
   }
 
-  _stopMicStream() {
-    if (this._micStream) {
-      this._micStream.getTracks().forEach(t => t.stop());
-      this._micStream = null;
-    }
-    if (this._micPeerConnection) {
-      try { this._micPeerConnection.close(); } catch (_) {}
-      this._micPeerConnection = null;
-    }
-    if (this._micWebSocket) {
-      try { this._micWebSocket.close(); } catch (_) {}
-      this._micWebSocket = null;
-    }
-    this._liveMicActive = false;
+  // Mic state lives in `this._micClient` (a WebRtcMicClient). The card just
+  // mirrors `state()` / `error()` into reactive Lit properties via the
+  // client's `onChange` callback so the render branches stay declarative.
+
+  // Translate the YAML `live_mic_audio_processing` snake-case shape into the
+  // camel-case MediaTrackConstraints fields the client expects. Missing
+  // sub-keys leave the corresponding client-side default (all-true) in place.
+  _micAudioProcessingFromConfig() {
+    const ap = this.config?.live_mic_audio_processing;
+    if (!ap || typeof ap !== "object") return undefined;
+    const out = {};
+    if (typeof ap.echo_cancellation === "boolean") out.echoCancellation = ap.echo_cancellation;
+    if (typeof ap.noise_suppression === "boolean") out.noiseSuppression = ap.noise_suppression;
+    if (typeof ap.auto_gain_control === "boolean") out.autoGainControl = ap.auto_gain_control;
+    return Object.keys(out).length > 0 ? out : undefined;
   }
 
-  _showMicError(msg) {
-    this._micErrorMsg = msg;
-    this.requestUpdate();
-    clearTimeout(this._micErrorTimer);
-    this._micErrorTimer = setTimeout(() => { this._micErrorMsg = null; this.requestUpdate(); }, 8000);
-    console.error("[CGC] Mic error:", msg);
-    try {
-      this._hass.callService("persistent_notification", "create", {
-        title: "CGC mic error",
-        message: msg,
-        notification_id: "cgc_mic_error"
-      });
-    } catch (_) {}
+  // Pass-through for `live_mic_ice_servers`. Returns undefined when the
+  // user hasn't configured custom ICE servers — the client then keeps its
+  // built-in STUN/TURN list.
+  _micIceServersFromConfig() {
+    const arr = this.config?.live_mic_ice_servers;
+    if (!Array.isArray(arr) || arr.length === 0) return undefined;
+    return arr;
   }
 
-  async _toggleMic() {
-    if (this._liveMicActive) {
-      this._stopMicStream();
+  // The mic client computes input level in an RAF loop while active. We don't
+  // want the client to driveLit re-renders at 20Hz directly (each requestUpdate
+  // schedules a paint); instead, while active, we tick a counter at the same
+  // 20Hz cadence and that's the only Lit-observable that ratchets — the level
+  // value itself is read synchronously from the client during render.
+  _scheduleMicLevelRaf() {
+    if (this._micState !== "active") {
+      this._cancelMicLevelRaf();
       return;
     }
-
-    const streamName = this.config?.live_go2rtc_stream;
-    if (!streamName) return;
-
-    if (!navigator.mediaDevices?.getUserMedia) {
-      this._showMicError("HTTPS vereist voor microfoon");
-      return;
-    }
-
-    try {
-      const micStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-      this._micStream = micStream;
-
-      const data = await this._hass.callWS({ type: "auth/sign_path", path: "/api/webrtc/ws" });
-      const wsUrl = "ws" + this._hass.hassUrl(data.path).substring(4) + "&url=" + encodeURIComponent(streamName);
-
-      const pc = new RTCPeerConnection({
-        iceServers: [
-          { urls: ["stun:stun.cloudflare.com:3478", "stun:stun.l.google.com:19302"] },
-          { urls: ["turn:openrelay.metered.ca:80", "turn:openrelay.metered.ca:443", "turns:openrelay.metered.ca:443?transport=tcp"], username: "openrelay", credential: "openrelay" }
-        ]
-      });
-      this._micPeerConnection = pc;
-
-      const audioTrack = micStream.getAudioTracks()[0];
-      pc.addTransceiver("video", { direction: "recvonly" });
-      pc.addTransceiver(audioTrack, { direction: "sendonly" });
-
-      const ws = new WebSocket(wsUrl);
-      this._micWebSocket = ws;
-
-      pc.oniceconnectionstatechange = () => console.log("[CGC] ICE state:", pc.iceConnectionState);
-      pc.onconnectionstatechange = () => console.log("[CGC] PC state:", pc.connectionState);
-
-      // ICE kandidaten doorsturen — WebSocket blijft open (zoals video-rtc.js)
-      pc.onicecandidate = (e) => {
-        if (ws.readyState !== WebSocket.OPEN) return;
-        const candidate = e.candidate ? e.candidate.candidate : "";
-        console.log("[CGC] Sending ICE:", candidate || "(end-of-candidates)");
-        ws.send(JSON.stringify({ type: "webrtc/candidate", value: candidate }));
-      };
-
-      await new Promise((resolve, reject) => {
-        const timeout = setTimeout(() => reject(new Error("go2rtc mic WS timeout")), 10000);
-
-        ws.onopen = async () => {
-          try {
-            const offer = await pc.createOffer();
-            await pc.setLocalDescription(offer);
-            console.log("[CGC] Offer SDP audio:", offer.sdp.split('\n').filter(l => l.startsWith('m=') || l.startsWith('a=rtpmap') || l.startsWith('a=sendonly') || l.startsWith('a=recvonly')).join(' | '));
-            ws.send(JSON.stringify({ type: "webrtc/offer", value: pc.localDescription.sdp }));
-          } catch (err) { reject(err); }
-        };
-
-        ws.onmessage = async (evt) => {
-          try {
-            const msg = JSON.parse(evt.data);
-            if (msg.type === "webrtc/answer") {
-              console.log("[CGC] Answer SDP:", msg.value);
-              await pc.setRemoteDescription({ type: "answer", sdp: msg.value });
-              clearTimeout(timeout);
-              resolve();
-            } else if (msg.type === "webrtc/candidate") {
-              if (msg.value) {
-                pc.addIceCandidate({ candidate: msg.value, sdpMid: "0" }).catch(() => {});
-              }
-            } else if (msg.type === "error") {
-              clearTimeout(timeout);
-              reject(new Error("go2rtc mic error: " + msg.value));
-            }
-          } catch (err) { reject(err); }
-        };
-
-        ws.onerror = () => { clearTimeout(timeout); reject(new Error("go2rtc mic WS error")); };
-        ws.onclose = (e) => {
-          if (e.code !== 1000) { clearTimeout(timeout); reject(new Error("go2rtc mic WS closed: " + e.code)); }
-        };
-      });
-
-      this._liveMicActive = true;
+    if (this._micLevelRaf !== null) return;
+    const tick = () => {
+      if (this._micState !== "active") {
+        this._micLevelRaf = null;
+        return;
+      }
+      this._micLevelTick = (this._micLevelTick + 1) | 0;
       this.requestUpdate();
+      this._micLevelRaf = requestAnimationFrame(tick);
+    };
+    this._micLevelRaf = requestAnimationFrame(tick);
+  }
 
-    } catch (err) {
-      console.warn("[CGC] Two-way audio failed:", err);
-      this._showMicError("Mic mislukt: " + err.message);
-      this._stopMicStream();
+  _cancelMicLevelRaf() {
+    if (this._micLevelRaf !== null) {
+      cancelAnimationFrame(this._micLevelRaf);
+      this._micLevelRaf = null;
     }
-  }
-
-  // ─── Live layout (single / grid) ───────────────────────────────────
-
-  _isGridLayout() {
-    // Runtime override (set by grid-tile tap) wins over config.
-    if (this._liveLayoutOverride === "single") return false;
-    if (this.config?.live_layout !== "grid") return false;
-    return this._getGridCameraEntities().length >= 2;
-  }
-
-  _getGridCameraEntities() {
-    // Only HA camera entities; stream URLs and sentinels are skipped — they
-    // can't be rendered through ha-camera-stream and would need bespoke
-    // RTCPeerConnection setup, which is too costly per tile.
-    const list = Array.isArray(this.config?.live_camera_entities)
-      ? this.config.live_camera_entities
-      : [];
-    return list.filter((e) => typeof e === "string" && e.startsWith("camera."));
-  }
-
-  _gridDims(count) {
-    // Always render a square grid so two cameras don't look like a row of two
-    // boxes. Empty cells stay black via the host background.
-    if (count <= 4) return { cols: 2, rows: 2 };
-    if (count <= 9) return { cols: 3, rows: 3 };
-    return { cols: 4, rows: 4 };
   }
 
   _onGridTileTap(entity) {
@@ -1913,8 +1891,8 @@ class CameraGalleryCard extends LitElement {
     const host = this.renderRoot?.querySelector("#live-card-host");
     if (!host) return;
 
-    const cameras = this._getGridCameraEntities();
-    const { cols, rows } = this._gridDims(cameras.length);
+    const cameras = getGridCameraEntities(this.config);
+    const { cols, rows } = gridDims(cameras.length);
 
     if (!host.classList.contains("live-grid-host")) {
       host.classList.add("live-grid-host");
@@ -1977,7 +1955,7 @@ class CameraGalleryCard extends LitElement {
     const host = this.renderRoot?.querySelector("#live-card-host");
     if (!host) return;
 
-    if (this._isGridLayout()) {
+    if (isGridLayout(this.config, this._liveLayoutOverride)) {
       // Tear down a previously-mounted single player before switching to grid.
       // Routing through the shared helper also closes URL-fast-path PC/WS that
       // remove() alone leaves dangling.
@@ -2057,7 +2035,7 @@ class CameraGalleryCard extends LitElement {
 
     // Push-to-talk mic shares the live view's lifecycle; if it's still hot
     // when we leave live, the user keeps transmitting from the gallery view.
-    this._stopMicStream();
+    this._micClient.stop();
 
     const host = this.renderRoot?.querySelector("#live-card-host");
     if (this._liveCard && host && host.contains(this._liveCard)) {
@@ -2078,6 +2056,135 @@ class CameraGalleryCard extends LitElement {
 
   _renderLiveCardHost() {
     return html`<div id="live-card-host" class="live-card-host"></div>`;
+  }
+
+  // ─── Mic pill (two-way audio toggle) ──────────────────────────────────
+  //
+  // Only rendered when the *currently active* camera has a configured
+  // mic stream. The card carries a per-camera map (`live_mic_streams`)
+  // so a multi-camera setup can have mic talkback on some entries and
+  // not others — the pill appears/disappears as the user navigates the
+  // picker. Visual states:
+  //   - idle      → outlined microphone-outline icon
+  //   - connecting→ spinning loading icon, button disabled to prevent
+  //                 racing a second handshake before the first lands
+  //   - active    → solid microphone icon, red pulsing background, the
+  //                 audio-level ring (via --cgc-mic-level CSS variable)
+  //                 scales with input volume
+  //   - error     → microphone-off icon, red inset shadow; auto-clears
+  //                 when the client's auto-clear timer fires (8 s)
+  //
+  // The error message is rendered as a small toast inside the controls bar
+  // (separate live region) so screen readers announce failures via aria-live.
+  _renderMicPill() {
+    const cameraId = this._getEffectiveLiveCamera();
+    const streamName = micStreamForCamera(cameraId, this.config);
+    if (!streamName) return html``;
+    const state = this._micState;
+    const err = this._micErrorCode;
+    const isPtt = this.config?.live_mic_mode === "ptt";
+    const cls =
+      state === "active"
+        ? "mic-active"
+        : state === "connecting"
+          ? "mic-connecting"
+          : err
+            ? "mic-error"
+            : "mic-idle";
+    const icon =
+      state === "active"
+        ? "mdi:microphone"
+        : state === "connecting"
+          ? "mdi:loading"
+          : err
+            ? "mdi:microphone-off"
+            : "mdi:microphone-outline";
+    const labelBase = isPtt ? "Microphone (push-to-talk)" : "Microphone";
+    const stateLabel =
+      state === "active"
+        ? "on"
+        : state === "connecting"
+          ? "connecting"
+          : err
+            ? `error: ${err}`
+            : "off";
+    const ariaLabel = `${labelBase} (${stateLabel})`;
+    const level = this._micClient.level();
+    const styleVar = state === "active" ? `--cgc-mic-level:${Math.min(1, level).toFixed(3)};` : "";
+    return html`
+      <button
+        class="gallery-pill live-pill-btn mic-pill ${cls} ${isPtt ? "mic-ptt" : ""}"
+        aria-label=${ariaLabel}
+        aria-pressed=${state === "active" ? "true" : "false"}
+        ?disabled=${state === "connecting"}
+        title=${ariaLabel}
+        style=${styleVar}
+        @pointerdown=${this._onMicPointerDown}
+        @pointerup=${this._onMicPointerUp}
+        @pointercancel=${this._onMicPointerUp}
+        @pointerleave=${this._onMicPointerUp}
+      >
+        <span class="mic-level-ring" aria-hidden="true"></span>
+        <ha-icon icon=${icon}></ha-icon>
+        ${isPtt && state === "idle" ? html`<span class="mic-ptt-hint" aria-hidden="true">HOLD</span>` : html``}
+      </button>
+    `;
+  }
+
+  // Live-region toast for mic errors. Sits inside the live-controls-bar so
+  // it doesn't shift the rest of the page. role=status + aria-live=polite
+  // lets screen readers announce the failure without interrupting other
+  // focus.
+  _renderMicErrorToast() {
+    if (!hasAnyMicStream(this.config)) return html``;
+    const label = this._micErrorLabel();
+    return html`
+      <div class="mic-error-toast ${label ? "visible" : ""}" role="status" aria-live="polite">
+        ${label
+          ? html`<ha-icon icon="mdi:alert-circle"></ha-icon><span>${label}</span>`
+          : html``}
+      </div>
+    `;
+  }
+
+  // English user-facing string per MicErrorCode. Returns "" for empty or
+  // "aborted" so the toast template can short-circuit. Shared by the
+  // in-card toast and the HA persistent_notification payload so users
+  // never see internal codes like `ws-server-error`. PR 15 (i18n) will
+  // route this through hass.localize.
+  _micErrorLabelForCode(code, detail) {
+    switch (code) {
+      case "https-required":
+        return "Microphone requires HTTPS or localhost.";
+      case "permission-denied":
+        return "Microphone permission denied. Check browser settings.";
+      case "device-not-found":
+        return "No microphone found on this device.";
+      case "device-in-use":
+        return "Microphone is being used by another app.";
+      case "stream-not-found":
+        return "No go2rtc stream configured for this camera.";
+      case "ws-connect-failed":
+        return "Couldn't reach go2rtc. Check that the WebRTC Camera integration is installed.";
+      case "ws-timeout":
+        return "go2rtc handshake timed out. Check the network.";
+      case "ws-server-error":
+        // Echo the server's reason so users with a typo'd stream name can
+        // self-diagnose ("go2rtc reported: no such stream front_dor").
+        return detail ? `go2rtc reported: ${detail}` : "go2rtc reported an error.";
+      case "ice-failed":
+        return "Network blocks WebRTC. Try a different network or configure TURN.";
+      case "":
+      case "aborted":
+        return "";
+      case "unknown":
+      default:
+        return detail ? `Microphone failed: ${detail}` : "Microphone failed.";
+    }
+  }
+
+  _micErrorLabel() {
+    return this._micErrorLabelForCode(this._micErrorCode, this._micClient.error()?.detail);
   }
 
   _renderLiveInner() {
@@ -3290,6 +3397,22 @@ class CameraGalleryCard extends LitElement {
     this._sensorClient.load(this.config);
     this._mediaClient.load(this.config);
     this._posterClient.load(this.config);
+    // Re-derive mic audio constraints + ICE config; takes effect on the
+    // next start(). If the user un-set the mic stream for the currently
+    // active camera (or cleared the legacy `live_go2rtc_stream` with no
+    // map fallback) the pill goes away — stop the mic if it was running
+    // so we don't keep an orphan PC alive on a camera that no longer
+    // surfaces a mic UI.
+    const micAp = this._micAudioProcessingFromConfig();
+    if (micAp) this._micClient.setAudioProcessing(micAp);
+    this._micClient.setIceConfig({
+      iceServers: this._micIceServersFromConfig() ?? null,
+      iceTransportPolicy: nextConfig.live_mic_force_relay ? "relay" : "all",
+    });
+    if (this._micState !== "idle") {
+      const activeCam = this._getEffectiveLiveCamera();
+      if (!micStreamForCamera(activeCam, nextConfig)) this._micClient.stop();
+    }
     this._startMediaPoll();
 
     // Prewarm the IDB-backed poster mirror once. `prewarm()` is idempotent;
@@ -3773,6 +3896,7 @@ class CameraGalleryCard extends LitElement {
         <button class="gallery-pill live-pill-btn" @pointerdown=${(e) => e.stopPropagation()} @click=${(e) => { e.stopPropagation(); this._toggleLiveMute(); }}>
           <ha-icon icon=${this._liveMuted ? "mdi:volume-off" : "mdi:volume-high"}></ha-icon>
         </button>
+        ${this._renderMicPill()}
         ${this._getLiveCameraOptions().length > 1 ? html`
           <button class="gallery-pill live-pill-btn" @pointerdown=${(e) => e.stopPropagation()} @click=${(e) => { e.stopPropagation(); this._openLivePicker(); }}>
             <ha-icon icon="mdi:cctv"></ha-icon>
@@ -3877,7 +4001,7 @@ class CameraGalleryCard extends LitElement {
               </div>
             ` : html``}
 
-            ${isLive && !this._isGridLayout() && this._getLiveCameraOptions().length > 1 && (this._pillsVisible || this.config?.persistent_controls) ? html`
+            ${isLive && !isGridLayout(this.config, this._liveLayoutOverride) && this._getLiveCameraOptions().length > 1 && (this._pillsVisible || this.config?.persistent_controls) ? html`
               <div class="pnav">
                 <button class="pnavbtn left" @pointerdown=${(e) => e.stopPropagation()} @click=${(e) => { e.stopPropagation(); this._navLiveCamera(-1); }}>
                   <ha-icon icon="mdi:chevron-left"></ha-icon>
@@ -3893,21 +4017,22 @@ class CameraGalleryCard extends LitElement {
                 ${galleryPillsLeft}${galleryPillsCenter}${galleryPillsRight}
               </div>
             ` : html``}
-            ${isLive && !this._isGridLayout() && !fixedMode ? html`
+            ${isLive && !isGridLayout(this.config, this._liveLayoutOverride) && !fixedMode ? html`
               <div class="live-controls-bar ${tsPosClass} ${this._pillsVisible || this._showLivePicker || this.config?.persistent_controls ? "visible" : ""}">
                 <div class="live-controls-main">
                   ${livePillsLeft}${livePillsRight}
                 </div>
+                ${this._renderMicErrorToast()}
               </div>
             ` : html``}
-            ${isLive && !this._isGridLayout() ? hamburgerPanel : html``}
+            ${isLive && !isGridLayout(this.config, this._liveLayoutOverride) ? hamburgerPanel : html``}
           </div>
         `
       : html``;
 
     const controlsFixedBlock = fixedMode && showPreviewSection ? html`
       <div class="controls-bar-fixed">
-        ${isLive && !this._isGridLayout() ? html`
+        ${isLive && !isGridLayout(this.config, this._liveLayoutOverride) ? html`
           <div class="live-controls-main live-controls-main--fixed">
             ${livePillsLeft}${livePillsRight}
           </div>
@@ -4937,7 +5062,9 @@ class CameraGalleryCardEditor extends HTMLElement {
         if (typeof item === "string") {
           key = item.toLowerCase().trim();
         } else if (typeof item === "object" && item !== null) {
-          key = Object.keys(item)[0].toLowerCase().trim();
+          // `noUncheckedIndexedAccess`-safe — an empty `{}` would otherwise
+          // throw on `.toLowerCase()`. The `if (!key …)` below drops it.
+          key = (Object.keys(item)[0] || "").toLowerCase().trim();
         }
 
         if (!key || seen.has(key)) continue;
@@ -6294,6 +6421,91 @@ class CameraGalleryCardEditor extends HTMLElement {
                       <label class="cgc-switch"><input type="checkbox" id="live_auto_muted"><span class="cgc-track"></span></label>
                     </div>
                   </div>
+                </div>
+
+                <div class="row">
+                  <div class="lbl">Two-way audio</div>
+                  <div class="desc">Talk back to a camera's speaker from live view. For each camera below, enter its go2rtc stream name — the key under <code>streams:</code> in your <code>go2rtc.yaml</code>. Leave blank to hide the mic for that camera.</div>
+                  <div class="desc" style="margin-top:4px;font-size:0.78em;opacity:0.7;">Needs: <a href="https://github.com/AlexxIT/WebRTC" target="_blank" rel="noopener">WebRTC Camera</a> HACS integration · camera with audio backchannel · HTTPS or localhost.</div>
+                  ${(() => {
+                    const comps = this._hass?.config?.components;
+                    const hasWebrtc = Array.isArray(comps) && comps.includes("webrtc");
+                    if (hasWebrtc) return ``;
+                    return `<div class="cgc-inline-warn">${svgIcon('mdi:alert-outline', 14)}<span>WebRTC Camera integration not detected — install it via HACS for the mic to work.</span></div>`;
+                  })()}
+                  ${(() => {
+                    // Build the row list: each HA entity + each stream URL the
+                    // user has added to the picker. The mic pill keys off the
+                    // currently-active camera (entity id or synthetic stream
+                    // id), so the editor rows match those keys 1:1.
+                    const micMap = (this._config.live_mic_streams && typeof this._config.live_mic_streams === "object")
+                      ? this._config.live_mic_streams
+                      : {};
+                    const streamEntries = getStreamEntries(this._config);
+                    const rows = [];
+                    streamEntries.forEach((se) => {
+                      rows.push({
+                        id: se.id,
+                        kind: "stream",
+                        label: se.name || "Stream",
+                        sub: "stream url",
+                        value: String(micMap[se.id] ?? "").trim(),
+                      });
+                    });
+                    liveCameraEntities.forEach((entId) => {
+                      const friendly = String(this._hass?.states?.[entId]?.attributes?.friendly_name || entId).trim();
+                      rows.push({
+                        id: entId,
+                        kind: "entity",
+                        label: friendly,
+                        sub: entId,
+                        value: String(micMap[entId] ?? "").trim(),
+                      });
+                    });
+                    if (rows.length === 0) {
+                      return `<div class="desc" style="font-style:italic;opacity:0.7;">Add at least one camera (entity or stream URL) above to configure mic backchannels.</div>`;
+                    }
+                    return `<div class="mic-stream-list" style="display:flex;flex-direction:column;gap:6px;margin-top:6px;">
+                      ${rows.map((r) => `
+                        <div class="mic-stream-row" style="display:flex;gap:8px;align-items:center;padding:6px 8px;border:1px solid var(--ed-input-border);border-radius:var(--ed-radius-input,8px);">
+                          <div style="flex:1;min-width:0;">
+                            <div style="font-weight:500;">${r.label.replace(/</g,"&lt;")}</div>
+                            <div style="font-size:0.72em;opacity:0.6;">${r.sub.replace(/</g,"&lt;")}</div>
+                          </div>
+                          <input type="text" class="ed-input mic-stream-input" data-mic-cam="${r.id.replace(/"/g,"&quot;")}" value="${r.value.replace(/"/g,"&quot;")}" placeholder="go2rtc stream name (empty = no mic)" autocomplete="off" style="flex:0 0 240px;" />
+                        </div>
+                      `).join("")}
+                    </div>`;
+                  })()}
+                  ${(() => {
+                    // Legacy single-stream fallback. Show a hint so users
+                    // know it still works but the map is the new way.
+                    const legacy = String(this._config.live_go2rtc_stream ?? "").trim();
+                    if (!legacy) return ``;
+                    return `<div class="desc" style="margin-top:8px;">
+                      <strong>Legacy single-stream config detected:</strong> <code>live_go2rtc_stream: ${legacy.replace(/</g,"&lt;")}</code> is set in your YAML. It still works (applies to whichever camera is active) and you don't need to change anything. Filling in any row above will switch to the per-camera map — once you do, the legacy key is ignored.
+                    </div>`;
+                  })()}
+                  ${hasAnyMicStream(this._config) ? `
+                  <div class="row-inline" style="margin-top:8px;">
+                    <span>Interaction</span>
+                    <div class="segwrap" style="margin-left:auto;">
+                      <button class="seg ${(this._config.live_mic_mode || "toggle") === "toggle" ? "on" : ""}" data-livemicmode="toggle">Toggle</button>
+                      <button class="seg ${this._config.live_mic_mode === "ptt" ? "on" : ""}" data-livemicmode="ptt">Push-to-talk</button>
+                    </div>
+                  </div>
+                  <div class="desc" style="margin-top:6px;">Audio processing</div>
+                  ${(() => {
+                    const ap = this._config.live_mic_audio_processing || {};
+                    const ec = ap.echo_cancellation !== false;
+                    const ns = ap.noise_suppression !== false;
+                    const agc = ap.auto_gain_control !== false;
+                    return `
+                    <div class="row-inline"><span>Echo cancellation</span><label class="cgc-switch"><input type="checkbox" id="live-mic-ec" ${ec ? "checked" : ""}><span class="cgc-track"></span></label></div>
+                    <div class="row-inline"><span>Noise suppression</span><label class="cgc-switch"><input type="checkbox" id="live-mic-ns" ${ns ? "checked" : ""}><span class="cgc-track"></span></label></div>
+                    <div class="row-inline"><span>Auto gain control</span><label class="cgc-switch"><input type="checkbox" id="live-mic-agc" ${agc ? "checked" : ""}><span class="cgc-track"></span></label></div>`;
+                  })()}
+                  ` : ``}
                 </div>
 
                 <div class="row">
@@ -8815,17 +9027,69 @@ if (oldPanel && tmp.firstElementChild) {
       _addStreamRow();
     });
 
-    $("live_go2rtc_stream")?.addEventListener("change", (e) => {
-      const val = String(e.target.value || "").trim();
-      if (val) this._set("live_go2rtc_stream", val);
-      else { const n = { ...this._config }; delete n.live_go2rtc_stream; this._config = this._stripAlwaysTrueKeys(n); this._fire(); }
-    });
-
     $("live_go2rtc_url")?.addEventListener("change", (e) => {
       const val = String(e.target.value || "").trim();
       if (val) this._set("live_go2rtc_url", val);
       else { const n = { ...this._config }; delete n.live_go2rtc_url; this._config = this._stripAlwaysTrueKeys(n); this._fire(); }
     });
+
+    // Per-camera mic backchannel map: each row writes/clears one key in
+    // `live_mic_streams`. When the map becomes empty, drop the key
+    // entirely to keep YAML output minimal.
+    root.querySelectorAll(".mic-stream-input").forEach((inp) => {
+      inp.addEventListener("change", (e) => {
+        const cam = String(inp.dataset.micCam || "").trim();
+        if (!cam) return;
+        const val = String(e.target.value || "").trim();
+        const n = { ...this._config };
+        const map = { ...(n.live_mic_streams && typeof n.live_mic_streams === "object" ? n.live_mic_streams : {}) };
+        if (val) map[cam] = val;
+        else delete map[cam];
+        if (Object.keys(map).length > 0) n.live_mic_streams = map;
+        else delete n.live_mic_streams;
+        this._config = this._stripAlwaysTrueKeys(n);
+        this._fire();
+      });
+    });
+
+    // Mic interaction mode (toggle vs push-to-talk). Default "toggle"
+    // is the only value not stored — keeps the YAML output minimal.
+    root.querySelectorAll("[data-livemicmode]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const mode = btn.dataset.livemicmode;
+        if (mode === "ptt") {
+          this._set("live_mic_mode", "ptt");
+        } else {
+          const n = { ...this._config };
+          delete n.live_mic_mode;
+          this._config = this._stripAlwaysTrueKeys(n);
+          this._fire();
+        }
+        this._scheduleRender();
+      });
+    });
+
+    // Audio-processing flags. Defaults are all true so toggling a flag ON
+    // (matching the default) drops the key; only OFF values persist.
+    const _setMicAp = (key, on) => {
+      const n = { ...this._config };
+      const ap = { ...(n.live_mic_audio_processing || {}) };
+      if (on === true) {
+        delete ap[key];
+      } else {
+        ap[key] = false;
+      }
+      if (Object.keys(ap).length === 0) {
+        delete n.live_mic_audio_processing;
+      } else {
+        n.live_mic_audio_processing = ap;
+      }
+      this._config = this._stripAlwaysTrueKeys(n);
+      this._fire();
+    };
+    $("live-mic-ec")?.addEventListener("change", (e) => _setMicAp("echo_cancellation", !!e.target.checked));
+    $("live-mic-ns")?.addEventListener("change", (e) => _setMicAp("noise_suppression", !!e.target.checked));
+    $("live-mic-agc")?.addEventListener("change", (e) => _setMicAp("auto_gain_control", !!e.target.checked));
 
     $("frigate_url")?.addEventListener("change", (e) => {
       const val = String(e.target.value || "").trim().replace(/\/+$/, "");

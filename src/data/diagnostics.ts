@@ -12,6 +12,7 @@
 import { FRESH_FETCH_WINDOW_MS } from "../const";
 import type { CameraGalleryCardConfig } from "../config/normalize";
 import type { HomeAssistant } from "../types/hass";
+import type { MicError, MicStats } from "./webrtc-mic";
 
 /** Visual severity of a row's "value" half. `null` (or missing) = neutral. */
 export type DiagStatus = "ok" | "warn" | "bad" | null;
@@ -54,6 +55,13 @@ export interface BuildDiagnosticsOptions {
   liveLayoutOverride: string | null;
   cameraResolutions: Readonly<Record<string, CameraResolutionState | undefined>>;
   navigatorInfo: { userAgent: string; onLine: boolean };
+  /** Snapshot of the WebRTC mic client. `null` means the client is idle
+   * or not configured; the section is omitted unless `live_go2rtc_stream`
+   * is set, so a missing stat with mic configured shows as `idle (no stats yet)`. */
+  micStats?: MicStats | null;
+  /** Most recent mic error (kept after auto-clear in client only briefly —
+   * card mirrors and clears). `null` when there's no surfaced error. */
+  micError?: MicError | null;
   /** Injectable clock for tests. Defaults to `Date.now()`. */
   now?: () => number;
 }
@@ -161,6 +169,50 @@ function buildLiveCameraRows(
 }
 
 /**
+ * Build the "Microphone" diagnostics section. Only included when the user
+ * has wired up `live_go2rtc_stream` — otherwise the rows would all be
+ * `(not configured)` and add noise to bug reports.
+ */
+function buildMicSection(
+  cfg: CameraGalleryCardConfig | null,
+  stats: MicStats | null | undefined,
+  error: MicError | null | undefined
+): DiagSection {
+  const rows: DiagRow[] = [];
+  const state = stats?.state ?? "idle";
+  const stateStatus: DiagStatus =
+    state === "active" ? "ok" : state === "connecting" ? "warn" : null;
+  rows.push(["State", state, stateStatus]);
+  if (error) {
+    rows.push([
+      "Last error",
+      error.detail ? `${error.code} (${error.detail})` : error.code,
+      "warn",
+    ]);
+  }
+  rows.push(["ICE state", stats?.iceState ?? "—"]);
+  rows.push(["RTT", stats?.rttMs != null ? `${stats.rttMs} ms` : "—"]);
+  rows.push([
+    "Packet loss",
+    stats?.packetLossPct != null ? `${stats.packetLossPct.toFixed(1)}%` : "—",
+  ]);
+  rows.push(["Jitter", stats?.jitterMs != null ? `${stats.jitterMs} ms` : "—"]);
+  rows.push(["Input level", stats?.level != null ? `${Math.round(stats.level * 100)}%` : "—"]);
+  const ap = stats?.audioProcessing;
+  if (ap) {
+    const flags = [
+      ap.echoCancellation ? "echo" : "no-echo",
+      ap.noiseSuppression ? "ns" : "no-ns",
+      ap.autoGainControl ? "agc" : "no-agc",
+    ].join(", ");
+    rows.push(["Audio processing", flags]);
+  }
+  rows.push(["go2rtc stream", String(cfg?.live_go2rtc_stream ?? "")]);
+  rows.push(["Mic mode", String(cfg?.live_mic_mode ?? "toggle")]);
+  return { title: "Microphone", icon: "mdi:microphone", rows };
+}
+
+/**
  * Build the typed diagnostic table. Output is structurally byte-identical
  * to the legacy `_buildDiagnostics()` output (modulo timestamps).
  */
@@ -178,7 +230,7 @@ export function buildDiagnostics(opts: BuildDiagnosticsOptions): DiagSection[] {
   const dayCacheSize = ms.dayCache?.size ?? 0;
   const directApi = directApiCell(cfg, ms, now);
 
-  return [
+  const sections: DiagSection[] = [
     {
       title: "Card",
       icon: "mdi:card-outline",
@@ -259,6 +311,12 @@ export function buildDiagnostics(opts: BuildDiagnosticsOptions): DiagSection[] {
       ],
     },
   ];
+
+  if (cfg?.live_go2rtc_stream) {
+    sections.push(buildMicSection(cfg, opts.micStats ?? null, opts.micError ?? null));
+  }
+
+  return sections;
 }
 
 /**

@@ -1115,6 +1115,142 @@ export const cardStyles = css`
     border-radius: 50%;
   }
 
+  /* ─── Two-way audio (mic) pill ─────────────────────────────────────── */
+  .live-pill-btn.mic-pill {
+    position: relative;
+    border-radius: 50%;
+  }
+  /* Connecting: outline + spinner glyph. Disabled to prevent racing a
+     second handshake while the first is still in flight. */
+  .live-pill-btn.mic-connecting ha-icon {
+    animation: cgc-mic-spin 1s linear infinite;
+  }
+  .live-pill-btn.mic-pill[disabled] {
+    cursor: progress;
+    opacity: 0.85;
+  }
+  /* Active: solid red background + slow pulse. The level ring scales
+     opacity via --cgc-mic-level (0..1) so the ring intensity tracks input
+     volume in real time. */
+  .live-pill-btn.mic-active {
+    background: var(--cgc-mic-active-bg, rgba(220, 38, 38, 0.88));
+    color: #fff;
+    animation: cgc-mic-pulse 1.6s ease-in-out infinite;
+  }
+  .live-pill-btn.mic-active .mic-level-ring {
+    position: absolute;
+    inset: -3px;
+    border: 2px solid currentColor;
+    border-radius: 50%;
+    opacity: var(--cgc-mic-level, 0);
+    transition: opacity 60ms linear;
+    pointer-events: none;
+  }
+  .live-pill-btn .mic-level-ring {
+    position: absolute;
+    inset: -3px;
+    border: 2px solid transparent;
+    border-radius: 50%;
+    pointer-events: none;
+  }
+  /* Error: red icon tint + outline so the pill stays visibly broken even
+     after the toast auto-clears. Tints icon + adds a clear ring to
+     distinguish from idle at a glance. */
+  .live-pill-btn.mic-error {
+    box-shadow: 0 0 0 2px rgba(220, 38, 38, 0.85) inset;
+    color: rgb(220, 38, 38);
+  }
+  .live-pill-btn.mic-error ha-icon {
+    --mdc-icon-color: rgb(220, 38, 38);
+    color: rgb(220, 38, 38);
+  }
+
+  /* Push-to-talk hint — small "HOLD" badge under the icon while idle so
+     first-time users know to press and hold, not just tap. */
+  .live-pill-btn.mic-pill {
+    position: relative;
+  }
+  .live-pill-btn .mic-ptt-hint {
+    position: absolute;
+    left: 50%;
+    bottom: -8px;
+    transform: translateX(-50%);
+    font-size: 9px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    line-height: 1;
+    padding: 1px 4px;
+    border-radius: 4px;
+    background: var(--secondary-background-color, rgba(0, 0, 0, 0.55));
+    color: var(--primary-text-color, #fff);
+    pointer-events: none;
+    white-space: nowrap;
+  }
+  .live-pill-btn.mic-active .mic-ptt-hint,
+  .live-pill-btn.mic-connecting .mic-ptt-hint {
+    display: none;
+  }
+
+  @keyframes cgc-mic-pulse {
+    0%,
+    100% {
+      box-shadow: 0 0 0 0 rgba(220, 38, 38, 0.45);
+    }
+    50% {
+      box-shadow: 0 0 0 9px rgba(220, 38, 38, 0);
+    }
+  }
+  @keyframes cgc-mic-spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+
+  /* Per A11y / reduced-motion: skip the pulse + level-ring animation. */
+  @media (prefers-reduced-motion: reduce) {
+    .live-pill-btn.mic-active,
+    .live-pill-btn.mic-connecting ha-icon {
+      animation: none;
+    }
+    .live-pill-btn .mic-level-ring {
+      transition: none;
+    }
+  }
+
+  /* Mic error toast — sits inside live-controls-bar so layout doesn't
+     shift; role=status + aria-live=polite announces via screen readers. */
+  .mic-error-toast {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px;
+    margin-top: 4px;
+    border-radius: 10px;
+    font-size: 12px;
+    line-height: 1.3;
+    color: #fff;
+    background: rgba(220, 38, 38, 0.92);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+    pointer-events: auto;
+    max-width: 320px;
+    opacity: 0;
+    transform: translateY(-4px);
+    transition:
+      opacity 160ms ease,
+      transform 160ms ease;
+  }
+  .mic-error-toast.visible {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  .mic-error-toast:not(.visible) {
+    visibility: hidden;
+  }
+  .mic-error-toast ha-icon {
+    --mdc-icon-size: 16px;
+    flex: 0 0 auto;
+  }
+
   .topbar {
     display: flex;
     align-items: center;
