@@ -446,8 +446,12 @@ describe("MediaSourceClient.ensureLoaded", () => {
     await inflight;
 
     expect(client.getIds()).toEqual([]);
-    // loading flag must not stay true after a stale-drop (would deadlock the next ensureLoaded)
-    expect(client.isLoading()).toBe(false);
+    // The inner `state.loading` flag must not stay true after a stale drop
+    // (would deadlock the next ensureLoaded via the in-flight gate).
+    // `isLoading()` itself may still report true here — the new roots
+    // haven't been loaded yet, so cold-mount semantics apply — but the
+    // *flag* needs to be reset for the next ensureLoaded to take the gate.
+    expect(client.state.loading).toBe(false);
   });
 
   it("clears every cache when media_sources changes (B10)", async () => {
@@ -640,5 +644,90 @@ describe("MediaSourceClient.ensureLoaded", () => {
     while (client.resolveInFlight) await new Promise((r) => setTimeout(r, 1));
     expect(handler).toHaveBeenCalledTimes(1);
     expect(client.getUrlCache().get(id)).toBe("/api/recoverable");
+  });
+});
+
+describe('MediaSourceClient — "No media found." stuck-state regressions', () => {
+  let hass: FakeHass;
+  let client: MediaSourceClient;
+  let changes: number;
+
+  beforeEach(() => {
+    hass = makeFakeHass();
+    changes = 0;
+    client = new MediaSourceClient({
+      onChange: () => {
+        changes++;
+      },
+    });
+    client.setHass(hass);
+  });
+
+  it("isLoading() returns true on cold mount with roots configured but no load attempt yet", () => {
+    // Pre-load: cold state, no roots → no spinner.
+    expect(client.isLoading()).toBe(false);
+
+    // After load() but before ensureLoaded() finishes — `state.loading`
+    // is still false (set only inside async sub-paths) but the card needs
+    // to render "Loading…" to avoid flashing "No media found.".
+    client.load(baseConfig());
+    expect(client.state.loading).toBe(false);
+    expect(client.state.loadedAt).toBe(0);
+    expect(client.isLoading()).toBe(true);
+  });
+
+  it("isLoading() returns false after any load completes — including empty results", () => {
+    // Simulate an empty completion: list = [], loadedAt > 0.
+    client.load(baseConfig());
+    expect(client.isLoading()).toBe(true);
+
+    client.setList([]);
+    client.state.loadedAt = Date.now();
+    expect(client.isLoading()).toBe(false);
+  });
+
+  it("all-Frigate-WS empty result fires onChange so the card unsticks from 'No media found.'", async () => {
+    // Mock the Frigate WS endpoint to return zero events.
+    hass.registerWs("frigate/events/get", (async () => []) as unknown as WsHandler);
+
+    const config = baseConfig({
+      media_sources: ["media-source://frigate/test_inst/event-search/all/_/_/_/_"],
+      path_datetime_format: "",
+    });
+    client.load(config);
+
+    const before = changes;
+    await client.ensureLoaded();
+
+    // The empty-Frigate-WS branch must fire _fireChange so the pipeline
+    // cache invalidates and the card re-renders with the now-known empty
+    // state. Without this, the card stays on whatever pre-load placeholder
+    // it last rendered.
+    expect(changes).toBeGreaterThan(before);
+    expect(client.getIds()).toEqual([]);
+    expect(client.state.loadedAt).toBeGreaterThan(0);
+    expect(client.isLoading()).toBe(false);
+  });
+
+  it("calendar path with missing path_datetime_format fires onChange + sets loadedAt on empty exit", async () => {
+    // A non-Frigate root with `path_datetime_format: ""` hits the !fmt
+    // branch inside _loadCalendarPath. Pre-fix this returned silently
+    // and left the card stuck on the placeholder.
+    const config = baseConfig({
+      media_sources: ["media-source://media_source/local/recordings"],
+      path_datetime_format: "",
+      // No frigate_url, so normalize would normally reject this — but the
+      // unit test bypasses normalize and validates the sub-path's own
+      // contract: it must signal the empty completion.
+    });
+    client.load(config);
+
+    const before = changes;
+    await client.ensureLoaded();
+
+    expect(changes).toBeGreaterThan(before);
+    expect(client.getIds()).toEqual([]);
+    expect(client.state.loadedAt).toBeGreaterThan(0);
+    expect(client.isLoading()).toBe(false);
   });
 });

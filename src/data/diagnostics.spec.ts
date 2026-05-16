@@ -384,3 +384,103 @@ describe("diagnosticsToText", () => {
     expect(text.match(/\n\n/g)?.length).toBeGreaterThan(2);
   });
 });
+
+describe("Microphone section", () => {
+  it("is omitted when live_go2rtc_stream is not configured", () => {
+    const sections = buildDiagnostics({
+      cardVersion: "2.10.0",
+      viewMode: "live",
+      hass: hassWith(),
+      config: cfg(),
+      mediaState: baseMediaState,
+      frigateEventsActive: false,
+      liveCardMounted: true,
+      liveLayoutOverride: null,
+      cameraResolutions: baseCameraResolutions,
+      navigatorInfo: baseNavigator,
+      now: fakeNow,
+    });
+    expect(sections.find((s) => s.title === "Microphone")).toBeUndefined();
+  });
+
+  it("appears when live_go2rtc_stream is set, with `idle` and `—` rows by default", () => {
+    const sections = buildDiagnostics({
+      cardVersion: "2.10.0",
+      viewMode: "live",
+      hass: hassWith(),
+      config: cfg({ live_go2rtc_stream: "front_door" }),
+      mediaState: baseMediaState,
+      frigateEventsActive: false,
+      liveCardMounted: true,
+      liveLayoutOverride: null,
+      cameraResolutions: baseCameraResolutions,
+      navigatorInfo: baseNavigator,
+      now: fakeNow,
+    });
+    const mic = sections.find((s) => s.title === "Microphone");
+    expect(mic).toBeDefined();
+    const rows = Object.fromEntries((mic?.rows ?? []).map((r) => [r[0], r[1]]));
+    expect(rows["State"]).toBe("idle");
+    expect(rows["ICE state"]).toBe("—");
+    expect(rows["RTT"]).toBe("—");
+    expect(rows["go2rtc stream"]).toBe("front_door");
+  });
+
+  it("surfaces stats when active and shows error row when error is set", () => {
+    const sections = buildDiagnostics({
+      cardVersion: "2.10.0",
+      viewMode: "live",
+      hass: hassWith(),
+      config: cfg({ live_go2rtc_stream: "front_door" }),
+      mediaState: baseMediaState,
+      frigateEventsActive: false,
+      liveCardMounted: true,
+      liveLayoutOverride: null,
+      cameraResolutions: baseCameraResolutions,
+      navigatorInfo: baseNavigator,
+      now: fakeNow,
+      micStats: {
+        state: "active",
+        iceState: "connected",
+        rttMs: 42,
+        packetLossPct: 1.5,
+        jitterMs: 3,
+        level: 0.42,
+        audioProcessing: {
+          echoCancellation: true,
+          noiseSuppression: false,
+          autoGainControl: true,
+        },
+      },
+      micError: { code: "ws-server-error", detail: "no such stream" },
+    });
+    const mic = sections.find((s) => s.title === "Microphone");
+    const rows = Object.fromEntries((mic?.rows ?? []).map((r) => [r[0], r[1]]));
+    expect(rows["State"]).toBe("active");
+    expect(rows["Last error"]).toBe("ws-server-error (no such stream)");
+    expect(rows["RTT"]).toBe("42 ms");
+    expect(rows["Packet loss"]).toBe("1.5%");
+    expect(rows["Jitter"]).toBe("3 ms");
+    expect(rows["Input level"]).toBe("42%");
+    expect(rows["Audio processing"]).toBe("echo, no-ns, agc");
+  });
+
+  it("omits the Last error row when no error is set", () => {
+    const sections = buildDiagnostics({
+      cardVersion: "2.10.0",
+      viewMode: "live",
+      hass: hassWith(),
+      config: cfg({ live_go2rtc_stream: "front_door" }),
+      mediaState: baseMediaState,
+      frigateEventsActive: false,
+      liveCardMounted: true,
+      liveLayoutOverride: null,
+      cameraResolutions: baseCameraResolutions,
+      navigatorInfo: baseNavigator,
+      now: fakeNow,
+    });
+    const mic = sections.find((s) => s.title === "Microphone");
+    const keys = (mic?.rows ?? []).map((r) => r[0]);
+    expect(keys).not.toContain("Last error");
+  });
+});

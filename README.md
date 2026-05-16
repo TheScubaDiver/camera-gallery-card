@@ -84,6 +84,7 @@ FileTrack is a fork of the archived [files integration by TarheelGrad1998](https
 - Default live camera
 - Camera friendly names and entity IDs in selector
 - Auto-teardown of stream + push-to-talk on view switch (no audio/bandwidth leak)
+- **Two-way audio (talkback)** — tap the mic pill in live view to talk back through go2rtc. **Per-camera** — multi-camera setups can have mic talkback on some entries and not others; the pill appears/disappears as the user navigates the picker. Supports toggle and push-to-talk interaction, live input-level ring, four typed visual states (idle / connecting / active / error), retry on transient WebSocket glitches, screen-reader announcements, and reduced-motion fallback. **Prerequisites:** a camera with an audio backchannel speaker, the [AlexxIT/WebRTC](https://github.com/AlexxIT/WebRTC) HACS integration installed (provides the signed `/api/webrtc/ws` endpoint the card connects to), and a go2rtc `streams:` entry that routes the camera's backchannel. Configure with `live_mic_streams: { <camera_id>: <go2rtc_stream> }` (and optionally `live_mic_mode: ptt`, `live_mic_audio_processing`, or custom ICE servers via `live_mic_ice_servers` / `live_mic_force_relay`)
 
 ### Actions
 
@@ -246,6 +247,13 @@ Then in the card editor: **General → Delete services → Frigate** → pick `r
 | `show_camera_title` | Show camera name in controls bar |
 | `persistent_controls` | Always show controls (don't fade out) |
 | `menu_buttons` | Configurable action buttons in the hamburger menu |
+| `live_mic_streams` | Per-camera map of go2rtc backchannel streams. Keys are camera entity ids (`camera.front_door`) or synthetic stream ids (`__cgc_stream_0__` — see caveat below); values are non-empty go2rtc stream names. The mic pill appears only on cameras present in the map. Once *any* row is filled, the map is authoritative — cameras absent from it have no mic. Example: `live_mic_streams: { camera.front_door: front_door, camera.driveway: driveway }` |
+| `live_go2rtc_stream` | Legacy single-camera fallback. Applies globally only when `live_mic_streams` is empty/absent. Filling any row in `live_mic_streams` makes the map authoritative and this key is ignored |
+| `live_go2rtc_url` | Optional. Direct connection URL to an external go2rtc instance (e.g. `http://192.168.1.x:1984`) — used by the **live video** fast-path only, not by the mic. Leave empty to route through the WebRTC integration |
+| `live_mic_mode` | Mic interaction model: `toggle` (default — tap to start/stop) or `ptt` (push-to-talk — press and hold while speaking) |
+| `live_mic_audio_processing` | Per-mic Web Audio constraints. All true by default. Sub-keys: `echo_cancellation`, `noise_suppression`, `auto_gain_control`. (Capture is always mono — `channelCount: 1` — to halve upstream bandwidth without losing voice quality.) |
+| `live_mic_ice_servers` | Advanced. Override the built-in STUN-only list with your own STUN/TURN servers. Same shape as WebRTC's `RTCIceServer`: `[{urls: "...", username: "...", credential: "..."}, ...]`. Default is STUN-only (Cloudflare + Google) — voice traffic stays direct and never proxies through a third party. Add a TURN entry here only if you're behind symmetric NAT (see Coturn example below) |
+| `live_mic_force_relay` | Advanced. Set to `true` to force `iceTransportPolicy: "relay"` (TURN-only). Useless without a TURN server configured in `live_mic_ice_servers` |
 | **Filters** | |
 | `object_filters` | Filter buttons (built-in and custom) |
 | `object_colors` | Color per object filter |
@@ -265,6 +273,39 @@ Then in the card editor: **General → Delete services → Frigate** → pick `r
 ---
 
 ## Example configurations
+
+### Two-way audio (talkback)
+
+Multi-camera setup with mic on the two cameras that actually have speakers:
+
+```yaml
+type: custom:camera-gallery-card
+source_mode: media
+live_enabled: true
+live_camera_entities:
+  - camera.front_door     # mic-capable doorbell
+  - camera.driveway       # mic-capable PTZ
+  - camera.backyard       # no speaker, intentionally omitted from the map
+live_mic_streams:
+  camera.front_door: front_door     # go2rtc streams: key
+  camera.driveway: driveway
+live_mic_mode: ptt        # press-and-hold; omit for tap-to-toggle
+```
+
+**Caveat for `live_stream_urls` (synthetic ids).** When you put mic config on a stream-URL entry, the key is `__cgc_stream_<N>__` where `N` is the position in `live_stream_urls`. If you reorder the array, the keys point at the wrong streams. Use the editor (it re-binds the inputs to the visible names) or stick to entity-keyed entries for stability.
+
+**Custom TURN (Coturn) for symmetric NAT.** Default is STUN-only — voice traffic stays direct on your LAN. If you need a relay (e.g. talking to a Tailscale endpoint from a flaky cellular network):
+
+```yaml
+live_mic_ice_servers:
+  - urls: stun:stun.cloudflare.com:3478
+  - urls:
+      - turn:turn.example.com:3478
+      - turns:turn.example.com:5349
+    username: your_username
+    credential: your_secret
+# live_mic_force_relay: true   # only if direct ICE never succeeds
+```
 
 ### Minimal — sensor mode
 

@@ -150,6 +150,124 @@ export function hasLiveConfig(opts: {
 }
 
 /**
+ * Has the user configured at least one entry in the per-camera mic map?
+ * Used by `micStreamForCamera` to decide whether the legacy single-global
+ * fallback applies — once the map has any entry, it owns the namespace.
+ */
+function hasMicMapEntries(map: unknown): map is Record<string, string> {
+  if (!map || typeof map !== "object") return false;
+  for (const v of Object.values(map as Record<string, unknown>)) {
+    if (typeof v === "string" && v.trim()) return true;
+  }
+  return false;
+}
+
+/**
+ * Resolve the go2rtc backchannel stream name for a specific camera (HA
+ * entity id or synthetic stream id). Returns "" when no mic is configured
+ * for that camera.
+ *
+ * Lookup order:
+ *  1. **If `live_mic_streams` has any entry**, only the map applies —
+ *     cameras absent from the map have no mic. This is the canonical
+ *     mode for multi-camera setups: once you start filling the map, you
+ *     own the mic surface for every camera.
+ *  2. **If the map is empty / absent**, fall back to the legacy
+ *     `live_go2rtc_stream` — applies globally to whichever camera is
+ *     active. Preserves the original single-camera behavior for users
+ *     who haven't migrated to the map yet.
+ *
+ * The split matters: previously the resolver fell back to legacy on every
+ * per-key miss, which meant a user with one map entry + a legacy key
+ * would see mic pills on every other camera too. Now the map is
+ * authoritative the moment it's used.
+ */
+export function micStreamForCamera(
+  cameraId: string | null | undefined,
+  config: CameraGalleryCardConfig | null | undefined
+): string {
+  const id = String(cameraId ?? "").trim();
+  const map = config?.live_mic_streams;
+  if (id && hasMicMapEntries(map)) {
+    const v = map[id];
+    if (typeof v === "string") {
+      const trimmed = v.trim();
+      if (trimmed) return trimmed;
+    }
+    return ""; // Map is authoritative — don't fall through to legacy.
+  }
+  const single = String(config?.live_go2rtc_stream ?? "").trim();
+  return single;
+}
+
+/**
+ * `true` when the user has configured any mic backchannel — either the
+ * per-camera map has at least one non-empty entry, or the legacy single
+ * `live_go2rtc_stream` is set. Used to decide whether to render the
+ * editor's "Microphone backchannels" section at all.
+ */
+export function hasAnyMicStream(config: CameraGalleryCardConfig | null | undefined): boolean {
+  const map = config?.live_mic_streams;
+  if (map && typeof map === "object") {
+    for (const v of Object.values(map)) {
+      if (typeof v === "string" && v.trim()) return true;
+    }
+  }
+  return Boolean(String(config?.live_go2rtc_stream ?? "").trim());
+}
+
+/**
+ * Camera entities the multi-camera grid layout should render. Filtered to
+ * `camera.*` strings (`live_camera_entities` items that look like synthetic
+ * stream ids or empty values are dropped — `ha-camera-stream` can't render
+ * them, and bespoke RTC mounting per-tile is too costly).
+ *
+ * Order is preserved from config so the user's YAML position controls the
+ * tile order.
+ */
+export function getGridCameraEntities(
+  config: CameraGalleryCardConfig | null | undefined
+): string[] {
+  const list = config?.live_camera_entities;
+  if (!Array.isArray(list)) return [];
+  return list.filter((e): e is string => typeof e === "string" && e.startsWith("camera."));
+}
+
+/**
+ * Map the number of cameras to grid dimensions. Always a square so two
+ * cameras don't render as a 1×2 row (which looks broken next to single-cam
+ * mode); empty cells fill with the host background.
+ *
+ * Breakpoints: ≤4 → 2×2, ≤9 → 3×3, else 4×4 (camera counts beyond 16 keep
+ * 4×4 and just clip silently — sane fallback over picking 5×5 on a
+ * mobile screen).
+ */
+export function gridDims(count: number): { cols: number; rows: number } {
+  if (count <= 4) return { cols: 2, rows: 2 };
+  if (count <= 9) return { cols: 3, rows: 3 };
+  return { cols: 4, rows: 4 };
+}
+
+/**
+ * Whether the live view should render the multi-camera grid right now.
+ * Composes the three independent checks:
+ *   1. The runtime tile-tap override forces single mode.
+ *   2. The config asks for grid layout.
+ *   3. There are at least 2 grid-eligible cameras (`camera.*`).
+ *
+ * `override === "single"` always wins because the user's most recent
+ * interaction trumps the persisted config.
+ */
+export function isGridLayout(
+  config: CameraGalleryCardConfig | null | undefined,
+  override: "single" | null
+): boolean {
+  if (override === "single") return false;
+  if (config?.live_layout !== "grid") return false;
+  return getGridCameraEntities(config).length >= 2;
+}
+
+/**
  * Display name for an entry in the live-camera picker. Handles three cases:
  *  - synthetic stream id → the entry's `name` from `live_stream_urls`
  *  - camera entity with `friendly_name` → that

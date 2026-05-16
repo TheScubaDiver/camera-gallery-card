@@ -300,6 +300,30 @@ export const STYLE_SECTIONS: readonly StyleSection[] = [
     ],
   },
   {
+    id: "talkback",
+    label: "Two-way audio",
+    icon: "mdi:microphone-outline",
+    controls: [
+      {
+        type: "color",
+        hostId: "talkback-bg-host",
+        variable: "--cgc-talkback-bg",
+        label: "Background",
+      },
+      {
+        type: "slider",
+        id: "talkbackop",
+        valId: "talkbackopval",
+        configKey: "talkback_opacity",
+        label: "Opacity",
+        min: BAR_OPACITY_MIN,
+        max: BAR_OPACITY_MAX,
+        default: DEFAULT_BAR_OPACITY,
+        unit: "%",
+      },
+    ],
+  },
+  {
     id: "live_navigation",
     label: "Live navigation",
     icon: "mdi:chevron-right",

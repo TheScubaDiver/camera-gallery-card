@@ -112,6 +112,19 @@ export interface InputConfig {
   live_stream_urls?: LiveStreamUrlEntryInput[];
   live_go2rtc_url?: string;
   live_go2rtc_stream?: string;
+  live_mic_mode?: string;
+  live_mic_audio_processing?: {
+    echo_cancellation?: boolean;
+    noise_suppression?: boolean;
+    auto_gain_control?: boolean;
+  };
+  live_mic_streams?: Record<string, string>;
+  live_mic_ice_servers?: Array<{
+    urls?: string | string[];
+    username?: string;
+    credential?: string;
+  }>;
+  live_mic_force_relay?: boolean;
   start_mode?: string;
 
   // ─── Delete ────────────────────────────────────────────────
@@ -126,6 +139,7 @@ export interface InputConfig {
 
   // ─── Layout / styling ──────────────────────────────────────
   bar_opacity?: number;
+  talkback_opacity?: number;
   chevron_opacity?: number;
   bar_position?: string;
   thumb_size?: number;

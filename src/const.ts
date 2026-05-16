@@ -20,6 +20,7 @@ export const OBJECT_FITS = ["cover", "contain"] as const;
 export const CONTROLS_MODES = ["overlay", "fixed"] as const;
 export const ASPECT_RATIOS = ["16:9", "4:3", "1:1"] as const;
 export const LIVE_LAYOUTS = ["single", "grid"] as const;
+export const MIC_MODES = ["toggle", "ptt"] as const;
 
 export type SourceMode = (typeof SOURCE_MODES)[number];
 export type PreviewPosition = (typeof PREVIEW_POSITIONS)[number];
@@ -32,6 +33,7 @@ export type ObjectFit = (typeof OBJECT_FITS)[number];
 export type ControlsMode = (typeof CONTROLS_MODES)[number];
 export type AspectRatio = (typeof ASPECT_RATIOS)[number];
 export type LiveLayout = (typeof LIVE_LAYOUTS)[number];
+export type MicMode = (typeof MIC_MODES)[number];
 
 /** Public CSS-variable namespace — every styling API key is `--cgc-*`. */
 export type CssVarKey = `--cgc-${string}`;
@@ -143,6 +145,43 @@ export const MAX_POSTER_WIDTH_PX = 320;
  * at 320 px wide. Audit A15. */
 export const POSTER_JPEG_QUALITY = 0.6;
 
+// -------- WebRTC two-way audio (mic) --------
+//
+// Numbers tuned for typical HA + go2rtc deployments. See `webrtc-mic.ts` for
+// the choreography that consumes them.
+//
+// MIC_ERROR_DISPLAY_MS: long enough for a user to read the toast, short
+//   enough that it auto-clears before the next interaction.
+// MIC_WS_CONNECT_TIMEOUT_MS: covers slow LAN + go2rtc init handshake
+//   (~3 s typical, 10 s ceiling). Past this we surface a timeout.
+// MIC_RETRY_DELAY_MS: single backoff between transient retry attempts.
+//   Short — transient WS failures usually clear on the very next try.
+// MIC_PERSISTENT_NOTIFICATION_THROTTLE_MS: prevents the HA notification
+//   panel from filling up when a user rapidly toggles a broken setup.
+// MIC_STATS_POLL_MS: 1 Hz — `pc.getStats()` is non-trivial; once per
+//   second is plenty for the diagnostics-modal surface.
+// MIC_LEVEL_RAF_THROTTLE_MS: ~20 Hz UI tick for the input-level ring.
+//   Below 50 ms the CSS variable transition is the bottleneck, above
+//   100 ms the ring visibly stutters.
+// MIC_MAX_TRANSIENT_RETRIES: 1 — anything more is a user-facing failure,
+//   not a glitch.
+// MIC_ICE_CONNECT_TIMEOUT_MS: once the SDP answer is received we wait for
+//   ICE to actually transition to "connected"/"completed" before flipping
+//   the pill to "active". 8 s covers slow gathering + relay handshake;
+//   anything longer is effectively unreachable.
+// MIC_ICE_DISCONNECT_GRACE_MS: brief WiFi handoffs / cellular blips
+//   transiently drop ICE to "disconnected"; give it a few seconds to
+//   recover before tearing down. 3 s is the empirical sweet spot.
+export const MIC_ERROR_DISPLAY_MS = 8_000;
+export const MIC_WS_CONNECT_TIMEOUT_MS = 10_000;
+export const MIC_ICE_CONNECT_TIMEOUT_MS = 8_000;
+export const MIC_ICE_DISCONNECT_GRACE_MS = 3_000;
+export const MIC_RETRY_DELAY_MS = 500;
+export const MIC_PERSISTENT_NOTIFICATION_THROTTLE_MS = 30_000;
+export const MIC_STATS_POLL_MS = 1_000;
+export const MIC_LEVEL_RAF_THROTTLE_MS = 50;
+export const MIC_MAX_TRANSIENT_RETRIES = 1;
+
 // -------- Long-press gestures --------
 export const THUMB_LONG_PRESS_MOVE_PX = 12;
 export const THUMB_LONG_PRESS_MS = 520;
@@ -239,6 +278,10 @@ export const MS_RESOLVE_FAILURE_TTL_MS = 60_000;
 export const DEFAULT_LIVE_AUTO_MUTED = true;
 export const DEFAULT_LIVE_ENABLED = false;
 export const DEFAULT_LIVE_LAYOUT = "single" satisfies LiveLayout;
+export const DEFAULT_LIVE_MIC_MODE = "toggle" satisfies MicMode;
+export const DEFAULT_LIVE_MIC_ECHO_CANCELLATION = true;
+export const DEFAULT_LIVE_MIC_NOISE_SUPPRESSION = true;
+export const DEFAULT_LIVE_MIC_AUTO_GAIN_CONTROL = true;
 export const DEFAULT_MAX_MEDIA = 50;
 export const DEFAULT_OBJECT_FIT = "cover" satisfies ObjectFit;
 export const DEFAULT_PREVIEW_CLOSE_ON_TAP_WHEN_GATED = true;

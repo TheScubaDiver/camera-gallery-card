@@ -477,8 +477,35 @@ export class MediaSourceClient {
     return this.state.pairedThumbs;
   }
 
+  /**
+   * `true` while a load is in flight OR before the very first load has
+   * completed.
+   *
+   * The `loadedAt === 0` branch covers the cold-mount race: `setConfig`
+   * fires synchronously, the card's first render runs in the next
+   * microtask, but `ensureLoaded`'s sub-paths only flip `state.loading`
+   * to `true` after their first `await` (so possibly after the first
+   * render). Without this guard, that render sees `loading: false` +
+   * `list: []` and the card flashes "No media found." — and if the
+   * subsequent load hits an empty result (Frigate WS with no events,
+   * non-Frigate root with no `path_datetime_format`), the flash becomes
+   * permanent until config changes.
+   *
+   * `loadedAt` is non-zero only after any load completes — including
+   * the empty-result paths (see `ensureLoaded` and `_loadCalendarPath`
+   * which now both set `loadedAt` + fire `_fireChange` on empty exit).
+   * So once a load has actually finished, this falls back to
+   * `state.loading` and correctly reports "not loading" for an
+   * empty-but-loaded state, letting the card render "No media found."
+   * as intended.
+   */
   isLoading(): boolean {
-    return this.state.loading;
+    if (this.state.loading) return true;
+    const roots = this._config?.media_sources;
+    if (this.state.loadedAt === 0 && Array.isArray(roots) && roots.length > 0) {
+      return true;
+    }
+    return false;
   }
 
   /**
@@ -696,8 +723,13 @@ export class MediaSourceClient {
       this._fireChange();
     } else if (frigateRoots.length > 0 && otherRoots.length === 0) {
       // All-Frigate config but WS path returned nothing — surface an empty
-      // list rather than spinning forever.
+      // list rather than spinning forever. Without the `_fireChange()` +
+      // `loadedAt` here, the card's `onChange` never fires and the empty
+      // state isn't pushed to the pipeline cache; the user sees a stuck
+      // "No media found." with no way to recover until config changes.
       this.setList([]);
+      this.state.loadedAt = Date.now();
+      this._fireChange();
     }
   }
 
@@ -846,9 +878,16 @@ export class MediaSourceClient {
       // Validation in normalize.ts requires `path_datetime_format` for media
       // mode (unless Frigate REST handles it). Reaching here means a Frigate
       // root with no REST URL — surface an empty list rather than spin.
+      // Must fire `_fireChange()` + write `loadedAt` so the card's pipeline
+      // sees the empty completion; otherwise the gallery shows a stuck
+      // "No media found." (the empty state is correct, but the card never
+      // re-renders past whatever it last had on screen — typically a
+      // pre-load "No media found." flash that becomes permanent).
       this.state.calendar = { byDay: new Map(), days: [] };
       this.state.dayCache = new Map();
       this.setList([]);
+      this.state.loadedAt = Date.now();
+      this._fireChange();
       return;
     }
 

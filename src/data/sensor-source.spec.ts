@@ -250,4 +250,62 @@ describe("SensorSourceClient.getItems", () => {
     local.getItems();
     expect(onChange).toHaveBeenCalledTimes(1);
   });
+
+  it("fires onChange from setHass when a watched fileList ref changes — fixes the stuck 'No media found' bug", () => {
+    // Regression: card first-renders before HA has populated the sensor's
+    // state; getItems() returns []; sameAsPrev (prev was also []) suppresses
+    // onChange; pipeline caches []. Then HA pushes the populated sensor
+    // attribute. Without the setHass detection, *nothing* fires onChange,
+    // so the pipeline's rev never bumps and the cached [] stays forever.
+    // The card renders "No media found." indefinitely.
+    const onChange = vi.fn();
+    const local = new SensorSourceClient({ onChange });
+    local.load(baseConfig({ entities: ["sensor.cam"] }));
+
+    // Initial hass: sensor entity missing.
+    const h0 = makeFakeHass();
+    local.setHass(h0);
+    expect(local.getItems()).toEqual([]);
+    expect(onChange).not.toHaveBeenCalled(); // sameAsPrev short-circuit
+
+    // HA pushes the populated state. The setHass detection MUST fire
+    // onChange so the pipeline cache invalidates.
+    const h1 = makeFakeHass();
+    h1.setState("sensor.cam", { fileList: ["/local/x.mp4"] });
+    local.setHass(h1);
+    expect(onChange).toHaveBeenCalledTimes(1);
+
+    // Subsequent identical pushes (same fileList ref) do not re-fire.
+    local.setHass(h1);
+    expect(onChange).toHaveBeenCalledTimes(1);
+  });
+
+  it("setHass does not fire onChange when no watched sensor attribute changed", () => {
+    const onChange = vi.fn();
+    const local = new SensorSourceClient({ onChange });
+    local.load(baseConfig({ entities: ["sensor.cam"] }));
+
+    const h0 = makeFakeHass();
+    h0.setState("sensor.cam", { fileList: ["/local/a.mp4"] });
+    local.setHass(h0);
+    expect(onChange).not.toHaveBeenCalled();
+
+    // Unrelated entity changed in a new hass object — must not invalidate.
+    const h1 = makeFakeHass();
+    h1.setState("sensor.cam", { fileList: h0.states["sensor.cam"]!.attributes!["fileList"] });
+    h1.setState("camera.front", { state: "idle" });
+    local.setHass(h1);
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it("setHass skips the detect step on first hass (no oldHass to diff against)", () => {
+    const onChange = vi.fn();
+    const local = new SensorSourceClient({ onChange });
+    local.load(baseConfig({ entities: ["sensor.cam"] }));
+
+    const h = makeFakeHass();
+    h.setState("sensor.cam", { fileList: ["/local/a.mp4"] });
+    local.setHass(h); // first hass — no diff to compute
+    expect(onChange).not.toHaveBeenCalled();
+  });
 });

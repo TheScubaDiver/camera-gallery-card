@@ -5,10 +5,15 @@ import type { HassEntity } from "../types/hass";
 import {
   friendlyCameraName,
   getAllLiveCameraEntities,
+  getGridCameraEntities,
   getLiveCameraOptions,
   getStreamEntries,
   getStreamEntryById,
+  gridDims,
+  hasAnyMicStream,
   hasLiveConfig,
+  isGridLayout,
+  micStreamForCamera,
   STREAM_ID_PREFIX,
 } from "./live-config";
 
@@ -227,5 +232,223 @@ describe("friendlyCameraName", () => {
 
   it("returns empty string on empty input", () => {
     expect(friendlyCameraName({ entityId: "", config: cfg(), hassStates: {} })).toBe("");
+  });
+});
+
+describe("getGridCameraEntities", () => {
+  it("returns [] for null/empty config", () => {
+    expect(getGridCameraEntities(null)).toEqual([]);
+    expect(getGridCameraEntities(cfg())).toEqual([]);
+  });
+
+  it("filters non-camera.* entries", () => {
+    expect(
+      getGridCameraEntities(
+        cfg({
+          live_camera_entities: ["camera.front", "sensor.x", "binary_sensor.y", "camera.back"],
+        })
+      )
+    ).toEqual(["camera.front", "camera.back"]);
+  });
+
+  it("preserves the order from config", () => {
+    expect(
+      getGridCameraEntities(
+        cfg({ live_camera_entities: ["camera.back", "camera.front", "camera.side"] })
+      )
+    ).toEqual(["camera.back", "camera.front", "camera.side"]);
+  });
+
+  it("ignores non-string entries", () => {
+    expect(
+      getGridCameraEntities(
+        cfg({
+          live_camera_entities: ["camera.front", null as unknown as string, "camera.back"],
+        })
+      )
+    ).toEqual(["camera.front", "camera.back"]);
+  });
+});
+
+describe("gridDims", () => {
+  it("returns 2x2 for counts 0..4", () => {
+    for (const n of [0, 1, 2, 3, 4]) {
+      expect(gridDims(n)).toEqual({ cols: 2, rows: 2 });
+    }
+  });
+
+  it("returns 3x3 for counts 5..9", () => {
+    for (const n of [5, 6, 7, 8, 9]) {
+      expect(gridDims(n)).toEqual({ cols: 3, rows: 3 });
+    }
+  });
+
+  it("returns 4x4 for counts 10..16", () => {
+    for (const n of [10, 12, 16]) {
+      expect(gridDims(n)).toEqual({ cols: 4, rows: 4 });
+    }
+  });
+
+  it("returns 4x4 for counts > 16 (cap, no 5x5 fallback)", () => {
+    expect(gridDims(17)).toEqual({ cols: 4, rows: 4 });
+    expect(gridDims(100)).toEqual({ cols: 4, rows: 4 });
+  });
+});
+
+describe("isGridLayout", () => {
+  it("returns false for null config", () => {
+    expect(isGridLayout(null, null)).toBe(false);
+  });
+
+  it("returns false when override is single, even with grid + 2+ cameras", () => {
+    expect(
+      isGridLayout(
+        cfg({
+          live_layout: "grid",
+          live_camera_entities: ["camera.a", "camera.b"],
+        }),
+        "single"
+      )
+    ).toBe(false);
+  });
+
+  it("returns false when live_layout is not 'grid'", () => {
+    expect(
+      isGridLayout(
+        cfg({
+          live_layout: "single",
+          live_camera_entities: ["camera.a", "camera.b"],
+        }),
+        null
+      )
+    ).toBe(false);
+  });
+
+  it("returns false when grid is requested but fewer than 2 cameras are eligible", () => {
+    expect(isGridLayout(cfg({ live_layout: "grid", live_camera_entities: [] }), null)).toBe(false);
+    expect(
+      isGridLayout(cfg({ live_layout: "grid", live_camera_entities: ["camera.a"] }), null)
+    ).toBe(false);
+  });
+
+  it("returns true with grid + 2+ camera.* entities and no override", () => {
+    expect(
+      isGridLayout(
+        cfg({
+          live_layout: "grid",
+          live_camera_entities: ["camera.a", "camera.b"],
+        }),
+        null
+      )
+    ).toBe(true);
+    expect(
+      isGridLayout(
+        cfg({
+          live_layout: "grid",
+          live_camera_entities: ["camera.a", "camera.b", "camera.c"],
+        }),
+        null
+      )
+    ).toBe(true);
+  });
+});
+
+describe("micStreamForCamera", () => {
+  it("returns '' for null config / empty camera id", () => {
+    expect(micStreamForCamera("camera.x", null)).toBe("");
+    expect(micStreamForCamera(null, cfg())).toBe("");
+    expect(micStreamForCamera("", cfg())).toBe("");
+  });
+
+  it("returns the per-camera mapping when set", () => {
+    expect(
+      micStreamForCamera(
+        "camera.front_door",
+        cfg({
+          live_mic_streams: {
+            "camera.front_door": "front_door",
+            "camera.driveway": "driveway",
+          },
+        })
+      )
+    ).toBe("front_door");
+    expect(
+      micStreamForCamera(
+        "camera.driveway",
+        cfg({
+          live_mic_streams: {
+            "camera.front_door": "front_door",
+            "camera.driveway": "driveway",
+          },
+        })
+      )
+    ).toBe("driveway");
+  });
+
+  it("supports synthetic stream ids as keys", () => {
+    expect(
+      micStreamForCamera(
+        `${STREAM_ID_PREFIX}_0__`,
+        cfg({ live_mic_streams: { [`${STREAM_ID_PREFIX}_0__`]: "backyard" } })
+      )
+    ).toBe("backyard");
+  });
+
+  it("does NOT fall back to legacy live_go2rtc_stream when the map has entries — map is authoritative", () => {
+    // Once any row in the per-camera map is filled, the legacy global
+    // fallback is ignored. This prevents surprise mic pills on cameras
+    // the user didn't configure in a multi-camera setup.
+    expect(
+      micStreamForCamera(
+        "camera.missing",
+        cfg({
+          live_mic_streams: { "camera.front_door": "front_door" },
+          live_go2rtc_stream: "legacy_default",
+        })
+      )
+    ).toBe("");
+  });
+
+  it("falls back to live_go2rtc_stream when the map is absent entirely", () => {
+    expect(micStreamForCamera("camera.x", cfg({ live_go2rtc_stream: "legacy_default" }))).toBe(
+      "legacy_default"
+    );
+  });
+
+  it("falls back to live_go2rtc_stream when the map has only whitespace-only values (= effectively empty)", () => {
+    expect(
+      micStreamForCamera(
+        "camera.front_door",
+        cfg({
+          live_mic_streams: { "camera.front_door": "   " },
+          live_go2rtc_stream: "fallback",
+        })
+      )
+    ).toBe("fallback");
+  });
+
+  it("returns '' when neither the per-camera map nor the legacy fallback resolves", () => {
+    expect(micStreamForCamera("camera.x", cfg({ live_mic_streams: {} }))).toBe("");
+  });
+});
+
+describe("hasAnyMicStream", () => {
+  it("false for null/empty config", () => {
+    expect(hasAnyMicStream(null)).toBe(false);
+    expect(hasAnyMicStream(cfg())).toBe(false);
+  });
+
+  it("true when the map has at least one non-empty value", () => {
+    expect(hasAnyMicStream(cfg({ live_mic_streams: { "camera.x": "front_door" } }))).toBe(true);
+  });
+
+  it("false when the map exists but every value is empty", () => {
+    expect(hasAnyMicStream(cfg({ live_mic_streams: { "camera.x": "", "camera.y": "  " } }))).toBe(
+      false
+    );
+  });
+
+  it("true when only the legacy single-stream is set", () => {
+    expect(hasAnyMicStream(cfg({ live_go2rtc_stream: "front_door" }))).toBe(true);
   });
 });

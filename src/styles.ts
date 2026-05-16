@@ -1129,6 +1129,40 @@ export const cardStyles = css`
     border-radius: 50%;
   }
 
+  /* Mic error toast — sits inside live-controls-bar so layout doesn't
+     shift; role=status + aria-live=polite announces via screen readers. */
+  .mic-error-toast {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px;
+    margin-top: 4px;
+    border-radius: 10px;
+    font-size: 12px;
+    line-height: 1.3;
+    color: #fff;
+    background: rgba(220, 38, 38, 0.92);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+    pointer-events: auto;
+    max-width: 320px;
+    opacity: 0;
+    transform: translateY(-4px);
+    transition:
+      opacity 160ms ease,
+      transform 160ms ease;
+  }
+  .mic-error-toast.visible {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  .mic-error-toast:not(.visible) {
+    visibility: hidden;
+  }
+  .mic-error-toast ha-icon {
+    --mdc-icon-size: 16px;
+    flex: 0 0 auto;
+  }
+
   .topbar {
     display: flex;
     align-items: center;
