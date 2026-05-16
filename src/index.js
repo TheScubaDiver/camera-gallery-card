@@ -2123,13 +2123,19 @@ class CameraGalleryCard extends LitElement {
           : err
             ? "rgba(127, 29, 29, 0.30)"
             : "transparent";
+    // Avoid stacking on top of the pill bar — when pills sit at the
+    // bottom (`bar_position: bottom`) flip the talkback bar to the top.
+    const placement =
+      this.config?.bar_position === "bottom"
+        ? "top:12px;bottom:auto"
+        : "bottom:12px;top:auto";
     return html`
       <div
         class="mic-talkback-bar ${cls}"
         role="button"
         tabindex="0"
         aria-label=${`Push-to-talk (${state})`}
-        style="position:absolute;left:12px;right:12px;bottom:12px;min-height:38px;height:38px;padding:0 16px;font-size:14px;display:flex;align-items:center;justify-content:center;gap:10px;border-radius:14px;color:#fff;font-weight:600;letter-spacing:0.02em;background:${bg};box-shadow:inset 0 1px 0 rgba(255,255,255,0.14);user-select:none;-webkit-user-select:none;touch-action:none;z-index:5;backdrop-filter:blur(16px) saturate(160%);-webkit-backdrop-filter:blur(16px) saturate(160%);text-shadow:0 1px 2px rgba(0,0,0,0.5);overflow:hidden;"
+        style="position:absolute;left:12px;right:12px;${placement};min-height:38px;height:38px;padding:0 16px;font-size:14px;display:flex;align-items:center;justify-content:center;gap:10px;border-radius:14px;color:#fff;font-weight:600;letter-spacing:0.02em;background:${bg};box-shadow:inset 0 1px 0 rgba(255,255,255,0.14);user-select:none;-webkit-user-select:none;touch-action:none;z-index:5;backdrop-filter:blur(16px) saturate(160%);-webkit-backdrop-filter:blur(16px) saturate(160%);text-shadow:0 1px 2px rgba(0,0,0,0.5);overflow:hidden;"
         @pointerdown=${this._onMicPointerDown}
         @pointerup=${this._onMicPointerUp}
         @pointercancel=${this._onMicPointerUp}
