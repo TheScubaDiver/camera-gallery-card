@@ -6499,9 +6499,11 @@ class CameraGalleryCardEditor extends HTMLElement {
                     const ns = ap.noise_suppression !== false;
                     const agc = ap.auto_gain_control !== false;
                     return `
-                    <div class="row-inline"><span>Echo cancellation</span><label class="cgc-switch"><input type="checkbox" id="live-mic-ec" ${ec ? "checked" : ""}><span class="cgc-track"></span></label></div>
-                    <div class="row-inline"><span>Noise suppression</span><label class="cgc-switch"><input type="checkbox" id="live-mic-ns" ${ns ? "checked" : ""}><span class="cgc-track"></span></label></div>
-                    <div class="row-inline"><span>Auto gain control</span><label class="cgc-switch"><input type="checkbox" id="live-mic-agc" ${agc ? "checked" : ""}><span class="cgc-track"></span></label></div>`;
+                    <div style="display:flex;flex-direction:column;gap:10px;margin-top:6px;">
+                      <div class="row-inline"><span>Echo cancellation</span><label class="cgc-switch"><input type="checkbox" id="live-mic-ec" ${ec ? "checked" : ""}><span class="cgc-track"></span></label></div>
+                      <div class="row-inline"><span>Noise suppression</span><label class="cgc-switch"><input type="checkbox" id="live-mic-ns" ${ns ? "checked" : ""}><span class="cgc-track"></span></label></div>
+                      <div class="row-inline"><span>Auto gain control</span><label class="cgc-switch"><input type="checkbox" id="live-mic-agc" ${agc ? "checked" : ""}><span class="cgc-track"></span></label></div>
+                    </div>`;
                   })()}
                   ` : ``}
                 </div>
