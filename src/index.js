@@ -6467,12 +6467,12 @@ class CameraGalleryCardEditor extends HTMLElement {
                     }
                     return `<div class="mic-stream-list" style="display:flex;flex-direction:column;gap:6px;margin-top:6px;">
                       ${rows.map((r) => `
-                        <div class="mic-stream-row" style="display:flex;gap:8px;align-items:center;padding:6px 8px;border:1px solid var(--ed-input-border);border-radius:var(--ed-radius-input,8px);">
-                          <div style="flex:1;min-width:0;">
+                        <div class="mic-stream-row" style="display:flex;flex-direction:column;gap:6px;padding:6px 8px;border:1px solid var(--ed-input-border);border-radius:var(--ed-radius-input,8px);">
+                          <div style="min-width:0;">
                             <div style="font-weight:500;">${r.label.replace(/</g,"&lt;")}</div>
                             <div style="font-size:0.72em;opacity:0.6;">${r.sub.replace(/</g,"&lt;")}</div>
                           </div>
-                          <input type="text" class="ed-input mic-stream-input" data-mic-cam="${r.id.replace(/"/g,"&quot;")}" value="${r.value.replace(/"/g,"&quot;")}" placeholder="go2rtc stream name (empty = no mic)" autocomplete="off" style="flex:0 0 240px;" />
+                          <input type="text" class="ed-input mic-stream-input" data-mic-cam="${r.id.replace(/"/g,"&quot;")}" value="${r.value.replace(/"/g,"&quot;")}" placeholder="go2rtc stream name (empty = no mic)" autocomplete="off" style="width:100%;box-sizing:border-box;" />
                         </div>
                       `).join("")}
                     </div>`;
