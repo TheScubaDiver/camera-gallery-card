@@ -411,6 +411,10 @@ The card extracts timestamps from a single configurable pattern, `path_datetime_
 | HH | 2-digit hour (24h) |
 | mm | 2-digit minute |
 | ss | 2-digit second |
+| X | 10-digit Unix timestamp in seconds (decoded to local time) |
+| x | 13-digit Unix timestamp in milliseconds (decoded to local time) |
+
+**Range filenames (`start-end`).** When a format includes the same date/time token twice (or the `X` token twice), the **first** capture is used as the canonical timestamp and the second is treated as a structural anchor. This is what lets a single format string describe `start-end`-style filenames without picking the wrong instant.
 
 ### Layouts
 
@@ -442,6 +446,28 @@ path_datetime_format: YYYY/MM/DD/RLC_YYYYMMDDHHmmss.mp4
 ```
 
 (Reolink/FTP shape — see [issue #99](https://github.com/TheScubaDiver/camera-gallery-card/issues/99).)
+
+**D. Unix epoch in the filename**
+```
+/media/tapo/1706108297-1706108310.mp4
+            └──start──┘ └───end───┘
+path_datetime_format: X-X
+```
+
+Tapo Control writes `unix_start-unix_end.mp4`; `X-X` captures both but uses the start as the canonical time. A single epoch (`1706108297.mp4`) is just `X`. UniFi Protect's `.ubv` files encode the millisecond epoch — `B4FBE47EEF30_0_rotating_1642402659065.ubv` matches `x`.
+
+**E. Calendar-range filenames**
+```
+/media/reolink/cam_20240315083000_20240315083127.mp4
+                   └────start────┘└─────end────┘
+path_datetime_format: YYYYMMDDHHmmss_YYYYMMDDHHmmss
+
+/media/dahua/2024-03-15/ch1/dav/11/11.00.01-11.00.59[M][0@0][0].mp4
+                                   └─start─┘└──end──┘
+path_datetime_format: YYYY-MM-DD/HH.mm.ss-HH.mm.ss
+```
+
+Reolink SD-card exports and Dahua/Amcrest filenames carry two same-format timestamps; the first wins.
 
 ---
 

@@ -226,6 +226,36 @@ describe("collectMediaSamples", () => {
   });
 });
 
+describe("Unix epoch detection", () => {
+  it("detects Tapo Control-style X-X range filenames", () => {
+    // 1778741309 = 2026-05-13T22:48:29Z (within the sanity window).
+    // Use four files all in the X-X shape so the detector lands on it.
+    const samples = [
+      "media-source://media_source/tapo/1778741309-1778741415.mp4",
+      "media-source://media_source/tapo/1778742000-1778742090.mp4",
+      "media-source://media_source/tapo/1778750000-1778750200.mp4",
+      "media-source://media_source/tapo/1778760000-1778760100.mp4",
+    ];
+    const result = scoreSamples(samples);
+    expect(result.format).toBe("X-X");
+    expect(result.matches).toBe(4);
+  });
+
+  it("sanity-window rejects 10-digit non-epoch IDs from auto-detect", () => {
+    // 10-digit camera/asset IDs that resolve to a far-future or pre-2010 date
+    // must not auto-detect as epoch. A `999999999X`-style ID resolves to year
+    // 2286 — outside the sanity window.
+    const samples = [
+      "media-source://x/cam0000000000-0000000060.mp4",
+      "media-source://x/cam9999999999-9999999990.mp4",
+      "media-source://x/cam9999000000-9999000060.mp4",
+    ];
+    const result = scoreSamples(samples);
+    // No epoch candidate should win.
+    expect(result.format === "X-X" || result.format === "X").toBe(false);
+  });
+});
+
 describe("UniFi Protect — title-based detection", () => {
   // UniFi Protect returns a flat list of events with opaque IDs and
   // human-readable titles like `05/12/26 09:46:45 28s Object Detection - Person`.

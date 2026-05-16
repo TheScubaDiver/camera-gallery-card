@@ -95,6 +95,21 @@ const CANDIDATES: readonly string[] = [
   "YYYYMMDD_HHmmss",
   "YYYYMMDD-HHmmss",
   "YYYYMMDDHHmmss",
+  // ─── Layout A — range-style calendar filenames. First-wins capture
+  // pins the canonical timestamp to the start; the duplicate token just
+  // anchors the literal between start and end. Reolink SD cards and
+  // Dahua/Amcrest write these. ───
+  "YYYYMMDDHHmmss_YYYYMMDDHHmmss",
+  "YYYYMMDDHHmmss-YYYYMMDDHHmmss",
+  "HH.mm.ss-HH.mm.ss",
+  // ─── Layout E — Unix epoch. Two-occurrence range patterns first so
+  // tie-break favours them over the single-epoch suggestion. `X` =
+  // seconds (10 digits), `x` = milliseconds (13 digits), per the
+  // moment.js / dayjs convention. ───
+  "X-X",
+  "X_X",
+  "X",
+  "x",
   // ─── Title-style — single segment with literal `/` (UniFi Protect,
   // any other integration that exposes the timestamp only in the
   // human-readable title). `\/` escapes the slash so the parser keeps
@@ -105,6 +120,22 @@ const CANDIDATES: readonly string[] = [
   "DD\\/MM\\/YY HH:mm:ss",
   "YYYY-MM-DD HH:mm:ss",
 ];
+
+/** Sanity window for auto-detect epoch matches: a 10-/13-digit run that
+ * resolves to a date outside this band is almost certainly a random ID, not
+ * a real timestamp. Explicit user configs bypass — only auto-detect cares
+ * about false positives. Lower bound is fixed (2010-01-01); upper bound is
+ * one year past the current local year. */
+const EPOCH_SANITY_YEAR_LOW = 2010;
+function epochSanityYearHigh(): number {
+  return new Date().getFullYear() + 1;
+}
+function isPlausibleEpochYear(year: number): boolean {
+  return year >= EPOCH_SANITY_YEAR_LOW && year <= epochSanityYearHigh();
+}
+function candidateUsesEpoch(format: string): boolean {
+  return /[Xx]/.test(format);
+}
 
 /**
  * Probe a single root: browse + walk a small set of branches, collect file
@@ -177,8 +208,15 @@ async function probeRoot(rootId: string, browse: BrowseFn): Promise<string[]> {
 }
 
 /** Score a candidate format against a list of sample paths. Returns the
- * count of paths that successfully extract a year+month+day from the format. */
-function scoreCandidate(samples: readonly string[], fmt: PathFormat): number {
+ * count of paths that successfully extract a year+month+day from the format.
+ *
+ * Epoch candidates carry an extra plausibility check: the resolved year must
+ * fall in `[EPOCH_SANITY_YEAR_LOW, currentYear+1]`. Without that, any list of
+ * 10-digit asset-IDs would auto-detect as `X` and any 13-digit hash run as
+ * `x`. Explicit user-typed formats skip this check entirely — the gate is
+ * scoped to the detector. */
+function scoreCandidate(samples: readonly string[], cand: string, fmt: PathFormat): number {
+  const epochGated = candidateUsesEpoch(cand);
   let hits = 0;
   for (const path of samples) {
     const fields = matchPathTail(path, fmt);
@@ -188,6 +226,7 @@ function scoreCandidate(samples: readonly string[], fmt: PathFormat): number {
       fields.month !== undefined &&
       fields.day !== undefined
     ) {
+      if (epochGated && !isPlausibleEpochYear(fields.year)) continue;
       hits++;
     }
   }
@@ -251,7 +290,7 @@ export function scoreSamples(samples: readonly string[]): DetectResult {
       allScored.push({ format: cand, matches: 0 });
       continue;
     }
-    allScored.push({ format: cand, matches: scoreCandidate(samples, fmt) });
+    allScored.push({ format: cand, matches: scoreCandidate(samples, cand, fmt) });
   }
 
   // Sort: most matches first; tie-break on candidate index (most-specific
