@@ -821,7 +821,7 @@ class CameraGalleryCard extends LitElement {
     for (const it of items) {
       const src = String(it?.src || "");
       if (!src) continue;
-      if (!isVideo(src)) continue;
+      if (!this._isVideoForSrc(src)) continue;
       const pairedJpg = pairedThumbs.get(src);
       if (pairedJpg) this._posterClient.enqueue(pairedJpg);
     }
@@ -3692,7 +3692,7 @@ class CameraGalleryCard extends LitElement {
               // thumbnail (paired jpg). Raw video capture is deferred
               // until the user clicks the item — see the click-path
               // in `_ensurePreviewVideoHostPlayback`.
-              if (isSensor && key && isVideo(key)) {
+              if (isSensor && key && this._isVideoForSrc(key)) {
                 const pairedJpg = this._sensorClient.getSensorPairedThumbs().get(key);
                 if (pairedJpg) this._posterClient.enqueue(pairedJpg);
               }
@@ -3836,6 +3836,7 @@ class CameraGalleryCard extends LitElement {
       --cgc-card-radius:10px;
       --cgc-bar-opacity:${this.config.bar_opacity};
       --cgc-talkback-opacity:${this.config.talkback_opacity ?? this.config.bar_opacity};
+      --cgc-chevron-opacity:${this.config.chevron_opacity ?? this.config.bar_opacity};
       --cgc-thumb-row-h:${this.config.thumb_size}px;
       --cgc-thumb-empty-h:${this.config.thumb_size}px;
       --cgc-topbar-margin:${STYLE.topbar_margin};

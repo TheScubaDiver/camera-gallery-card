@@ -782,17 +782,27 @@ export const cardStyles = css`
     width: 44px;
     height: 44px;
     border-radius: 999px;
-    border: 1px solid rgba(255, 255, 255, 0.3);
-    background: linear-gradient(135deg, rgba(255, 255, 255, 0.18) 0%, rgba(0, 0, 0, 0.28) 100%);
-    backdrop-filter: blur(16px) saturate(180%);
-    -webkit-backdrop-filter: blur(16px) saturate(180%);
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.25);
+    border: none;
+    background: transparent;
+    backdrop-filter: blur(16px) saturate(160%);
+    -webkit-backdrop-filter: blur(16px) saturate(160%);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14);
     color: #fff;
     display: grid;
     place-items: center;
     cursor: pointer;
     -webkit-tap-highlight-color: transparent;
-    opacity: 0.9;
+    position: relative;
+    overflow: hidden;
+  }
+  .pnavbtn::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    background: var(--cgc-chevron-bg, var(--cgc-pill-bg));
+    opacity: calc(var(--cgc-chevron-opacity, var(--cgc-bar-opacity, 30)) / 100);
+    pointer-events: none;
   }
 
   .pnavbtn[disabled] {
@@ -805,6 +815,8 @@ export const cardStyles = css`
     --mdc-icon-size: var(--ha-icon-size);
     width: var(--ha-icon-size);
     height: var(--ha-icon-size);
+    position: relative;
+    z-index: 1;
   }
 
   .tsbar {
@@ -1066,6 +1078,9 @@ export const cardStyles = css`
     line-height: 1;
     position: relative;
     white-space: nowrap;
+    backdrop-filter: blur(16px) saturate(160%);
+    -webkit-backdrop-filter: blur(16px) saturate(160%);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14);
 
     &::before {
       content: "";
@@ -1074,7 +1089,6 @@ export const cardStyles = css`
       border-radius: inherit;
       background: var(--cgc-pill-bg);
       opacity: calc(var(--cgc-bar-opacity, 30) / 100);
-      backdrop-filter: blur(4px);
       pointer-events: none;
     }
     & ha-icon,
