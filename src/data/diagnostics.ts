@@ -12,6 +12,7 @@
 import { FRESH_FETCH_WINDOW_MS } from "../const";
 import type { CameraGalleryCardConfig } from "../config/normalize";
 import type { HomeAssistant } from "../types/hass";
+import { hasAnyMicStream } from "./live-config";
 import type { MicError, MicStats } from "./webrtc-mic";
 
 /** Visual severity of a row's "value" half. `null` (or missing) = neutral. */
@@ -312,7 +313,7 @@ export function buildDiagnostics(opts: BuildDiagnosticsOptions): DiagSection[] {
     },
   ];
 
-  if (cfg?.live_go2rtc_stream) {
+  if (hasAnyMicStream(cfg)) {
     sections.push(buildMicSection(cfg, opts.micStats ?? null, opts.micError ?? null));
   }
 
