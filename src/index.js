@@ -9036,7 +9036,7 @@ if (oldPanel && tmp.firstElementChild) {
     // Per-camera mic backchannel map: each row writes/clears one key in
     // `live_mic_streams`. When the map becomes empty, drop the key
     // entirely to keep YAML output minimal.
-    root.querySelectorAll(".mic-stream-input").forEach((inp) => {
+    this.shadowRoot.querySelectorAll(".mic-stream-input").forEach((inp) => {
       inp.addEventListener("change", (e) => {
         const cam = String(inp.dataset.micCam || "").trim();
         if (!cam) return;
@@ -9054,7 +9054,7 @@ if (oldPanel && tmp.firstElementChild) {
 
     // Mic interaction mode (toggle vs push-to-talk). Default "toggle"
     // is the only value not stored — keeps the YAML output minimal.
-    root.querySelectorAll("[data-livemicmode]").forEach((btn) => {
+    this.shadowRoot.querySelectorAll("[data-livemicmode]").forEach((btn) => {
       btn.addEventListener("click", () => {
         const mode = btn.dataset.livemicmode;
         if (mode === "ptt") {
