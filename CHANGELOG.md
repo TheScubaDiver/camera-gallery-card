@@ -1,5 +1,39 @@
 # Changelog
 
+## [2.11.0](https://github.com/TheScubaDiver/camera-gallery-card/compare/v2.10.0...v2.11.0) (2026-05-16)
+
+
+### Features
+
+* add per-camera two-way audio (talkback) via WebRTC ([#137](https://github.com/TheScubaDiver/camera-gallery-card/issues/137)) ([a2ebc13](https://github.com/TheScubaDiver/camera-gallery-card/commit/a2ebc1364d41e0afc00c28473604d6f15b5409b8))
+* add runtime mute toggle pill to gallery video preview ([#130](https://github.com/TheScubaDiver/camera-gallery-card/issues/130)) ([50a6d87](https://github.com/TheScubaDiver/camera-gallery-card/commit/50a6d876921180a6109aa770ad6e9c822412116f))
+* auto-detect title-based date formats for flat media sources ([#118](https://github.com/TheScubaDiver/camera-gallery-card/issues/118)) ([16ee49e](https://github.com/TheScubaDiver/camera-gallery-card/commit/16ee49e6b014348b828e47848584da734627cf25))
+* configurable row spacing ([#133](https://github.com/TheScubaDiver/camera-gallery-card/issues/133)) ([663ffee](https://github.com/TheScubaDiver/camera-gallery-card/commit/663ffeeeb321a7808630851b7ec40892912a330b))
+* parse Unix epoch + start-end range filenames in path_datetime_format ([#141](https://github.com/TheScubaDiver/camera-gallery-card/issues/141)) ([001556a](https://github.com/TheScubaDiver/camera-gallery-card/commit/001556a1431cb0530b0126cddfd2ec8225d220f9))
+* prev/next navigation in fullscreen viewer + keyboard nav in live mode ([#134](https://github.com/TheScubaDiver/camera-gallery-card/issues/134)) ([4dc531b](https://github.com/TheScubaDiver/camera-gallery-card/commit/4dc531bc4409e6d389dfaf01b8b8ef32c16c474e))
+
+
+### Bug Fixes
+
+* differentiate Direct API states in diagnostics ([#127](https://github.com/TheScubaDiver/camera-gallery-card/issues/127)) ([ab57a6c](https://github.com/TheScubaDiver/camera-gallery-card/commit/ab57a6cc7a6bf56407e24a1d12e121fb88f6565a))
+* extract card styles + typed STYLE_SECTIONS + audit hardening ([#136](https://github.com/TheScubaDiver/camera-gallery-card/issues/136)) ([cac3c3a](https://github.com/TheScubaDiver/camera-gallery-card/commit/cac3c3a6a43cfc67ac7a06315373f79d22525112))
+* extract item pipeline + view filters + navigation + live-config + diagnostics ([#128](https://github.com/TheScubaDiver/camera-gallery-card/issues/128)) ([d177729](https://github.com/TheScubaDiver/camera-gallery-card/commit/d17772924de462777d1c8eba2576b74b7c1013e8))
+* extract PosterCacheClient with audited hardening ([#121](https://github.com/TheScubaDiver/camera-gallery-card/issues/121)) ([290d10d](https://github.com/TheScubaDiver/camera-gallery-card/commit/290d10d9cc4517127e0c2f5f8f9f5ddf740093dd))
+* preserve custom names in object_filters ([#129](https://github.com/TheScubaDiver/camera-gallery-card/issues/129)) ([c2cc3a9](https://github.com/TheScubaDiver/camera-gallery-card/commit/c2cc3a93f19f55653938c9e6361727a0d9f9b852))
+* scale fixed-mode pills with --cgc-pill-size variable ([#123](https://github.com/TheScubaDiver/camera-gallery-card/issues/123)) ([7f2f89f](https://github.com/TheScubaDiver/camera-gallery-card/commit/7f2f89f79ec9c8f4a85d079efc4e61197faad78f))
+* talkback bar swaps to top when pills are anchored at the bottom ([#140](https://github.com/TheScubaDiver/camera-gallery-card/issues/140)) ([f260eed](https://github.com/TheScubaDiver/camera-gallery-card/commit/f260eed422e0606814ca129958b7a9376a3c0993))
+* undefined isVideo() reference throws on every sensor-source render ([#138](https://github.com/TheScubaDiver/camera-gallery-card/issues/138)) ([223edcb](https://github.com/TheScubaDiver/camera-gallery-card/commit/223edcb8b1b396f814ce29f9c8bdd3feaa4e2653))
+
+
+### Documentation
+
+* refresh README — Frigate WS, grid mode, debug, YAML examples ([#125](https://github.com/TheScubaDiver/camera-gallery-card/issues/125)) ([26c6a85](https://github.com/TheScubaDiver/camera-gallery-card/commit/26c6a85725bea7ea3307d3556a323944496c025c))
+
+
+### Code Refactoring
+
+* glass-uniform look for live-view pills + chevrons ([#139](https://github.com/TheScubaDiver/camera-gallery-card/issues/139)) ([824d1e3](https://github.com/TheScubaDiver/camera-gallery-card/commit/824d1e39af8bf4ff1d1ba1c8453c1ba7d5ad4b04))
+
 ## [2.10.0](https://github.com/TheScubaDiver/camera-gallery-card/compare/v2.9.0...v2.10.0) (2026-05-12)
 
 
