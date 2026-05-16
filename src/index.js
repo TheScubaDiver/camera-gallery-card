@@ -3701,6 +3701,7 @@ class CameraGalleryCard extends LitElement {
     const rootVars = `
       --cgc-card-radius:10px;
       --cgc-bar-opacity:${this.config.bar_opacity};
+      --cgc-chevron-opacity:${this.config.chevron_opacity ?? this.config.bar_opacity};
       --cgc-thumb-row-h:${this.config.thumb_size}px;
       --cgc-thumb-empty-h:${this.config.thumb_size}px;
       --cgc-topbar-margin:${STYLE.topbar_margin};
