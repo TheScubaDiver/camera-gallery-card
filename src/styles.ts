@@ -1130,7 +1130,13 @@ export const cardStyles = css`
   }
 
   /* Mic error toast — sits inside live-controls-bar so layout doesn't
-     shift; role=status + aria-live=polite announces via screen readers. */
+     shift; role=status + aria-live=polite announces via screen readers.
+     Hidden via display:none while empty so it doesn't claim layout
+     space above/below the pill row (only matters when bar_position
+     pushes the pills away from the controls-bar's anchor edge). */
+  .mic-error-toast:not(.visible) {
+    display: none;
+  }
   .mic-error-toast {
     display: flex;
     align-items: center;
