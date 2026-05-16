@@ -195,6 +195,36 @@ describe("matchPathTail — full-path matching", () => {
     expect(matchPathTail("media-source://x/y/z", fmt)).toBeNull();
   });
 
+  it("X-X — Tapo Unix-epoch range expands the start epoch into local-time fields", () => {
+    const fmt = parsePathFormat("X-X")!;
+    const fields = matchPathTail("/media/tapo/1706108297-1706108310.mp4", fmt);
+    const expected = new Date(1706108297 * 1000);
+    expect(fields).toEqual({
+      year: expected.getFullYear(),
+      month: expected.getMonth() + 1,
+      day: expected.getDate(),
+      hour: expected.getHours(),
+      minute: expected.getMinutes(),
+      second: expected.getSeconds(),
+    });
+  });
+
+  it("HH.mm.ss-HH.mm.ss — Dahua-style time-range range gives the start time (first-wins)", () => {
+    // Two-segment fixture to keep the format anchored at the path tail.
+    // The trailing `[M][0@0][0]` metadata is ignored by the unanchored-leaf
+    // boundary lookarounds.
+    const fmt = parsePathFormat("YYYY-MM-DD/HH.mm.ss-HH.mm.ss")!;
+    const fields = matchPathTail("/media/dahua/2024-03-15/11.00.01-11.00.59[M][0@0][0].mp4", fmt);
+    expect(fields).toEqual({
+      year: 2024,
+      month: 3,
+      day: 15,
+      hour: 11,
+      minute: 0,
+      second: 1,
+    });
+  });
+
   it("plain (non-URI) path also works (sensor-mode src shape)", () => {
     const fmt = parsePathFormat("YYYY/MM/DD/RLC_YYYYMMDDHHmmss.mp4")!;
     const fields = matchPathTail("/local/cams/2026/04/30/RLC_20260430120030.mp4", fmt);

@@ -20,13 +20,30 @@
  * (HH/mm/ss) or a literal extension (`.mp4`/`.jpg`/…) ⇒ it's a file.
  */
 
-import { YEAR_2DIGIT_PIVOT } from "../const";
-import { buildFilenameDateRegex, type DateField, type PartialDateFields } from "./date-tokens";
+import {
+  buildFilenameDateRegex,
+  type DateField,
+  fillField,
+  type PartialDateFields,
+} from "./date-tokens";
 
 const escapeRe = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
-const TIME_TOKEN_RE = /HH|mm|ss/;
+// X/x are full instants (Unix seconds / ms) — treat them like time tokens for
+// the file-vs-directory heuristic so extension-less formats like `X-X` route
+// to the leaf-filename branch instead of being parsed as a directory pattern.
+const TIME_TOKEN_RE = /HH|mm|ss|X|x/;
 const FILE_EXT_RE = /\.[a-z0-9]{2,5}$/i;
+/** A trailing `.token` suffix on a leaf format (e.g. `HH.mm.ss-HH.mm.ss`
+ * ends in `.ss`) trips `FILE_EXT_RE` into thinking the format has a literal
+ * extension. Rule it out by checking the captured tail against the known
+ * date-token names — if the "extension" *is* a token, it isn't an extension. */
+const TOKEN_NAMES = new Set(["YYYY", "YY", "MM", "DD", "HH", "mm", "ss", "X", "x"]);
+function hasLiteralExtension(raw: string): boolean {
+  const m = raw.match(FILE_EXT_RE);
+  if (!m) return false;
+  return !TOKEN_NAMES.has(m[0].slice(1));
+}
 
 /** A single `/`-separated segment of the format, compiled to a regex. */
 export interface PathSegmentSpec {
@@ -88,7 +105,7 @@ function compileSegment(raw: string, unanchored: boolean): PathSegmentSpec | nul
 
 /** Heuristic: a segment is a filename if it carries time tokens or a literal extension. */
 function segmentLooksLikeFile(raw: string): boolean {
-  return TIME_TOKEN_RE.test(raw) || FILE_EXT_RE.test(raw);
+  return TIME_TOKEN_RE.test(raw) || hasLiteralExtension(raw);
 }
 
 /** Placeholder for escaped slashes during segment splitting. NUL byte is
@@ -119,7 +136,7 @@ export function parsePathFormat(format: string | null | undefined): PathFormat |
   if (rawSegs.length === 0) return null;
   const lastRaw = rawSegs[rawSegs.length - 1] ?? "";
   const leafIsFile = segmentLooksLikeFile(lastRaw);
-  const leafHasExtension = leafIsFile && FILE_EXT_RE.test(lastRaw);
+  const leafHasExtension = leafIsFile && hasLiteralExtension(lastRaw);
   const segs: PathSegmentSpec[] = [];
   for (let i = 0; i < rawSegs.length; i++) {
     const raw = rawSegs[i] ?? "";
@@ -148,11 +165,7 @@ function matchSegment(name: string, seg: PathSegmentSpec): PartialDateFields | n
     const field = seg.fields[i];
     const v = m[i + 1];
     if (!field || v === undefined) continue;
-    const n = Number(v);
-    if (!Number.isFinite(n)) continue;
-    if (field === "year") out.year = n;
-    else if (field === "year2") out.year = YEAR_2DIGIT_PIVOT + n;
-    else out[field] = n;
+    fillField(out, field, v);
   }
   return out;
 }

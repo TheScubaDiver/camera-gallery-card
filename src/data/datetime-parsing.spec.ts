@@ -142,6 +142,55 @@ describe("Three layouts via path_datetime_format", () => {
   });
 });
 
+describe("Unix epoch tokens (X / x)", () => {
+  it("X — single 10-digit Unix-seconds filename decodes to local time", () => {
+    // 1706108297 = 2024-01-24T14:18:17Z. Pick a fixed instant and assert
+    // the local-time round-trip is identity.
+    const ms = 1706108297 * 1000;
+    const expected = new Date(ms);
+    const result = extractDateTimeKey("/media/tapo/1706108297.mp4", opts("X"));
+    expect(result).not.toBeNull();
+    // Round-trip via new Date(dtKey) returns the original ms.
+    const back = new Date(result ?? "").getTime();
+    expect(back).toBe(expected.getTime());
+  });
+
+  it("X-X — Tapo-style start-end range pins canonical time to the start", () => {
+    // start=1706108297, end=1706108310 — should yield the start's ms.
+    const startMs = 1706108297 * 1000;
+    const ms = dtMsFromSrc("/media/tapo/1706108297-1706108310.mp4", opts("X-X"));
+    expect(ms).toBe(startMs);
+  });
+
+  it("x — UniFi Protect-style 13-digit milliseconds epoch decodes correctly", () => {
+    // Sub-second precision is dropped: we decode through year/month/day/hour/
+    // minute/second fields, which has no slot for ms. That's fine for sort and
+    // day-grouping — surveillance files don't need ms resolution.
+    const epochMs = 1642402659065;
+    const expectedMs = epochMs - (epochMs % 1000);
+    const ms = dtMsFromSrc(
+      "media-source://unifi/B4FBE47EEF30_0_rotating_1642402659065.ubv",
+      opts("x")
+    );
+    expect(ms).toBe(expectedMs);
+  });
+
+  it("first-wins for duplicate calendar tokens (Reolink SD card range)", () => {
+    // cam_20240315083000_20240315083127.mp4 — start vs end same day, different
+    // minutes. With first-wins the result is the start.
+    const ms = dtMsFromSrc(
+      "/media/reolink/cam_20240315083000_20240315083127.mp4",
+      opts("YYYYMMDDHHmmss_YYYYMMDDHHmmss")
+    );
+    expect(ms).toBe(new Date(2024, 2, 15, 8, 30, 0).getTime());
+  });
+
+  it("rejects non-finite or impossible epoch values gracefully", () => {
+    // `X` requires exactly 10 digits. A 9-digit run shouldn't match.
+    expect(dtMsFromSrc("/media/tapo/170610829.mp4", opts("X"))).toBeNull();
+  });
+});
+
 describe("Format string is cached on repeated calls", () => {
   it("repeated calls return the same result without recompiling", () => {
     const fmt = "YYYY/MM/DD/HHmmss";
