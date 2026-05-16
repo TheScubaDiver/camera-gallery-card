@@ -6487,12 +6487,10 @@ class CameraGalleryCardEditor extends HTMLElement {
                     </div>`;
                   })()}
                   ${hasAnyMicStream(this._config) ? `
-                  <div class="row-inline" style="margin-top:8px;">
-                    <span>Interaction</span>
-                    <div class="segwrap" style="margin-left:auto;">
-                      <button class="seg ${(this._config.live_mic_mode || "toggle") === "toggle" ? "on" : ""}" data-livemicmode="toggle">Toggle</button>
-                      <button class="seg ${this._config.live_mic_mode === "ptt" ? "on" : ""}" data-livemicmode="ptt">Push-to-talk</button>
-                    </div>
+                  <div class="desc" style="margin-top:8px;">Interaction</div>
+                  <div class="segwrap">
+                    <button class="seg ${(this._config.live_mic_mode || "toggle") === "toggle" ? "on" : ""}" data-livemicmode="toggle">Toggle</button>
+                    <button class="seg ${this._config.live_mic_mode === "ptt" ? "on" : ""}" data-livemicmode="ptt">Push-to-talk</button>
                   </div>
                   <div class="desc" style="margin-top:6px;">Audio processing</div>
                   ${(() => {
