@@ -139,6 +139,7 @@ export interface InputConfig {
 
   // ─── Layout / styling ──────────────────────────────────────
   bar_opacity?: number;
+  talkback_opacity?: number;
   bar_position?: string;
   thumb_size?: number;
   thumb_bar_position?: string;

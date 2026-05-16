@@ -2058,39 +2058,44 @@ class CameraGalleryCard extends LitElement {
     return html`<div id="live-card-host" class="live-card-host"></div>`;
   }
 
-  // ─── Mic pill (two-way audio toggle) ──────────────────────────────────
+  // ─── Talkback bar (two-way audio) ─────────────────────────────────────
   //
-  // Only rendered when the *currently active* camera has a configured
-  // mic stream. The card carries a per-camera map (`live_mic_streams`)
-  // so a multi-camera setup can have mic talkback on some entries and
-  // not others — the pill appears/disappears as the user navigates the
-  // picker. Visual states:
-  //   - idle      → outlined microphone-outline icon
-  //   - connecting→ spinning loading icon, button disabled to prevent
-  //                 racing a second handshake before the first lands
-  //   - active    → solid microphone icon, red pulsing background, the
-  //                 audio-level ring (via --cgc-mic-level CSS variable)
-  //                 scales with input volume
-  //   - error     → microphone-off icon, red inset shadow; auto-clears
+  // Renders a glass-look bar pinned to the bottom of the live preview.
+  // Renders for both toggle and ptt modes — the underlying handlers
+  // branch on live_mic_mode. Only shown when the active camera has a
+  // backchannel stream configured in `live_mic_streams`. Visual states:
+  //   - idle      → outlined microphone-outline icon, theme tint
+  //   - connecting→ spinning loading icon, orange tint
+  //   - active    → solid microphone icon, red tint
+  //   - error     → microphone-off icon, dark red tint; auto-clears
   //                 when the client's auto-clear timer fires (8 s)
   //
-  // The error message is rendered as a small toast inside the controls bar
-  // (separate live region) so screen readers announce failures via aria-live.
-  _renderMicPill() {
+  // Tint and opacity for idle are sourced from `--cgc-talkback-bg` and
+  // `--cgc-talkback-opacity` (configurable from the styling tab, with a
+  // fallback to the global `--cgc-pill-bg` + `bar_opacity` so existing
+  // themes look reasonable without extra config).
+  //
+  // The error message is rendered as a small toast inside the controls
+  // bar (separate live region) so screen readers announce failures via
+  // aria-live.
+  _renderMicTalkbackBar() {
     const cameraId = this._getEffectiveLiveCamera();
     const streamName = micStreamForCamera(cameraId, this.config);
     if (!streamName) return html``;
     const state = this._micState;
     const err = this._micErrorCode;
     const isPtt = this.config?.live_mic_mode === "ptt";
-    const cls =
+    const idleLabel = isPtt ? "Hold to talk" : "Tap to talk";
+    const activeLabel = isPtt ? "Talking…" : "Talking… (tap to stop)";
+    const errorLabel = isPtt ? "Tap and hold to retry" : "Tap to retry";
+    const label =
       state === "active"
-        ? "mic-active"
+        ? activeLabel
         : state === "connecting"
-          ? "mic-connecting"
+          ? "Connecting…"
           : err
-            ? "mic-error"
-            : "mic-idle";
+            ? errorLabel
+            : idleLabel;
     const icon =
       state === "active"
         ? "mdi:microphone"
@@ -2099,35 +2104,41 @@ class CameraGalleryCard extends LitElement {
           : err
             ? "mdi:microphone-off"
             : "mdi:microphone-outline";
-    const labelBase = isPtt ? "Microphone (push-to-talk)" : "Microphone";
-    const stateLabel =
+    const cls =
       state === "active"
-        ? "on"
+        ? "talkback-active"
         : state === "connecting"
-          ? "connecting"
+          ? "talkback-connecting"
           : err
-            ? `error: ${err}`
-            : "off";
-    const ariaLabel = `${labelBase} (${stateLabel})`;
-    const level = this._micClient.level();
-    const styleVar = state === "active" ? `--cgc-mic-level:${Math.min(1, level).toFixed(3)};` : "";
+            ? "talkback-error"
+            : "talkback-idle";
+    // State-overrides override the configurable idle tint while the
+    // backchannel is connecting/active/errored, so users always get
+    // unambiguous feedback regardless of their idle styling.
+    const bg =
+      state === "active"
+        ? "rgba(220, 38, 38, 0.30)"
+        : state === "connecting"
+          ? "rgba(202, 138, 4, 0.30)"
+          : err
+            ? "rgba(127, 29, 29, 0.30)"
+            : "transparent";
     return html`
-      <button
-        class="gallery-pill live-pill-btn mic-pill ${cls} ${isPtt ? "mic-ptt" : ""}"
-        aria-label=${ariaLabel}
-        aria-pressed=${state === "active" ? "true" : "false"}
-        ?disabled=${state === "connecting"}
-        title=${ariaLabel}
-        style=${styleVar}
+      <div
+        class="mic-talkback-bar ${cls}"
+        role="button"
+        tabindex="0"
+        aria-label=${`Push-to-talk (${state})`}
+        style="position:absolute;left:12px;right:12px;bottom:12px;min-height:38px;height:38px;padding:0 16px;font-size:14px;display:flex;align-items:center;justify-content:center;gap:10px;border-radius:14px;color:#fff;font-weight:600;letter-spacing:0.02em;background:${bg};box-shadow:inset 0 1px 0 rgba(255,255,255,0.14);user-select:none;-webkit-user-select:none;touch-action:none;z-index:5;backdrop-filter:blur(16px) saturate(160%);-webkit-backdrop-filter:blur(16px) saturate(160%);text-shadow:0 1px 2px rgba(0,0,0,0.5);overflow:hidden;"
         @pointerdown=${this._onMicPointerDown}
         @pointerup=${this._onMicPointerUp}
         @pointercancel=${this._onMicPointerUp}
         @pointerleave=${this._onMicPointerUp}
       >
-        <span class="mic-level-ring" aria-hidden="true"></span>
-        <ha-icon icon=${icon}></ha-icon>
-        ${isPtt && state === "idle" ? html`<span class="mic-ptt-hint" aria-hidden="true">HOLD</span>` : html``}
-      </button>
+        <span class="mic-talkback-tint" aria-hidden="true" style="position:absolute;inset:0;border-radius:inherit;background:var(--cgc-talkback-bg, var(--cgc-pill-bg, #000));opacity:calc(var(--cgc-talkback-opacity, var(--cgc-bar-opacity, 30)) / 100);pointer-events:none;"></span>
+        <ha-icon icon=${icon} style="--mdc-icon-size:18px;width:18px;height:18px;display:inline-flex;align-items:center;justify-content:center;line-height:1;position:relative;z-index:1;"></ha-icon>
+        <span style="position:relative;z-index:1;">${label}</span>
+      </div>
     `;
   }
 
@@ -3824,6 +3835,7 @@ class CameraGalleryCard extends LitElement {
     const rootVars = `
       --cgc-card-radius:10px;
       --cgc-bar-opacity:${this.config.bar_opacity};
+      --cgc-talkback-opacity:${this.config.talkback_opacity ?? this.config.bar_opacity};
       --cgc-thumb-row-h:${this.config.thumb_size}px;
       --cgc-thumb-empty-h:${this.config.thumb_size}px;
       --cgc-topbar-margin:${STYLE.topbar_margin};
@@ -3896,7 +3908,6 @@ class CameraGalleryCard extends LitElement {
         <button class="gallery-pill live-pill-btn" @pointerdown=${(e) => e.stopPropagation()} @click=${(e) => { e.stopPropagation(); this._toggleLiveMute(); }}>
           <ha-icon icon=${this._liveMuted ? "mdi:volume-off" : "mdi:volume-high"}></ha-icon>
         </button>
-        ${this._renderMicPill()}
         ${this._getLiveCameraOptions().length > 1 ? html`
           <button class="gallery-pill live-pill-btn" @pointerdown=${(e) => e.stopPropagation()} @click=${(e) => { e.stopPropagation(); this._openLivePicker(); }}>
             <ha-icon icon="mdi:cctv"></ha-icon>
@@ -4026,6 +4037,7 @@ class CameraGalleryCard extends LitElement {
               </div>
             ` : html``}
             ${isLive && !isGridLayout(this.config, this._liveLayoutOverride) ? hamburgerPanel : html``}
+            ${isLive && !isGridLayout(this.config, this._liveLayoutOverride) ? this._renderMicTalkbackBar() : html``}
           </div>
         `
       : html``;
@@ -4515,6 +4527,7 @@ const CGC_ICONS = {
   'mdi:doorbell-video': 'M6,2A2,2 0 0,0 4,4V20A2,2 0 0,0 6,22H18A2,2 0 0,0 20,20V4A2,2 0 0,0 18,2H6M12,5A3,3 0 0,1 15,8A3,3 0 0,1 12,11A3,3 0 0,1 9,8A3,3 0 0,1 12,5M7,14H9V19H7V14M9,14H15V19H9V14M15,14H17V19H15V14Z',
   'mdi:shape': 'M11,13.5V21.5H3V13.5H11M12,2L17.5,11H6.5L12,2M17.5,13C20,13 22,15 22,17.5C22,20 20,22 17.5,22C15,22 13,20 13,17.5C13,15 15,13 17.5,13Z',
   'mdi:format-line-spacing': 'M10,5V19H13V17H11V7H13V5H10M14,7V9H21V7H14M14,11V13H21V11H14M14,15V17H21V15H14M6,7L2,11H5V13H2L6,17V13H9V11H6V7Z',
+  'mdi:microphone-outline': 'M12,2A3,3 0 0,1 15,5V11A3,3 0 0,1 12,14A3,3 0 0,1 9,11V5A3,3 0 0,1 12,2M19,11C19,14.53 16.39,17.44 13,17.93V21H11V17.93C7.61,17.44 5,14.53 5,11H7A5,5 0 0,0 12,16A5,5 0 0,0 17,11H19M12,4A1,1 0 0,0 11,5V11A1,1 0 0,0 12,12A1,1 0 0,0 13,11V5A1,1 0 0,0 12,4Z',
 };
 
 function svgIcon(icon, size = 18) {
