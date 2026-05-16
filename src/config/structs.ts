@@ -194,6 +194,7 @@ export const cameraGalleryCardConfigStruct = type({
 
   // ─── Layout / styling ──────────────────────────────────────
   bar_opacity: defaulted(intInRange(BAR_OPACITY_MIN, BAR_OPACITY_MAX), DEFAULT_BAR_OPACITY),
+  chevron_opacity: defaulted(intInRange(BAR_OPACITY_MIN, BAR_OPACITY_MAX), DEFAULT_BAR_OPACITY),
   bar_position: defaulted(enums(BAR_POSITIONS), DEFAULT_BAR_POSITION),
   thumb_size: defaulted(intInRange(THUMB_SIZE_MIN, THUMB_SIZE_MAX), THUMB_SIZE),
   thumb_bar_position: defaulted(enums(THUMB_BAR_POSITIONS), DEFAULT_THUMB_BAR_POSITION),

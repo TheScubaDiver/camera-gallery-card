@@ -300,6 +300,30 @@ export const STYLE_SECTIONS: readonly StyleSection[] = [
     ],
   },
   {
+    id: "live_navigation",
+    label: "Live navigation",
+    icon: "mdi:chevron-right",
+    controls: [
+      {
+        type: "color",
+        hostId: "chevron-bg-host",
+        variable: "--cgc-chevron-bg",
+        label: "Background",
+      },
+      {
+        type: "slider",
+        id: "chevronop",
+        valId: "chevronopval",
+        configKey: "chevron_opacity",
+        label: "Opacity",
+        min: BAR_OPACITY_MIN,
+        max: BAR_OPACITY_MAX,
+        default: DEFAULT_BAR_OPACITY,
+        unit: "%",
+      },
+    ],
+  },
+  {
     id: "layout",
     label: "Layout",
     icon: "mdi:format-line-spacing",
