@@ -889,7 +889,8 @@ class CameraGalleryCard extends LitElement {
         video.poster = poster;
       } else {
         video.removeAttribute("poster");
-        // Enqueue poster pas na laden: voorkomt dat de capture de preview-verbinding blokkeert
+        // Enqueue the poster only after canplay so the capture doesn't
+        // tie up the preview's video connection during initial load.
         const urlForPoster = selectedUrl;
         video.addEventListener("canplay", () => {
           if (!this._posterClient.getPosterUrl(urlForPoster)) {
@@ -914,10 +915,10 @@ class CameraGalleryCard extends LitElement {
       }
 
       if (shouldAutoplay) {
-        // video.load() reset muted in sommige browsers naar defaultMuted.
-        // Herstel muted ná load en start expliciet via play() zodat autoplay
-        // niet afhankelijk is van een recente user-gesture (relevant in MS mode
-        // waar de URL async wordt opgelost en de gesture al "oud" is).
+        // video.load() resets `muted` to `defaultMuted` in some browsers.
+        // Restore the muted flag after load and start playback explicitly
+        // so autoplay doesn't depend on a recent user gesture (relevant in
+        // MS mode where the URL is resolved async and the gesture is "old").
         video.addEventListener("canplay", () => {
           video.muted = shouldMute;
           video.play().catch(() => {});
@@ -1733,7 +1734,7 @@ class CameraGalleryCard extends LitElement {
       return;
     }
 
-    // CSS fallback (Android WebView, of geen native fullscreen support)
+    // CSS fallback (Android WebView, or no native fullscreen support).
     this._liveFullscreen = true;
     this.setAttribute("data-live-fs", "");
     this.requestUpdate();
@@ -1998,8 +1999,9 @@ class CameraGalleryCard extends LitElement {
       this._syncLiveMuted();
     }
 
-    // Altijd opnieuw uitvoeren: _setViewMode reset _aspectRatio naar config-waarde,
-    // ook als de stream al pre-warmed was en de video al dimensies heeft.
+    // Always re-run: `_setViewMode` resets `_aspectRatio` back to the
+    // config value, even when the stream was pre-warmed and the video
+    // already has intrinsic dimensions.
     this._setupAutoAspectRatio();
   }
 
@@ -3978,7 +3980,7 @@ class CameraGalleryCard extends LitElement {
               if (e?.isPrimary === false) return;
               const path = e.composedPath?.() || [];
               
-              // De check op _isInsideTsbar(e) vangt nu ook de nieuwe terugknop af
+              // The `_isInsideTsbar(e)` check now also covers the new back button.
               const isOnControls =
                 this._isLiveActive() ||
                 this._isInsideTsbar(e) ||
@@ -8558,9 +8560,9 @@ if (oldPanel && tmp.firstElementChild) {
         const addBtn = $("add-filter-btn");
         const nameInput = $("new-filter-name");
         const iconInput = $("new-filter-icon");
-        // (native input, geen hass nodig)
+        // (native input — no hass roundtrip needed)
 
-        // 2. Maak een herbruikbare functie voor het toevoegen
+        // 2. Reusable helper for adding the entity.
         const handleAddFilter = () => {
           const name = nameInput?.value.trim().toLowerCase();
           const icon = iconInput?.value.trim() || "mdi:magnify";
@@ -8579,7 +8581,7 @@ if (oldPanel && tmp.firstElementChild) {
           if (iconInput) iconInput.value = "";
         };
 
-        // 3. Koppel de Click listener aan de knop
+        // 3. Wire the click listener onto the button.
         addBtn?.addEventListener("click", handleAddFilter, _sig);
 
         // 4. Enter op naam-veld voegt toe
@@ -8587,7 +8589,7 @@ if (oldPanel && tmp.firstElementChild) {
           if (e.key === "Enter") { e.preventDefault(); handleAddFilter(); }
         });
 
-    // Filter verwijderen
+    // Remove filter.
     this.shadowRoot.querySelectorAll("[data-remove-index]").forEach(btn => {
       btn.addEventListener("click", () => {
         const nameToRemove = btn.dataset.removeIndex;
@@ -9315,7 +9317,7 @@ if (oldPanel && tmp.firstElementChild) {
       });
     }
 
-    // Default live camera verwijderen
+    // Remove default live camera.
     this.shadowRoot.querySelectorAll("[data-deldefcam]").forEach((btn) => {
       btn.addEventListener("click", () => {
         const next = { ...this._config };
@@ -9326,7 +9328,7 @@ if (oldPanel && tmp.firstElementChild) {
       });
     });
 
-    // Camera tag verwijderen
+    // Remove camera tag.
     this.shadowRoot.querySelectorAll("[data-delcam]").forEach((btn) => {
       btn.addEventListener("click", () => {
         const id = btn.dataset.delcam;
@@ -9376,7 +9378,7 @@ if (oldPanel && tmp.firstElementChild) {
       input.addEventListener("blur", () => { setTimeout(() => { sugg.hidden = true; }, 150); }, _sig);
     };
 
-    // Menu button verwijderen
+    // Remove menu button.
     this.shadowRoot.querySelectorAll("[data-delmenubutton]").forEach((btn) => {
       btn.addEventListener("click", () => {
         const i = Number(btn.dataset.delmenubutton);
@@ -9433,7 +9435,7 @@ if (oldPanel && tmp.firstElementChild) {
       });
     });
 
-    // Menu button icon autocomplete (per bestaande knop)
+    // Menu-button icon autocomplete (per existing button).
     this.shadowRoot.querySelectorAll("input[data-menubtn][data-mbfield='icon']").forEach((input) => {
       const i = Number(input.dataset.menubtn);
       const sugg = this.shadowRoot.querySelector(`[data-menubtn-icon-sugg="${i}"]`);
@@ -9476,7 +9478,7 @@ if (oldPanel && tmp.firstElementChild) {
       });
     });
 
-    // Menu button toevoegen
+    // Add menu button.
     const menubtnEntityInput = $("menubtn-entity-input");
     const menubtnEntitySugg = $("menubtn-entity-sugg");
     const menubtnIconInput = $("menubtn-icon-input");
