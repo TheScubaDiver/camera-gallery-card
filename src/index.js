@@ -2205,6 +2205,12 @@ class CameraGalleryCard extends LitElement {
   }
 
   _renderLiveInner() {
+    // Grid mode renders its own tiles into `#live-card-host` imperatively;
+    // the single-camera path (offline placeholder + live picker stage)
+    // doesn't apply there. Without this short-circuit, going single →
+    // grid while the active camera is unavailable leaves the offline
+    // placeholder showing on top of the grid until the next page-render.
+    if (isGridLayout(this.config, this._liveLayoutOverride)) return html``;
     const effectiveCam = this._getEffectiveLiveCamera();
     const isStreamUrl = !!this._getStreamEntryById(effectiveCam);
     if (!isStreamUrl) {
