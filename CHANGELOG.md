@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.11.1](https://github.com/TheScubaDiver/camera-gallery-card/compare/v2.11.0...v2.11.1) (2026-05-17)
+
+
+### Bug Fixes
+
+* don't render offline placeholder over grid layout ([#142](https://github.com/TheScubaDiver/camera-gallery-card/issues/142)) ([9088601](https://github.com/TheScubaDiver/camera-gallery-card/commit/9088601d3eeb3e7c8ecdb9718bf416ab132103b8))
+
 ## [2.11.0](https://github.com/TheScubaDiver/camera-gallery-card/compare/v2.10.0...v2.11.0) (2026-05-16)
 
 
