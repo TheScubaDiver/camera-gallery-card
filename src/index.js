@@ -6553,8 +6553,17 @@ class CameraGalleryCardEditor extends HTMLElement {
       </details>
     `;
 
-    const buildSourceTabV2 = () => `
-      <div class="tabpanel" data-panel="source">
+    // Small right-aligned "Expand all / Collapse all" link rendered at
+    // the top of any v2 tabpanel that has multiple collapsibles. Click
+    // handler is wired in the post-render block.
+    const v2ExpandToggle = `
+      <div class="v2-expand-row">
+        <button type="button" class="v2-expand-all" data-v2-expand>Expand all</button>
+      </div>
+    `;
+
+    const buildSourceTabV2 = () => {
+      const viewBody = `
         <div class="row">
           <div class="lbl">Default view</div>
           <div class="segwrap">
@@ -6562,9 +6571,11 @@ class CameraGalleryCardEditor extends HTMLElement {
             <button class="seg ${startMode === "live" ? "on" : ""}" data-startmode="live">Live</button>
           </div>
         </div>
+      `;
 
+      const sourceBody = `
         <div class="row">
-          <div class="lbl">Source</div>
+          <div class="lbl">Source mode</div>
           <div class="segwrap">
             <button class="seg ${sensorModeOn ? "on" : ""}" data-src="sensor">File sensor</button>
             <button class="seg ${mediaModeOn ? "on" : ""}" data-src="media">Media folders</button>
@@ -6613,18 +6624,29 @@ class CameraGalleryCardEditor extends HTMLElement {
           </div>
           `}
         </div>
+      `;
 
-        ${(mediaModeOn || combinedModeOn) ? `
+      const frigateBody = `
         <div class="row">
-          <div class="lbl">Frigate URL (optional)</div>
           <div class="desc">Direct Frigate API URL (e.g. <code>http://192.168.1.x:5000</code>). If set, clips load instantly via Frigate REST API instead of the media-source walk.</div>
           <div class="field">
             <input type="text" class="ed-input" id="frigate_url" placeholder="http://192.168.1.x:5000" autocomplete="off" value="${this._config.frigate_url || ""}" />
           </div>
         </div>
-        ` : ``}
-      </div>
-    `;
+      `;
+
+      const showFrigate = mediaModeOn || combinedModeOn;
+      const hasFrigateUrl = !!this._config.frigate_url;
+
+      return `
+        <div class="tabpanel" data-panel="source">
+          ${v2ExpandToggle}
+          ${v2Collapsible("view",   "View",   true, viewBody,   "mdi:image-outline")}
+          ${v2Collapsible("source", "Source", true, sourceBody, "mdi:database-outline")}
+          ${showFrigate ? v2Collapsible("frigate", "Frigate", hasFrigateUrl, frigateBody, "mdi:link-variant") : ""}
+        </div>
+      `;
+    };
 
     const buildGalleryTabV2 = () => {
       const hasFilters = Array.isArray(c.object_filters) && c.object_filters.length > 0;
@@ -6817,6 +6839,7 @@ class CameraGalleryCardEditor extends HTMLElement {
 
       return `
         <div class="tabpanel" data-panel="gallery">
+          ${v2ExpandToggle}
           ${v2Collapsible("display",  "Display",  true,  displayBody,  "mdi:image-outline")}
           ${v2Collapsible("playback", "Playback", false, playbackBody, "mdi:play-circle-outline")}
           ${v2Collapsible("toolbar",  "Toolbar",  false, toolbarBody,  "mdi:tune")}
@@ -7112,6 +7135,7 @@ class CameraGalleryCardEditor extends HTMLElement {
       if (!liveEnabled) {
         return `
           <div class="tabpanel" data-panel="live">
+            ${v2ExpandToggle}
             ${v2Collapsible("basics", "Basics", true, basicsBody, "mdi:tune")}
           </div>
         `;
@@ -7119,6 +7143,7 @@ class CameraGalleryCardEditor extends HTMLElement {
 
       return `
         <div class="tabpanel" data-panel="live">
+          ${v2ExpandToggle}
           ${v2Collapsible("basics",  "Basics",        true,          basicsBody,       "mdi:tune")}
           ${v2Collapsible("streams", "Streams",       hasStreamUrls, streamsBody,      "mdi:link-variant")}
           ${v2Collapsible("twoway",  "Two-way audio", hasMic,        twoWayBody,       "mdi:microphone-outline")}
@@ -7127,8 +7152,8 @@ class CameraGalleryCardEditor extends HTMLElement {
       `;
     };
 
-    const buildThumbsTabV2 = () => `
-      <div class="tabpanel" data-panel="thumbs">
+    const buildThumbsTabV2 = () => {
+      const layoutBody = `
         <div class="row">
           <div class="lbl">Thumbnail layout</div>
           <div class="segwrap">
@@ -7148,6 +7173,25 @@ class CameraGalleryCardEditor extends HTMLElement {
           <div class="ed-input-row"><input type="number" class="ed-input" id="maxmedia" /><span class="ed-suffix">items</span></div>
         </div>
 
+        <div class="row">
+          <div class="lbl">Thumbnail bar position</div>
+          <div class="segwrap">
+            <button class="seg ${thumbBarPos === "top" ? "on" : ""}" data-tbpos="top">Top</button>
+            <button class="seg ${thumbBarPos === "bottom" ? "on" : ""}" data-tbpos="bottom">Bottom</button>
+            <button class="seg ${thumbBarPos === "hidden" ? "on" : ""}" data-tbpos="hidden">Hidden</button>
+          </div>
+        </div>
+
+        <div class="row">
+          <div class="lbl">Sort order</div>
+          <div class="segwrap">
+            <button class="seg ${thumbSortOrder === "newest" ? "on" : ""}" data-tsort="newest">Newest first</button>
+            <button class="seg ${thumbSortOrder === "oldest" ? "on" : ""}" data-tsort="oldest">Oldest first</button>
+          </div>
+        </div>
+      `;
+
+      const videoFrameBody = `
         <div class="row">
           <div class="lbl">Video thumbnail frame</div>
           <div class="desc">% of the video to capture as thumbnail (0 = first frame, 100 = last)</div>
@@ -7170,32 +7214,26 @@ class CameraGalleryCardEditor extends HTMLElement {
             </div>
           </div>
         </div>
+      `;
 
-        <div class="row">
-          <div class="lbl">Thumbnail bar position</div>
-          <div class="segwrap">
-            <button class="seg ${thumbBarPos === "top" ? "on" : ""}" data-tbpos="top">Top</button>
-            <button class="seg ${thumbBarPos === "bottom" ? "on" : ""}" data-tbpos="bottom">Bottom</button>
-            <button class="seg ${thumbBarPos === "hidden" ? "on" : ""}" data-tbpos="hidden">Hidden</button>
-          </div>
+      return `
+        <div class="tabpanel" data-panel="thumbs">
+          ${v2ExpandToggle}
+          ${v2Collapsible("thumb-layout", "Layout",      true,  layoutBody,     "mdi:view-grid-outline")}
+          ${v2Collapsible("video-frame",  "Video frame", false, videoFrameBody, "mdi:play-circle-outline")}
         </div>
+      `;
+    };
 
+    const buildStylingTabV2 = () =>
+      buildStylingPanelHtml().replace(
+        '<div class="tabpanel" data-panel="styling">',
+        `<div class="tabpanel" data-panel="styling">${v2ExpandToggle}`
+      );
+
+    const buildAdvancedTabV2 = () => {
+      const parsingBody = `
         <div class="row">
-          <div class="lbl">Sort order</div>
-          <div class="segwrap">
-            <button class="seg ${thumbSortOrder === "newest" ? "on" : ""}" data-tsort="newest">Newest first</button>
-            <button class="seg ${thumbSortOrder === "oldest" ? "on" : ""}" data-tsort="oldest">Oldest first</button>
-          </div>
-        </div>
-      </div>
-    `;
-
-    const buildStylingTabV2 = () => buildStylingPanelHtml();
-
-    const buildAdvancedTabV2 = () => `
-      <div class="tabpanel" data-panel="advanced">
-        <div class="row">
-          <div class="lbl">Path datetime format</div>
           <div class="desc">
             ${svgIcon('mdi:information-outline', 14)}
             Pattern matched against your file paths. The detector covers both video and image files — extension is optional. Tokens: <code>YYYY</code> <code>MM</code> <code>DD</code> <code>HH</code> <code>mm</code> <code>ss</code>.
@@ -7211,10 +7249,11 @@ class CameraGalleryCardEditor extends HTMLElement {
             ${this._renderDetectScoreboard()}
           </div>
         </div>
+      `;
 
+      const deleteBody = `
         <div class="row">
-          <div class="lbl">Delete services</div>
-          <div style="padding-top:8px;display:flex;flex-direction:column;gap:14px;">
+          <div style="padding-top:4px;display:flex;flex-direction:column;gap:14px;">
             <div class="${mediaModeOn ? "row-disabled" : ""}">
               <div class="lbl">Sensor</div>
               <div class="selectwrap" style="margin-top:4px;">
@@ -7261,7 +7300,9 @@ class CameraGalleryCardEditor extends HTMLElement {
             ` : ``}
           </div>
         </div>
+      `;
 
+      const diagnosticsBody = `
         <div class="row">
           <div class="row-head">
             <div>
@@ -7273,8 +7314,19 @@ class CameraGalleryCardEditor extends HTMLElement {
             </div>
           </div>
         </div>
-      </div>
-    `;
+      `;
+
+      const hasPathFmt = !!(this._config && this._config.path_datetime_format);
+
+      return `
+        <div class="tabpanel" data-panel="advanced">
+          ${v2ExpandToggle}
+          ${v2Collapsible("parsing",     "Path parsing",   hasPathFmt, parsingBody,     "mdi:calendar-outline")}
+          ${v2Collapsible("delete",      "Delete services", false,     deleteBody,      "mdi:delete-outline")}
+          ${v2Collapsible("diagnostics", "Diagnostics",    false,      diagnosticsBody, "mdi:information-outline")}
+        </div>
+      `;
+    };
 
     const buildV2PanelHtml = () => {
       const tab = this._activeTab;
@@ -8157,6 +8209,41 @@ class CameraGalleryCardEditor extends HTMLElement {
           background: transparent;
           border-color: transparent;
           border-bottom-color: var(--ed-row-border);
+        }
+        /* Right-aligned "Expand all / Collapse all" toggle at the top
+           of v2 tabpanels that contain multiple collapsibles. */
+        .wrap.v2 .v2-expand-row {
+          display: flex;
+          justify-content: flex-end;
+          margin-bottom: 6px;
+        }
+        .wrap.v2 .v2-expand-all {
+          background: transparent;
+          border: none;
+          color: var(--ed-text2);
+          font-size: 11px;
+          font-family: inherit;
+          font-weight: 500;
+          padding: 2px 6px;
+          cursor: pointer;
+          opacity: 0.7;
+          text-transform: uppercase;
+          letter-spacing: 0.05em;
+          border-radius: 4px;
+          transition: opacity 0.15s, background 0.15s;
+        }
+        .wrap.v2 .v2-expand-all:hover {
+          opacity: 1;
+          background: rgba(255,255,255,0.04);
+        }
+
+        /* Divider between stacked toggles inside a .subrows wrapper
+           (e.g. Autoplay / Auto muted) — they share one .row so the
+           per-row bottom-border doesn't separate them. */
+        .wrap.v2 .subrows .row-head + .row-head {
+          border-top: 1px solid var(--ed-row-border);
+          padding-top: 10px;
+          margin-top: 8px;
         }
 
         /* Editor-version toggle (beta) */
@@ -9813,10 +9900,23 @@ details summary { user-select: none; }
       const oldPanel = this.shadowRoot.querySelector(".tabpanel");
       const tmp = document.createElement("div");
       tmp.innerHTML = panelHtml;
-if (oldPanel && tmp.firstElementChild) {
-        oldPanel.replaceWith(tmp.firstElementChild);
-      } else if (!oldPanel && tmp.firstElementChild) {
-        this.shadowRoot.querySelector(".tabbar")?.insertAdjacentElement("afterend", tmp.firstElementChild);
+      const newPanel = tmp.firstElementChild;
+      // Preserve v2 collapsible open-state across re-renders. Without
+      // this, flipping a toggle inside Playback/Toolbar would re-render
+      // the tab and collapse the section back to its default state.
+      if (oldPanel && newPanel) {
+        oldPanel.querySelectorAll("details[data-v2-section]").forEach((oldS) => {
+          const id = oldS.getAttribute("data-v2-section");
+          const newS = newPanel.querySelector(`details[data-v2-section="${id}"]`);
+          if (!newS) return;
+          if (oldS.hasAttribute("open")) newS.setAttribute("open", "");
+          else newS.removeAttribute("open");
+        });
+      }
+      if (oldPanel && newPanel) {
+        oldPanel.replaceWith(newPanel);
+      } else if (!oldPanel && newPanel) {
+        this.shadowRoot.querySelector(".tabbar")?.insertAdjacentElement("afterend", newPanel);
       }
 
       // Update media browser slot
@@ -9829,6 +9929,33 @@ if (oldPanel && tmp.firstElementChild) {
     const _sig = { signal: this._evtCtrl.signal };
 
     this._initCollapsibleRows(_sig);
+
+    // v2 "Expand all / Collapse all" — toggle every details.style-section
+    // inside the current tabpanel. Every v2 tab has at least two
+    // collapsibles so the button always has something to do.
+    this.shadowRoot.querySelectorAll("[data-v2-expand]").forEach((btn) => {
+      const panel = btn.closest(".tabpanel");
+      const sections = panel ? panel.querySelectorAll("details.style-section") : [];
+      if (!sections.length) return;
+      const syncLabel = () => {
+        const allOpen = Array.from(sections).every((s) => s.hasAttribute("open"));
+        btn.textContent = allOpen ? "Collapse all" : "Expand all";
+      };
+      syncLabel();
+      btn.addEventListener(
+        "click",
+        () => {
+          const allOpen = Array.from(sections).every((s) => s.hasAttribute("open"));
+          const opening = !allOpen;
+          sections.forEach((s) => {
+            if (opening) s.setAttribute("open", "");
+            else s.removeAttribute("open");
+          });
+          btn.textContent = opening ? "Collapse all" : "Expand all";
+        },
+        _sig
+      );
+    });
 
     const $ = (id) => this.shadowRoot.getElementById(id);
 
@@ -11028,6 +11155,9 @@ if (oldPanel && tmp.firstElementChild) {
   }
 
   _initCollapsibleRows(sig = {}) {
+    // v2 already provides its own collapsible structure via .style-section
+    // wrappers in each tab — don't double-wrap rows inside them.
+    if (this._editorVersion === "v2") return;
     const sr = this.shadowRoot;
     if (!sr) return;
     const tab = this._activeTab || 'general';
