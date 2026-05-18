@@ -6704,6 +6704,46 @@ class CameraGalleryCardEditor extends HTMLElement {
         </div>
       `;
 
+      // Toolbar visibility — per-button toggles. IDs match v1 editor's
+      // "Gallery toolbar" row so the existing event-wiring picks them up.
+      const toolbarBody = `
+        <div class="row">
+          <div class="row-head">
+            <div><div class="lbl">Today</div></div>
+            <div class="togrow">
+              <label class="cgc-switch"><input type="checkbox" id="show_today" ${c.show_today !== false ? "checked" : ""}><span class="cgc-track"></span></label>
+            </div>
+          </div>
+        </div>
+        <div class="row">
+          <div class="row-head">
+            <div>
+              <div class="lbl">Media filter (video / image)</div>
+              <div class="desc">Only visible when the gallery contains both video and image clips.</div>
+            </div>
+            <div class="togrow">
+              <label class="cgc-switch"><input type="checkbox" id="show_media_filter" ${c.show_media_filter !== false ? "checked" : ""}><span class="cgc-track"></span></label>
+            </div>
+          </div>
+        </div>
+        <div class="row">
+          <div class="row-head">
+            <div><div class="lbl">Favorite</div></div>
+            <div class="togrow">
+              <label class="cgc-switch"><input type="checkbox" id="show_favorite" ${c.show_favorite !== false ? "checked" : ""}><span class="cgc-track"></span></label>
+            </div>
+          </div>
+        </div>
+        <div class="row">
+          <div class="row-head">
+            <div><div class="lbl">LIVE</div></div>
+            <div class="togrow">
+              <label class="cgc-switch"><input type="checkbox" id="show_live" ${c.show_live !== false ? "checked" : ""}><span class="cgc-track"></span></label>
+            </div>
+          </div>
+        </div>
+      `;
+
       const filtersBody = `
         <div class="row">
           <div class="lbl">Object filters</div>
@@ -6779,6 +6819,7 @@ class CameraGalleryCardEditor extends HTMLElement {
         <div class="tabpanel" data-panel="gallery">
           ${v2Collapsible("display",  "Display",  true,  displayBody,  "mdi:image-outline")}
           ${v2Collapsible("playback", "Playback", false, playbackBody, "mdi:play-circle-outline")}
+          ${v2Collapsible("toolbar",  "Toolbar",  false, toolbarBody,  "mdi:tune")}
           ${v2Collapsible("filters",  "Filters",  hasFilters, filtersBody, "mdi:filter-outline")}
         </div>
       `;
