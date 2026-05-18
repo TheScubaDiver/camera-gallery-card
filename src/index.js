@@ -4856,7 +4856,16 @@ class CameraGalleryCardEditor extends HTMLElement {
       browserBodyTop: 0,
     };
 
-    this._activeTab = "general";
+    // Editor version toggle (beta). Persisted per browser via localStorage.
+    // v1 = legacy 5-tab layout. v2 = new 6-tab layout (Source + Advanced split,
+    // Gallery/Live collapsibles, Object Filters moved from Thumbs → Gallery).
+    let storedVersion = "v1";
+    try {
+      const v = (typeof localStorage !== "undefined") && localStorage.getItem("cgc_editor_version");
+      if (v === "v2" || v === "v1") storedVersion = v;
+    } catch (_) { /* ignore */ }
+    this._editorVersion = storedVersion;
+    this._activeTab = this._editorVersion === "v2" ? "source" : "general";
     this._focusState = null;
     this._lastSuggestFingerprint = {
       entities: "",
@@ -6391,7 +6400,76 @@ class CameraGalleryCardEditor extends HTMLElement {
       `
       : ``;
 
+    // ====================================================================
+    // v2 editor (beta) — 6 tabs with collapsibles in Gallery / Live.
+    // Each builder returns a complete `<div class="tabpanel">` so the
+    // partial-update path (replaceWith on .tabpanel) keeps working.
+    // ====================================================================
+    // v2 collapsibles reuse the existing .style-section / .style-section-head
+    // CSS so they look identical to the Styling-tab accordion users already
+    // know. `icon` is optional — pass an mdi name to show a leading glyph.
+    const v2Collapsible = (id, title, openByDefault, bodyHtml, icon) => `
+      <details class="style-section" ${openByDefault ? "open" : ""} data-v2-section="${id}">
+        <summary class="style-section-head">
+          ${icon ? svgIcon(icon, 18) : ``}
+          <span>${title}</span>
+          <span class="style-chevron">${svgIcon('mdi:chevron-down', 18)}</span>
+        </summary>
+        <div class="style-section-body">
+          ${bodyHtml}
+        </div>
+      </details>
+    `;
+
+    const buildSourceTabV2 = () => `
+      <div class="tabpanel" data-panel="source">
+        <div class="row"><div class="lbl">Source tab — work in progress</div></div>
+      </div>
+    `;
+
+    const buildGalleryTabV2 = () => `
+      <div class="tabpanel" data-panel="gallery">
+        <div class="row"><div class="lbl">Gallery tab — work in progress</div></div>
+      </div>
+    `;
+
+    const buildLiveTabV2 = () => `
+      <div class="tabpanel" data-panel="live">
+        <div class="row"><div class="lbl">Live tab (v2) — work in progress</div></div>
+      </div>
+    `;
+
+    const buildThumbsTabV2 = () => `
+      <div class="tabpanel" data-panel="thumbs">
+        <div class="row"><div class="lbl">Thumbs tab (v2) — work in progress</div></div>
+      </div>
+    `;
+
+    const buildStylingTabV2 = () => `
+      <div class="tabpanel" data-panel="styling">
+        <div class="row"><div class="lbl">Styling tab — uses v1 markup (TBD)</div></div>
+      </div>
+    `;
+
+    const buildAdvancedTabV2 = () => `
+      <div class="tabpanel" data-panel="advanced">
+        <div class="row"><div class="lbl">Advanced tab — work in progress</div></div>
+      </div>
+    `;
+
+    const buildV2PanelHtml = () => {
+      const tab = this._activeTab;
+      if (tab === "source")   return buildSourceTabV2();
+      if (tab === "gallery")  return buildGalleryTabV2();
+      if (tab === "live")     return buildLiveTabV2();
+      if (tab === "thumbs")   return buildThumbsTabV2();
+      if (tab === "styling")  return buildStylingTabV2();
+      if (tab === "advanced") return buildAdvancedTabV2();
+      return `<div class="tabpanel" data-panel="${tab}"></div>`;
+    };
+
     const buildPanelHtml = () => {
+      if (this._editorVersion === "v2") return buildV2PanelHtml();
       if (this._activeTab === "general") return `
             <div class="tabpanel" data-panel="general">
               <div class="row">
@@ -7284,6 +7362,65 @@ class CameraGalleryCardEditor extends HTMLElement {
           border-color: var(--ed-tab-on-border);
           color: var(--ed-tab-on-txt);
           box-shadow: var(--ed-shadow-press);
+        }
+
+        /* Editor-version toggle (beta) */
+        .editor-version {
+          display: flex;
+          align-items: center;
+          justify-content: flex-end;
+          gap: 8px;
+          padding: 6px 10px 0 10px;
+          font-size: 11px;
+          color: var(--ed-tab-txt);
+        }
+        .editor-version-label {
+          opacity: 0.65;
+          font-weight: 600;
+          text-transform: uppercase;
+          letter-spacing: 0.04em;
+        }
+        .editor-version-toggle {
+          display: inline-flex;
+          background: var(--ed-tab-bg);
+          border: 1px solid var(--ed-tab-border);
+          border-radius: 999px;
+          padding: 2px;
+          gap: 2px;
+        }
+        .editor-version-btn {
+          appearance: none;
+          -webkit-appearance: none;
+          background: transparent;
+          border: none;
+          color: var(--ed-tab-txt);
+          padding: 4px 12px;
+          font-size: 11px;
+          font-weight: 700;
+          border-radius: 999px;
+          cursor: pointer;
+          display: inline-flex;
+          align-items: center;
+          gap: 4px;
+          transition: background 0.15s, color 0.15s;
+        }
+        .editor-version-btn:hover {
+          color: var(--ed-tab-on-txt);
+        }
+        .editor-version-btn.on {
+          background: var(--ed-tab-on-bg);
+          color: var(--ed-tab-on-txt);
+          box-shadow: var(--ed-shadow-press);
+        }
+        .editor-version-beta {
+          font-size: 9px;
+          font-weight: 800;
+          letter-spacing: 0.06em;
+          padding: 1px 5px;
+          border-radius: 3px;
+          background: rgba(63,185,80,0.18);
+          color: #3fb950;
+          text-transform: uppercase;
         }
 
         .tabpanel {
@@ -8825,13 +8962,29 @@ details summary { user-select: none; }
       </style>
 
       <div class="wrap" style="${rootVars}">
+        <div class="editor-version">
+          <span class="editor-version-label">Editor</span>
+          <div class="editor-version-toggle" role="tablist" aria-label="Editor version">
+            <button type="button" class="editor-version-btn ${this._editorVersion === "v1" ? "on" : ""}" data-version="v1">v1</button>
+            <button type="button" class="editor-version-btn ${this._editorVersion === "v2" ? "on" : ""}" data-version="v2">
+              v2 <span class="editor-version-beta">BETA</span>
+            </button>
+          </div>
+        </div>
         <div class="tabs">
           <div class="tabbar">
-            ${tabBtn("general", "General", "mdi:cog-outline")}
-            ${tabBtn("viewer", "Viewer", "mdi:image-outline")}
-            ${tabBtn("live", "Live", "mdi:video-outline")}
-            ${tabBtn("thumbs", "Thumbnails", "mdi:view-grid-outline")}
-            ${tabBtn("styling", "Styling", "mdi:palette-outline")}
+            ${this._editorVersion === "v2"
+              ? `${tabBtn("source", "Source", "mdi:database-outline")}
+                 ${tabBtn("gallery", "Gallery", "mdi:image-outline")}
+                 ${tabBtn("live", "Live", "mdi:video-outline")}
+                 ${tabBtn("thumbs", "Thumbnails", "mdi:view-grid-outline")}
+                 ${tabBtn("styling", "Styling", "mdi:palette-outline")}
+                 ${tabBtn("advanced", "Advanced", "mdi:tune-vertical")}`
+              : `${tabBtn("general", "General", "mdi:cog-outline")}
+                 ${tabBtn("viewer", "Viewer", "mdi:image-outline")}
+                 ${tabBtn("live", "Live", "mdi:video-outline")}
+                 ${tabBtn("thumbs", "Thumbnails", "mdi:view-grid-outline")}
+                 ${tabBtn("styling", "Styling", "mdi:palette-outline")}`}
           </div>
 
           ${buildPanelHtml()}
@@ -8843,6 +8996,9 @@ details summary { user-select: none; }
     `;
     this.shadowRoot.querySelectorAll("[data-tab]").forEach((btn) => {
       btn.addEventListener("click", () => this._setActiveTab(btn.dataset.tab));
+    });
+    this.shadowRoot.querySelectorAll("[data-version]").forEach((btn) => {
+      btn.addEventListener("click", () => this._setEditorVersion(btn.dataset.version));
     });
     this._editorRendered = true;
     } else {
@@ -10186,7 +10342,20 @@ if (oldPanel && tmp.firstElementChild) {
   }
 
   _setActiveTab(tab) {
-    this._activeTab = String(tab || "general");
+    const fallback = this._editorVersion === "v2" ? "source" : "general";
+    this._activeTab = String(tab || fallback);
+    this._scheduleRender();
+  }
+
+  _setEditorVersion(v) {
+    const next = (v === "v2") ? "v2" : "v1";
+    if (this._editorVersion === next) return;
+    this._editorVersion = next;
+    try { localStorage.setItem("cgc_editor_version", next); } catch (_) {}
+    // Reset to that version's default tab. (v1 ↔ v2 tabs don't share keys.)
+    this._activeTab = next === "v2" ? "source" : "general";
+    // Force a full re-render — tabbar layout changes between versions.
+    this._editorRendered = false;
     this._scheduleRender();
   }
 
