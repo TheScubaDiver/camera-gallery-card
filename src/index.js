@@ -7940,6 +7940,11 @@ class CameraGalleryCardEditor extends HTMLElement {
     if (!this._editorRendered) {
     this.shadowRoot.innerHTML = `
       <style>
+        /* Inter webfont (v2-only). @import must be first; falls back to
+           system stack when the user is offline. ~30KB, cached after
+           first load. */
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
         :host {
           display: block;
           padding: 8px 0;
@@ -7958,6 +7963,16 @@ class CameraGalleryCardEditor extends HTMLElement {
           display: grid;
           gap: var(--ed-space-3);
           min-width: 0;
+        }
+
+        /* v2 uses Inter; v1 inherits HA's Roboto. Stack falls back to
+           the OS UI font if Inter didn't load (offline install). */
+        .wrap.v2,
+        .wrap.v2 input,
+        .wrap.v2 textarea,
+        .wrap.v2 select,
+        .wrap.v2 button {
+          font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
         }
 
         /* v2 wrap owns the scrolling: max-height keeps the editor
@@ -8043,6 +8058,64 @@ class CameraGalleryCardEditor extends HTMLElement {
           border-color: var(--ed-tab-on-border);
           color: var(--ed-tab-on-txt);
           box-shadow: var(--ed-shadow-press);
+        }
+
+        /* v2 tabs left-align icon + label. v1 keeps center-alignment. */
+        .wrap.v2 .tabbtn {
+          justify-content: flex-start;
+          text-align: left;
+          padding-left: 16px;
+          font-weight: 500;
+        }
+        .wrap.v2 .tabbtn.on {
+          font-weight: 600;
+        }
+
+        /* v2 typography: dial back the heavy bold weight on labels so
+           only structural headings (tabs + collapsible heads) read as
+           bold. v1 keeps its original weights. */
+        .wrap.v2 .lbl {
+          font-weight: 500;
+        }
+        .wrap.v2 .lbl strong {
+          font-weight: 700;
+        }
+        .wrap.v2 .seg {
+          font-weight: 500;
+        }
+        .wrap.v2 .seg.on {
+          font-weight: 600;
+        }
+        /* All buttons in v2 default to weight 500. Active states
+           (.tabbtn.on, .seg.on) keep their own 600 override. */
+        .wrap.v2 button {
+          font-weight: 500;
+        }
+
+        /* Object-filter chip icons: bump from 18px to 22px so the
+           busier MDI paths (bird, dog, bicycle) stay legible. */
+        .wrap.v2 .objchip-icon .cgc-svg-icon {
+          width: 22px;
+          height: 22px;
+        }
+
+        /* v2 rows: drop the per-row card (border + background + chunky
+           padding) — collapsible already provides the container. Use a
+           single hairline divider between rows instead. */
+        .wrap.v2 .row {
+          background: transparent;
+          border: none;
+          border-radius: 0;
+          padding: 12px 2px;
+          border-bottom: 1px solid var(--ed-row-border);
+        }
+        .wrap.v2 .row:last-child {
+          border-bottom: none;
+        }
+        .wrap.v2 .row:hover {
+          background: transparent;
+          border-color: transparent;
+          border-bottom-color: var(--ed-row-border);
         }
 
         /* Editor-version toggle (beta) */
