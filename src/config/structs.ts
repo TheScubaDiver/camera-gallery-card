@@ -183,6 +183,10 @@ export const cameraGalleryCardConfigStruct = type({
   // ─── Media source ──────────────────────────────────────────
   media_sources: defaulted(array(string()), []),
   frigate_url: optional(string()),
+  // Reolink resolution preference for the dedicated Reolink engine.
+  // "high" → main stream URI, "low" → sub stream. Has no effect on
+  // non-Reolink media sources. Default "high".
+  reolink_media_resolution: defaulted(enums(["high", "low"]), "high"),
 
   // ─── Datetime parsing ──────────────────────────────────────
   // Single format that matches the path tail. `/`-separated segments map

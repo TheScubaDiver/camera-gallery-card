@@ -216,10 +216,12 @@ Then in the card editor: **General → Delete services → Frigate** → pick `r
 | `source_mode` | `sensor`, `media`, or `combined` |
 | `entity / entities` | Sensor source(s) |
 | `media_source / media_sources` | Media browser source(s) |
-| `path_datetime_format` | Format pattern for parsing timestamps from paths (required for `media` / `combined`) |
+| `path_datetime_format` | Format pattern for parsing timestamps from paths (required for `media` / `combined`, **not** for Reolink or Frigate sources) |
 | `max_media` | Max media items |
 | **Frigate** | |
 | `frigate_url` | Optional direct Frigate REST API URL (e.g. `http://192.168.1.x:5000`). If omitted, the card uses the HA Frigate integration via WebSocket |
+| **Reolink** | |
+| `reolink_media_resolution` | `high` (main stream — default) or `low` (sub stream). Only applies to `media-source://reolink/...` sources |
 | **Gallery view** | |
 | `start_mode` | Default view: `gallery` or `live` |
 | `preview_position` | `top` or `bottom` |
@@ -343,6 +345,46 @@ object_filters:
   - person
   - car
 ```
+
+### Reolink NVR / Doorbell / camera
+
+The official **Reolink HA integration** exposes recordings under
+`media-source://reolink/...`. The card detects this prefix and routes
+those sources through a dedicated engine (mirrors Advanced Camera
+Card's approach) — no `path_datetime_format` needed, no `M`/`D` token
+gymnastics, no manual day-URI:
+
+```yaml
+type: custom:camera-gallery-card
+source_mode: media
+media_sources:
+  - media-source://reolink/CAM|01JVCNA6DC12AMNF2QE2SWXNK3|0
+reolink_media_resolution: high   # or "low" for the sub stream
+live_enabled: true
+live_camera_entities:
+  - camera.deurbel
+```
+
+How it works under the hood:
+- The engine auto-promotes a `CAM|...` URI to `RES|...|main` (or `|sub`
+  when `reolink_media_resolution: low`) so the user only has to copy
+  the camera-level URI from HA's media browser.
+- Day folders titled `2026/4/9` (unpadded) are parsed directly — no
+  date-token configuration.
+- File titles starting with `HH:mm:ss` are parsed to derive each clip's
+  timestamp; the rest of the title (duration, detection tags) is ignored
+  for now.
+- Playback uses HA's MP4 proxy URL via `media_source/resolve_media` —
+  same fast path that Advanced Camera Card uses. No HLS wrapping.
+- Thumbnails are intentionally not generated for Reolink clips (the
+  integration provides none, and first-frame capture would re-fetch the
+  MP4 via the camera proxy — same trade-off ACC makes). The Reolink
+  brand mark is shown instead.
+
+**Find your CAM URI:** open Home Assistant → Media → Reolink, click on
+your camera, and copy the path from the breadcrumb. It looks like
+`media-source://reolink/CAM|<long-id>|<channel>` where `<channel>` is
+`0` for single-lens cameras and `0..N` for NVR channels.
 
 ---
 

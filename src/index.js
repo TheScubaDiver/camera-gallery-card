@@ -30,6 +30,8 @@ import {
   keyFromRoots as msKeyFromRoots,
   MediaSourceClient,
 } from "./data/media-walker";
+import { isReolinkRoot } from "./data/reolink-engine";
+import { REOLINK_LOGO_DATA_URL } from "./assets/reolink-logo";
 import { collectMediaSamples, scoreSamples } from "./data/path-format-detect";
 import { CombinedSourceClient } from "./data/combined-source";
 import { canDeleteItem, deleteItem } from "./data/delete-service";
@@ -840,7 +842,11 @@ class CameraGalleryCard extends LitElement {
       video.className = "pimg";
       video.controls = true;
       video.playsInline = true;
-      video.preload = "metadata";
+      // `auto` so the browser buffers proactively the moment we set `src`.
+      // With `metadata` the browser only fetches the moov atom and waits
+      // for play() before buffering, which adds a perceptible delay on
+      // click → first-frame.
+      video.preload = "auto";
 
 
       host.appendChild(video);
@@ -914,20 +920,20 @@ class CameraGalleryCard extends LitElement {
         }, { once: true, signal: sig });
       }
 
-      if (shouldAutoplay) {
-        // video.load() resets `muted` to `defaultMuted` in some browsers.
-        // Restore the muted flag after load and start playback explicitly
-        // so autoplay doesn't depend on a recent user gesture (relevant in
-        // MS mode where the URL is resolved async and the gesture is "old").
-        video.addEventListener("canplay", () => {
-          video.muted = shouldMute;
-          video.play().catch(() => {});
-        }, { once: true, signal: sig });
-      }
-
       try {
         video.load();
       } catch (_) {}
+
+      if (shouldAutoplay) {
+        // Kick play() immediately after load() — the browser will buffer
+        // aggressively to honor the play request, which is faster than
+        // waiting for the `canplay` event before requesting playback.
+        // Promise rejection on rapid src-swaps is expected and silenced.
+        // `muted` is restored here because video.load() resets it to
+        // `defaultMuted` in some browsers.
+        video.muted = shouldMute;
+        video.play().catch(() => {});
+      }
     } else {
       const poster = this._posterClient.getPosterUrl(selectedUrl) || "";
       if (poster && video.poster !== poster) {
@@ -4269,17 +4275,21 @@ class CameraGalleryCard extends LitElement {
                               alt=""
                               @error=${() => this._posterClient.onThumbImgError(poster)}
                             />`
-                          : this._posterClient.isThumbBroken(it, isMs, thumbUrl, tThumb)
-                            ? html`<div class="tph broken" aria-hidden="true">
-                                <ha-icon icon="mdi:image-broken-variant"></ha-icon>
+                          : isVid && isReolinkRoot(it.src)
+                            ? html`<div class="tph reolink" aria-hidden="true" title="Reolink clip">
+                                <img class="tph-reolink-mark" src=${REOLINK_LOGO_DATA_URL} alt="" />
                               </div>`
-                            : isVid && this._posterClient.isPrewarmDone() && this._posterClient.willNeverLoad(it, isMs, tThumb)
-                              ? html`<div class="tph disabled" aria-hidden="true" title="Thumbnail capture is off">
-                                  <ha-icon icon="mdi:cloud-off-outline"></ha-icon>
+                            : this._posterClient.isThumbBroken(it, isMs, thumbUrl, tThumb)
+                              ? html`<div class="tph broken" aria-hidden="true">
+                                  <ha-icon icon="mdi:image-broken-variant"></ha-icon>
                                 </div>`
-                              : this._posterClient.isPosterLoading(it, isMs, thumbUrl, tThumb)
-                                ? html`<div class="tph spinner" aria-hidden="true"></div>`
-                                : html`<div class="tph skeleton" aria-hidden="true"></div>`}
+                              : isVid && this._posterClient.isPrewarmDone() && this._posterClient.willNeverLoad(it, isMs, tThumb)
+                                ? html`<div class="tph disabled" aria-hidden="true" title="Thumbnail capture is off">
+                                    <ha-icon icon="mdi:cloud-off-outline"></ha-icon>
+                                  </div>`
+                                : this._posterClient.isPosterLoading(it, isMs, thumbUrl, tThumb)
+                                  ? html`<div class="tph spinner" aria-hidden="true"></div>`
+                                  : html`<div class="tph skeleton" aria-hidden="true"></div>`}
 
                         ${showBar
                           ? html`
@@ -6654,7 +6664,7 @@ class CameraGalleryCardEditor extends HTMLElement {
                 <div class="row-head">
                   <div>
                     <div class="lbl">Capture video thumbnails</div>
-                    <div class="desc">Extract a frame from each video when no server thumbnail is available. Off saves bandwidth on slow connections.</div>
+                    <div class="desc">Extract a frame from each video when no server thumbnail is available. Off saves bandwidth on slow connections. <em>Not applied to Reolink clips</em> — those always show the brand placeholder to avoid re-fetching the MP4 via the camera proxy.</div>
                   </div>
                   <div class="togrow">
                     <label class="cgc-switch"><input type="checkbox" id="capture-video-thumbnails" ${c.capture_video_thumbnails !== false ? "checked" : ""}><span class="cgc-track"></span></label>

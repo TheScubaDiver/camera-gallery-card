@@ -1400,8 +1400,8 @@ export const cardStyles = css`
     background: var(--cgc-thumb-bg);
     box-sizing: border-box;
 
-    /* Shared structure for the three "non-image" states. */
-    &:is(.broken, .spinner, .disabled) {
+    /* Shared structure for the four "non-image" states. */
+    &:is(.broken, .spinner, .disabled, .reolink) {
       display: grid;
       place-items: center;
     }
@@ -1413,6 +1413,16 @@ export const cardStyles = css`
     }
     &.disabled {
       color: var(--cgc-thumb-disabled-color, rgba(255, 255, 255, 0.32));
+    }
+    /* Reolink clip placeholder — the integration provides no server-side
+     * thumbnail, so we display the brand mark instead of trying first-frame
+     * capture (which would double the camera-proxy load per clip). */
+    &.reolink .tph-reolink-mark {
+      width: 38%;
+      max-width: 72px;
+      height: auto;
+      display: block;
+      opacity: 0.9;
     }
     &:is(.broken, .disabled) ha-icon {
       --mdc-icon-size: 28px;

@@ -54,6 +54,7 @@ import {
 } from "./media-tree";
 import { dedupeByRelPath, pairMediaSourceThumbnails } from "./pairing";
 import { parsePathFormat, type PathFormat } from "./path-format";
+import { discoverReolink, isReolinkRoot, loadReolinkDay } from "./reolink-engine";
 
 export type Enrich = (src: string) => CardItem;
 const DEFAULT_ENRICH: Enrich = (src) => ({ src });
@@ -92,6 +93,12 @@ interface MediaSourceState {
   /** Per-day item lists. Layout A: populated entirely on initial load.
    * Layouts B/C: populated lazily as the user navigates dates. */
   dayCache: Map<string, MsItem[]>;
+  /** Frigate WS items, kept separately from `dayCache` because Frigate
+   * surfaces events as a flat list (not bucketed by day). `_refreshList`
+   * merges these back in alongside the dayCache buckets so they survive
+   * day-navigation re-renders. Without this, a day-pick that triggers
+   * `_refreshList` would drop every Frigate event from the gallery. */
+  frigateItems: MsItem[];
 }
 
 export interface MediaSourceClientOptions {
@@ -382,6 +389,7 @@ export class MediaSourceClient {
     this.state.urlCache = new Map();
     this.resolveFailed = new Map();
     this.frigateSnapshots = [];
+    this.state.frigateItems = [];
     this.snapshotCache.clear();
     this.browseTtlCache.clear();
     // Calendar-walker caches must follow the same generation. Without this,
@@ -690,12 +698,18 @@ export class MediaSourceClient {
       return;
     }
 
-    // Split the roots: Frigate roots load via the HA WebSocket integration
-    // (CORS-free, no `frigate_url` needed), other roots through the calendar
-    // walker (path-based bucketing). Both run for mixed configs and their
-    // results are merged into a single `state.list` at the end.
+    // Split the roots three ways:
+    //   - Frigate roots → HA WebSocket integration (CORS-free, no `frigate_url`)
+    //   - Reolink roots → dedicated engine (no path_datetime_format needed —
+    //     titles are parsed in-engine).
+    //   - Other roots → generic calendar walker (path-based bucketing).
+    // Frigate WS items merge with whatever the other branch produces.
+    // The Reolink and generic branches are currently mutually exclusive:
+    // when both kinds of roots are present, Reolink wins. Supporting truly
+    // mixed configs would need parallel calendar slots — out of scope here.
     const frigateRoots = roots.filter(isFrigateRoot);
-    const otherRoots = roots.filter((r) => !isFrigateRoot(r));
+    const reolinkRoots = roots.filter((r) => !isFrigateRoot(r) && isReolinkRoot(r));
+    const otherRoots = roots.filter((r) => !isFrigateRoot(r) && !isReolinkRoot(r));
 
     // WS path is independent of `frigate_url` — don't gate it on the REST
     // API's recent-failure flag. Otherwise a transient REST failure (wrong
@@ -705,20 +719,26 @@ export class MediaSourceClient {
     if (frigateRoots.length > 0) {
       frigateItems = await this._fetchFrigateWsItems(frigateRoots, config);
     }
+    // Persist for the lifetime of this load so subsequent `_refreshList`
+    // calls (from day navigation) can re-merge Frigate items. Reset to []
+    // whenever the user has no Frigate roots so a previous run's items
+    // don't leak into a new config.
+    this.state.frigateItems = frigateItems;
 
-    if (otherRoots.length > 0) {
+    if (reolinkRoots.length > 0) {
+      await this._loadReolinkPath(reolinkRoots, config);
+    } else if (otherRoots.length > 0) {
       await this._loadCalendarPath(otherRoots);
     }
 
     if (frigateItems.length > 0) {
-      const cap = config.max_media ?? DEFAULT_MAX_MEDIA;
-      const headroom = Math.max(cap * 10, 500);
-      // Merge Frigate items with whatever the calendar walker already wrote
-      // to state.list (sensor-source items, recordings, etc.) and re-sort.
-      const merged = (this.state.list.length ? [...frigateItems, ...this.state.list] : frigateItems)
-        .slice()
-        .sort((a, b) => (b.dtMs ?? 0) - (a.dtMs ?? 0));
-      this.setList(merged.slice(0, headroom));
+      // `_refreshList` already merged Frigate items into `state.list` if the
+      // calendar/Reolink path ran. When no other path ran (all-Frigate
+      // config, or `else if` skipped), the list is still empty — fold them
+      // in here so the gallery has something to show.
+      if (this.state.list.length === 0) {
+        this._refreshList();
+      }
       this.state.loadedAt = Date.now();
       this._fireChange();
     } else if (frigateRoots.length > 0 && otherRoots.length === 0) {
@@ -740,7 +760,7 @@ export class MediaSourceClient {
    */
   private async _fetchFrigateWsItems(
     frigateRoots: readonly string[],
-    config: CameraGalleryCardConfig
+    _config: CameraGalleryCardConfig
   ): Promise<MsItem[]> {
     const hass = this._hass;
     if (!hass) return [];
@@ -864,6 +884,70 @@ export class MediaSourceClient {
       items.push(mapped.item as MsItem);
     }
     return items;
+  }
+
+  /**
+   * Reolink branch — dedicated engine. Bypasses `path_datetime_format`
+   * entirely; the engine knows Reolink's URI shape and title format
+   * intrinsically.
+   * Populates `state.calendar` + `state.dayCache` the same way the
+   * generic calendar path does, so the picker UI is engine-agnostic.
+   */
+  private async _loadReolinkPath(
+    roots: readonly string[],
+    config: CameraGalleryCardConfig
+  ): Promise<void> {
+    const now = Date.now();
+    const resolution =
+      String(config.reolink_media_resolution ?? "high").toLowerCase() === "low" ? "sub" : "main";
+    const key = `reolink:${keyFromRoots(roots)}:${resolution}`;
+    const sameKey = this.state.key === key;
+    const fresh = sameKey && now - (this.state.loadedAt ?? 0) < ENSURE_LOADED_FRESHNESS_MS;
+    if (this.state.loading || fresh) return;
+
+    if (!sameKey) {
+      this.state.key = key;
+      this.setList([]);
+      this.state.roots = roots.slice();
+      this.state.urlCache = new Map();
+      this.resolveFailed = new Map();
+      this.state.dayCache = new Map();
+    }
+
+    this.state.loading = true;
+    const gen = this._loadGeneration;
+    const browseFn: BrowseFn = (id) => this._browse(id);
+
+    try {
+      const calendar = await discoverReolink(roots, browseFn, {
+        resolution,
+        isStale: () => this._isStale(gen),
+      });
+      if (this._isStale(gen)) return;
+      this.state.calendar = calendar;
+
+      // Auto-load newest day so the gallery isn't empty on first render.
+      // Older days load lazily via `ensureDayLoaded`.
+      const newest = calendar.days[0];
+      if (newest) {
+        const items = await loadReolinkDay(calendar, newest, browseFn, {
+          isStale: () => this._isStale(gen),
+        });
+        if (this._isStale(gen)) return;
+        this.state.dayCache.set(newest, items);
+        this._refreshList();
+      }
+
+      this.state.loadedAt = Date.now();
+    } catch (e) {
+      if (this._isStale(gen)) return;
+      console.warn("Reolink walk failed:", e);
+    } finally {
+      if (!this._isStale(gen)) {
+        this.state.loading = false;
+        this._fireChange();
+      }
+    }
   }
 
   private async _loadCalendarPath(roots: readonly string[]): Promise<void> {
@@ -1039,21 +1123,54 @@ export class MediaSourceClient {
     if (inFlight) return inFlight;
     const config = this._config;
     if (!config) return;
-    const fmt = this._getCompiledPathFormat();
-    if (!fmt) return;
     const browseFn: BrowseFn = (id) => this._browse(id);
     const gen = this._loadGeneration;
     // Snapshot the calendar at call time so a concurrent config-change that
     // swaps `state.calendar` mid-flight can't make us write an empty list
     // for a day that exists only in the OLD calendar (review finding A6).
     const calendar = this.state.calendar;
-    const promise = this._loadDayInternal(dayKey, calendar, fmt, browseFn, gen);
+    // Dispatch by leaf engine: Reolink dayKeys point at `media-source://reolink/DAY|...`
+    // and need the dedicated title parser. Other dayKeys use the generic
+    // path-format walker. Per-entry detection keeps mixed configs working.
+    const entries = calendar.byDay.get(dayKey);
+    const firstLeaf = entries && entries.length > 0 ? entries[0]?.leafId : undefined;
+    const isReolinkDay = !!firstLeaf && isReolinkRoot(firstLeaf);
+    let promise: Promise<void>;
+    if (isReolinkDay) {
+      promise = this._loadReolinkDayInternal(dayKey, calendar, browseFn, gen);
+    } else {
+      const fmt = this._getCompiledPathFormat();
+      if (!fmt) return;
+      promise = this._loadDayInternal(dayKey, calendar, fmt, browseFn, gen);
+    }
     this._dayInFlight.set(dayKey, promise);
     try {
       await promise;
     } finally {
       this._dayInFlight.delete(dayKey);
     }
+  }
+
+  /** Phase-B loader for Reolink dayKeys. No path-format, no localStorage
+   * day-cache (Reolink files are cheap to re-list; saves ~50KB JSON per day). */
+  private async _loadReolinkDayInternal(
+    dayKey: string,
+    calendar: Calendar,
+    browseFn: BrowseFn,
+    gen: number
+  ): Promise<void> {
+    if (!calendar.byDay.has(dayKey)) {
+      this.state.dayCache.set(dayKey, []);
+      return;
+    }
+    const items = await loadReolinkDay(calendar, dayKey, browseFn, {
+      isStale: () => this._isStale(gen),
+    });
+    if (this._isStale(gen)) return;
+    this._sortDayItemsInPlace(items);
+    this.state.dayCache.set(dayKey, items);
+    this._refreshList();
+    this._fireChange();
   }
 
   private async _loadDayInternal(
@@ -1176,6 +1293,15 @@ export class MediaSourceClient {
     if (hasUndated) {
       const arr = this.state.dayCache.get(UNDATED_BUCKET);
       if (arr && arr.length) flat.push(...arr);
+    }
+    // Fold in Frigate WS items. They aren't bucketed in dayCache because
+    // the WS API returns a flat event list (not a per-day index), and
+    // bucketing would duplicate the integration's own sort. Merge by
+    // dtMs so they interleave correctly with the calendar-walked items
+    // — this is what keeps Frigate clips visible across day navigations.
+    if (this.state.frigateItems.length > 0) {
+      flat.push(...this.state.frigateItems);
+      flat.sort((a, b) => (b.dtMs ?? 0) - (a.dtMs ?? 0));
     }
     this.setList(dedupeByRelPath(flat) as MsItem[]);
   }
@@ -1318,5 +1444,6 @@ function makeEmptyState(): MediaSourceState {
     urlCache: new Map(),
     calendar: { byDay: new Map(), days: [] },
     dayCache: new Map(),
+    frigateItems: [],
   };
 }

@@ -606,12 +606,18 @@ function assertRequiredFields(config: CameraGalleryCardConfig): void {
     );
   }
 
+  // Reolink media-sources don't need a path_datetime_format — the
+  // dedicated Reolink engine parses titles intrinsically.
+  const allReolink =
+    media_sources.length > 0 &&
+    media_sources.every((r) => /^media-source:\/\/reolink\//i.test(String(r ?? "")));
   if (
     !config.path_datetime_format &&
     !hasFrigateConfig({
       frigate_url: config.frigate_url,
       media_sources: config.media_sources,
-    })
+    }) &&
+    !allReolink
   ) {
     throw new Error(
       "camera-gallery-card: 'path_datetime_format' is required so files can be grouped by date"
