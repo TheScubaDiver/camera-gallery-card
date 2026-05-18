@@ -4873,6 +4873,15 @@ class CameraGalleryCardEditor extends HTMLElement {
     } catch (_) { /* ignore */ }
     this._editorVersion = storedVersion;
     this._activeTab = this._editorVersion === "v2" ? "source" : "general";
+    // Open/closed state for v2 collapsibles, keyed `${tab}.${sectionId}`.
+    // Persisted to localStorage so it survives editor close / page reload.
+    this._v2OpenSections = (() => {
+      try {
+        const raw = (typeof localStorage !== "undefined") && localStorage.getItem("cgc_v2_open_sections");
+        if (raw) return new Map(Object.entries(JSON.parse(raw)));
+      } catch (_) { /* ignore */ }
+      return new Map();
+    })();
     this._focusState = null;
     this._lastSuggestFingerprint = {
       entities: "",
@@ -6540,18 +6549,28 @@ class CameraGalleryCardEditor extends HTMLElement {
     // v2 collapsibles reuse the existing .style-section / .style-section-head
     // CSS so they look identical to the Styling-tab accordion users already
     // know. `icon` is optional — pass an mdi name to show a leading glyph.
-    const v2Collapsible = (id, title, openByDefault, bodyHtml, icon) => `
-      <details class="style-section" ${openByDefault ? "open" : ""} data-v2-section="${id}">
-        <summary class="style-section-head">
-          ${icon ? svgIcon(icon, 18) : ``}
-          <span>${title}</span>
-          <span class="style-chevron">${svgIcon('mdi:chevron-down', 18)}</span>
-        </summary>
-        <div class="style-section-body">
-          ${bodyHtml}
-        </div>
-      </details>
-    `;
+    //
+    // Open-state lookup order:
+    //   1. `_v2OpenSections` map keyed `${tab}.${id}` — set by user toggles
+    //   2. fallback to `openByDefault` for first render
+    const v2Collapsible = (id, title, openByDefault, bodyHtml, icon) => {
+      const key = `${this._activeTab}.${id}`;
+      const isOpen = this._v2OpenSections.has(key)
+        ? this._v2OpenSections.get(key)
+        : openByDefault;
+      return `
+        <details class="style-section" ${isOpen ? "open" : ""} data-v2-section="${id}">
+          <summary class="style-section-head">
+            ${icon ? svgIcon(icon, 18) : ``}
+            <span>${title}</span>
+            <span class="style-chevron">${svgIcon('mdi:chevron-down', 18)}</span>
+          </summary>
+          <div class="style-section-body">
+            ${bodyHtml}
+          </div>
+        </details>
+      `;
+    };
 
     // Small right-aligned "Expand all / Collapse all" link rendered at
     // the top of any v2 tabpanel that has multiple collapsibles. Click
@@ -6566,6 +6585,7 @@ class CameraGalleryCardEditor extends HTMLElement {
       const viewBody = `
         <div class="row">
           <div class="lbl">Default view</div>
+          <div class="desc">Which screen the card opens on. <code>Gallery</code> shows recorded clips; <code>Live</code> shows the camera feed.</div>
           <div class="segwrap">
             <button class="seg ${startMode !== "live" ? "on" : ""}" data-startmode="gallery">Gallery</button>
             <button class="seg ${startMode === "live" ? "on" : ""}" data-startmode="live">Live</button>
@@ -6576,6 +6596,7 @@ class CameraGalleryCardEditor extends HTMLElement {
       const sourceBody = `
         <div class="row">
           <div class="lbl">Source mode</div>
+          <div class="desc">Where the card pulls clips from. <code>File sensor</code> reads from a sensor entity; <code>Media folders</code> walks Home Assistant's media-source tree; <code>Combined</code> merges both.</div>
           <div class="segwrap">
             <button class="seg ${sensorModeOn ? "on" : ""}" data-src="sensor">File sensor</button>
             <button class="seg ${mediaModeOn ? "on" : ""}" data-src="media">Media folders</button>
@@ -6605,13 +6626,13 @@ class CameraGalleryCardEditor extends HTMLElement {
           </div>
           ` : `
           <div style="margin-top:10px;">
-            <div class="lbl" style="margin-bottom:6px;">File sensor(s)</div>
+            <div class="lbl" style="margin-bottom:6px;">File sensors</div>
             <div class="field" id="entities-field">
               <textarea id="entities" rows="3" placeholder="Enter one sensor per line"></textarea>
               <div class="suggestions" id="entities-suggestions" hidden></div>
             </div>
             ${invalidEntities.length ? `<div class="desc">⚠️ Invalid / missing sensor(s): <code>${invalidEntities.join("</code>, <code>")}</code></div>` : ``}
-            <div class="lbl" style="margin-top:12px;margin-bottom:6px;">Media folder(s)</div>
+            <div class="lbl" style="margin-top:12px;margin-bottom:6px;">Media folders</div>
             <div class="field" id="mediasources-field">
               <textarea id="mediasources" rows="3" placeholder="Enter one folder per line, or browse and select folders"></textarea>
               <div class="suggestions" id="mediasources-suggestions" hidden></div>
@@ -6628,7 +6649,8 @@ class CameraGalleryCardEditor extends HTMLElement {
 
       const frigateBody = `
         <div class="row">
-          <div class="desc">Direct Frigate API URL (e.g. <code>http://192.168.1.x:5000</code>). If set, clips load instantly via Frigate REST API instead of the media-source walk.</div>
+          <div class="lbl">Frigate URL <span style="font-weight:400;color:var(--ed-text2);font-size:0.85em;">(optional)</span></div>
+          <div class="desc">Direct URL to your Frigate API (e.g. <code>http://192.168.1.x:5000</code>). When set, clips load through Frigate's REST API — much faster than crawling Home Assistant's media tree folder by folder.</div>
           <div class="field">
             <input type="text" class="ed-input" id="frigate_url" placeholder="http://192.168.1.x:5000" autocomplete="off" value="${this._config.frigate_url || ""}" />
           </div>
@@ -6653,6 +6675,7 @@ class CameraGalleryCardEditor extends HTMLElement {
       const displayBody = `
         <div class="row">
           <div class="lbl">Image fit</div>
+          <div class="desc"><code>Cover</code> fills the preview and may crop edges; <code>Contain</code> shows the whole frame with letterbox bars.</div>
           <div class="segwrap">
             <button class="seg ${objectFit === "cover" ? "on" : ""}" data-objfit="cover">Cover</button>
             <button class="seg ${objectFit === "contain" ? "on" : ""}" data-objfit="contain">Contain</button>
@@ -6660,7 +6683,8 @@ class CameraGalleryCardEditor extends HTMLElement {
         </div>
 
         <div class="row">
-          <div class="lbl">Position</div>
+          <div class="lbl">Preview position</div>
+          <div class="desc">Where the preview pane sits relative to the thumbnail strip.</div>
           <div class="segwrap">
             <button class="seg ${previewPos === "top" ? "on" : ""}" data-ppos="top">Top</button>
             <button class="seg ${previewPos === "bottom" ? "on" : ""}" data-ppos="bottom">Bottom</button>
@@ -6669,7 +6693,10 @@ class CameraGalleryCardEditor extends HTMLElement {
 
         <div class="row">
           <div class="row-head">
-            <div><div class="lbl">Clean mode</div></div>
+            <div>
+              <div class="lbl">Clean mode</div>
+              <div class="desc">Only shows the preview window.</div>
+            </div>
             <div class="togrow">
               <label class="cgc-switch"><input type="checkbox" id="cleanmode" ${cleanMode ? "checked" : ""}><span class="cgc-track"></span></label>
             </div>
@@ -6678,6 +6705,7 @@ class CameraGalleryCardEditor extends HTMLElement {
 
         <div class="row">
           <div class="lbl">Controls position</div>
+          <div class="desc"><code>Overlay</code> floats the playback controls over the preview; <code>Fixed</code> reserves a strip below it.</div>
           <div class="segwrap">
             <button class="seg ${(c.controls_mode ?? "overlay") === "overlay" ? "on" : ""}" data-ctrlmode="overlay">Overlay</button>
             <button class="seg ${c.controls_mode === "fixed" ? "on" : ""}" data-ctrlmode="fixed">Fixed</button>
@@ -6686,7 +6714,10 @@ class CameraGalleryCardEditor extends HTMLElement {
 
         <div class="row">
           <div class="row-head">
-            <div><div class="lbl">Show camera name</div></div>
+            <div>
+              <div class="lbl">Show camera name</div>
+              <div class="desc">Overlay the camera's friendly name on the preview.</div>
+            </div>
             <div class="togrow">
               <label class="cgc-switch"><input type="checkbox" id="showcameratitle" ${c.show_camera_title !== false ? "checked" : ""} ${c.controls_mode === "fixed" ? "disabled" : ""}><span class="cgc-track"></span></label>
             </div>
@@ -6697,7 +6728,7 @@ class CameraGalleryCardEditor extends HTMLElement {
           <div class="row-head">
             <div>
               <div class="lbl">Persistent controls</div>
-              <div class="desc">Always show controls.</div>
+              <div class="desc">Keep playback controls on screen all the time instead of auto-hiding them after a few seconds.</div>
             </div>
             <div class="togrow">
               <label class="cgc-switch"><input type="checkbox" id="persistentcontrols" ${persistentControls ? "checked" : ""}><span class="cgc-track"></span></label>
@@ -6710,14 +6741,20 @@ class CameraGalleryCardEditor extends HTMLElement {
         <div class="row">
           <div class="subrows">
             <div class="row-head">
-              <div class="lbl">Autoplay</div>
+              <div>
+                <div class="lbl">Autoplay</div>
+                <div class="desc">Start playing a clip as soon as it's opened in the preview.</div>
+              </div>
               <div class="togrow">
                 <label class="cgc-switch"><input type="checkbox" id="autoplay"><span class="cgc-track"></span></label>
               </div>
             </div>
 
             <div class="row-head">
-              <div class="lbl">Auto muted</div>
+              <div>
+                <div class="lbl">Start muted</div>
+                <div class="desc">Begin clips muted. Users can unmute via the player controls.</div>
+              </div>
               <div class="togrow">
                 <label class="cgc-switch"><input type="checkbox" id="auto_muted"><span class="cgc-track"></span></label>
               </div>
@@ -6730,8 +6767,14 @@ class CameraGalleryCardEditor extends HTMLElement {
       // "Gallery toolbar" row so the existing event-wiring picks them up.
       const toolbarBody = `
         <div class="row">
+          <div class="desc">Show or hide individual buttons in the gallery's top toolbar.</div>
+        </div>
+        <div class="row">
           <div class="row-head">
-            <div><div class="lbl">Today</div></div>
+            <div>
+              <div class="lbl">Today</div>
+              <div class="desc">Quick-jump to the newest day's clips.</div>
+            </div>
             <div class="togrow">
               <label class="cgc-switch"><input type="checkbox" id="show_today" ${c.show_today !== false ? "checked" : ""}><span class="cgc-track"></span></label>
             </div>
@@ -6740,8 +6783,8 @@ class CameraGalleryCardEditor extends HTMLElement {
         <div class="row">
           <div class="row-head">
             <div>
-              <div class="lbl">Media filter (video / image)</div>
-              <div class="desc">Only visible when the gallery contains both video and image clips.</div>
+              <div class="lbl">Type filter (video / image)</div>
+              <div class="desc">Filter the gallery by clip type. Auto-hides when only one type is present.</div>
             </div>
             <div class="togrow">
               <label class="cgc-switch"><input type="checkbox" id="show_media_filter" ${c.show_media_filter !== false ? "checked" : ""}><span class="cgc-track"></span></label>
@@ -6750,7 +6793,10 @@ class CameraGalleryCardEditor extends HTMLElement {
         </div>
         <div class="row">
           <div class="row-head">
-            <div><div class="lbl">Favorite</div></div>
+            <div>
+              <div class="lbl">Favorites</div>
+              <div class="desc">Filter to clips marked with a star.</div>
+            </div>
             <div class="togrow">
               <label class="cgc-switch"><input type="checkbox" id="show_favorite" ${c.show_favorite !== false ? "checked" : ""}><span class="cgc-track"></span></label>
             </div>
@@ -6758,7 +6804,10 @@ class CameraGalleryCardEditor extends HTMLElement {
         </div>
         <div class="row">
           <div class="row-head">
-            <div><div class="lbl">LIVE</div></div>
+            <div>
+              <div class="lbl">Live</div>
+              <div class="desc">Switch-to-live button — flips the card from gallery into live-view mode.</div>
+            </div>
             <div class="togrow">
               <label class="cgc-switch"><input type="checkbox" id="show_live" ${c.show_live !== false ? "checked" : ""}><span class="cgc-track"></span></label>
             </div>
@@ -6769,6 +6818,7 @@ class CameraGalleryCardEditor extends HTMLElement {
       const filtersBody = `
         <div class="row">
           <div class="lbl">Object filters</div>
+          <div class="desc">Filter clips by what was detected in them. Tap a chip to enable; click the color box to set its colour.</div>
           <div class="objmeta">
             <div class="countpill">Selected ${selectedCount}/${MAX_VISIBLE_OBJECT_FILTERS}</div>
           </div>
@@ -6801,7 +6851,8 @@ class CameraGalleryCardEditor extends HTMLElement {
         </div>
 
         <div class="row">
-          <div class="lbl">Custom Object Filters</div>
+          <div class="lbl">Custom filters</div>
+          <div class="desc">Add your own filter buttons (e.g. <code>parcel</code>, <code>mail-truck</code>). They match against detection labels found in clip filenames or sensor text.</div>
 
           <div class="custom-filter-add">
             <input type="text" class="ed-input" id="new-filter-name" placeholder="e.g. parcel" />
@@ -6860,7 +6911,10 @@ class CameraGalleryCardEditor extends HTMLElement {
       const basicsBody = `
         <div class="row ${liveControlsDisabled ? "muted" : ""}">
           <div class="row-head">
-            <div class="lbl">Live preview</div>
+            <div>
+              <div class="lbl">Enable live view</div>
+              <div class="desc">Add a live-camera tab to the card. When off, the card only shows recorded clips.</div>
+            </div>
             <div class="togrow">
               <label class="cgc-switch"><input type="checkbox" id="liveenabled" ${liveEnabled ? "checked" : ""} ${liveControlsDisabled ? "disabled" : ""}><span class="cgc-track"></span></label>
             </div>
@@ -6870,8 +6924,8 @@ class CameraGalleryCardEditor extends HTMLElement {
         ${liveEnabled ? `
           ${cameraEntities.length > 1 ? `
           <div class="row">
-            <div class="lbl">Visible cameras in picker</div>
-            <div class="desc">Select cameras for the picker. At least one camera must be added to enable live mode.</div>
+            <div class="lbl">Cameras in picker</div>
+            <div class="desc">Cameras that appear in the live-view picker. Drag to reorder; the first one is selected by default unless you set a different default below.</div>
             ${(() => {
               const se = Array.isArray(this._config.live_stream_urls) && this._config.live_stream_urls.length > 0
                 ? this._config.live_stream_urls.filter(e => e?.url)
@@ -6899,7 +6953,7 @@ class CameraGalleryCardEditor extends HTMLElement {
           ${liveCameraEntities.length > 1 ? `
           <div class="row">
             <div class="lbl">Live layout</div>
-            <div class="desc">Single shows one camera at a time (use the picker to switch). Grid shows all visible cameras at once — tap a tile to focus.</div>
+            <div class="desc"><code>Single</code> shows one camera at a time. <code>Grid</code> tiles all of them — tap a tile to focus.</div>
             <div class="segwrap">
               <button class="seg ${liveLayout === "single" ? "on" : ""}" data-livelayout="single">Single</button>
               <button class="seg ${liveLayout === "grid" ? "on" : ""}" data-livelayout="grid">Grid</button>
@@ -6915,6 +6969,7 @@ class CameraGalleryCardEditor extends HTMLElement {
 
           <div class="row ${liveControlsDisabled ? "muted" : ""}">
             <div class="lbl">Default live camera</div>
+            <div class="desc">Which camera shows first when the live tab opens. Leave empty to use the first one in the picker.</div>
             ${liveCameraEntity ? `
             <div class="livecam-tags">
               <div class="livecam-tag"><span>${liveCameraEntity.startsWith("__cgc_stream") ? (this._getStreamEntryById(liveCameraEntity)?.name || "Stream") : String(this._hass?.states?.[liveCameraEntity]?.attributes?.friendly_name || liveCameraEntity).trim()}</span><span class="livecam-tag-entity">${liveCameraEntity.startsWith("__cgc_stream") ? "stream url" : liveCameraEntity}</span><button type="button" class="livecam-tag-del" data-deldefcam="${liveCameraEntity}">×</button></div>
@@ -6933,7 +6988,10 @@ class CameraGalleryCardEditor extends HTMLElement {
 
           <div class="row">
             <div class="row-head">
-              <div class="lbl">Auto muted</div>
+              <div>
+                <div class="lbl">Start muted</div>
+                <div class="desc">Begin live streams muted on tab switch. Users can unmute per camera.</div>
+              </div>
               <div class="togrow">
                 <label class="cgc-switch"><input type="checkbox" id="live_auto_muted"><span class="cgc-track"></span></label>
               </div>
@@ -6945,7 +7003,7 @@ class CameraGalleryCardEditor extends HTMLElement {
       // ── Streams collapsible
       const streamsBody = `
         <div class="row">
-          <div class="desc">Optional. Add one or more RTSP/HLS/RTMP stream URLs. Each gets its own entry in the camera picker.</div>
+          <div class="desc">Add RTSP / HLS / RTMP stream URLs as extra entries in the picker. Useful for cameras that don't have a Home Assistant entity.</div>
           <div id="stream-urls-list">
             ${(() => {
               const entries = (() => {
@@ -7029,12 +7087,14 @@ class CameraGalleryCardEditor extends HTMLElement {
             </div>`;
           })()}
           ${hasAnyMicStream(this._config) ? `
-          <div class="desc" style="margin-top:8px;">Interaction</div>
+          <div class="lbl" style="margin-top:8px;">Interaction</div>
+          <div class="desc"><code>Toggle</code> latches the mic on/off with one tap. <code>Push-to-talk</code> holds the mic open only while pressed.</div>
           <div class="segwrap">
             <button class="seg ${(this._config.live_mic_mode || "toggle") === "toggle" ? "on" : ""}" data-livemicmode="toggle">Toggle</button>
             <button class="seg ${this._config.live_mic_mode === "ptt" ? "on" : ""}" data-livemicmode="ptt">Push-to-talk</button>
           </div>
-          <div class="desc" style="margin-top:6px;">Audio processing</div>
+          <div class="lbl" style="margin-top:8px;">Audio processing</div>
+          <div class="desc">Browser-level mic processing applied before the audio reaches your camera.</div>
           ${(() => {
             const ap = this._config.live_mic_audio_processing || {};
             const ec = ap.echo_cancellation !== false;
@@ -7054,7 +7114,7 @@ class CameraGalleryCardEditor extends HTMLElement {
       // ── Menu buttons collapsible
       const menuButtonsBody = `
         <div class="row">
-          <div class="desc">Buttons shown in the hamburger menu during live view.</div>
+          <div class="desc">Custom buttons in the live-view hamburger menu — handy for toggling lights, sirens or running scripts without leaving the camera.</div>
           ${(() => {
             const menuButtons = Array.isArray(this._config.menu_buttons) ? this._config.menu_buttons : [];
             return menuButtons.length ? `
@@ -7155,7 +7215,8 @@ class CameraGalleryCardEditor extends HTMLElement {
     const buildThumbsTabV2 = () => {
       const layoutBody = `
         <div class="row">
-          <div class="lbl">Thumbnail layout</div>
+          <div class="lbl">Layout</div>
+          <div class="desc">Horizontal arranged the thumbnails horizontally; Vertical... well...</div>
           <div class="segwrap">
             <button class="seg ${thumbLayout === "horizontal" ? "on" : ""}" data-tlayout="horizontal">Horizontal</button>
             <button class="seg ${thumbLayout === "vertical" ? "on" : ""}" data-tlayout="vertical">Vertical</button>
@@ -7163,13 +7224,14 @@ class CameraGalleryCardEditor extends HTMLElement {
         </div>
 
         <div class="row ${thumbSizeMuted ? "muted" : ""}">
-          <div class="lbl">Thumbnail size</div>
-          <div class="desc">Set the size of each thumbnail in pixels</div>
+          <div class="lbl">Size</div>
+          <div class="desc">Size of each thumbnail, in pixels.</div>
           <div class="ed-input-row"><input type="number" class="ed-input" id="thumb" /><span class="ed-suffix">px</span></div>
         </div>
 
         <div class="row">
-          <div class="lbl">Maximum thumbnails shown</div>
+          <div class="lbl">Maximum thumbnails</div>
+          <div class="desc">How many clips load into the thumbnail strip. Higher = more scrolling, slower first paint.</div>
           <div class="ed-input-row"><input type="number" class="ed-input" id="maxmedia" /><span class="ed-suffix">items</span></div>
         </div>
 
@@ -7184,6 +7246,7 @@ class CameraGalleryCardEditor extends HTMLElement {
 
         <div class="row">
           <div class="lbl">Sort order</div>
+          <div class="desc">Order clips in the thumbnail strip.</div>
           <div class="segwrap">
             <button class="seg ${thumbSortOrder === "newest" ? "on" : ""}" data-tsort="newest">Newest first</button>
             <button class="seg ${thumbSortOrder === "oldest" ? "on" : ""}" data-tsort="oldest">Oldest first</button>
@@ -7253,9 +7316,10 @@ class CameraGalleryCardEditor extends HTMLElement {
 
       const deleteBody = `
         <div class="row">
+          <div class="desc">Home Assistant service calls invoked when a clip is deleted. Required if you want the trash button to actually remove files.</div>
           <div style="padding-top:4px;display:flex;flex-direction:column;gap:14px;">
             <div class="${mediaModeOn ? "row-disabled" : ""}">
-              <div class="lbl">Sensor</div>
+              <div class="lbl">File sensor <span style="font-weight:400;color:var(--ed-text2);font-size:0.85em;">— used in file-sensor / combined mode</span></div>
               <div class="selectwrap" style="margin-top:4px;">
                 <select class="select ${deleteOk ? "" : "invalid"}" id="delservice" ${mediaModeOn ? "disabled" : ""}>
                   ${
@@ -7277,7 +7341,7 @@ class CameraGalleryCardEditor extends HTMLElement {
             </div>
             ${hasFrigateConfig(c) ? `
             <div>
-              <div class="lbl">Frigate</div>
+              <div class="lbl">Frigate <span style="font-weight:400;color:var(--ed-text2);font-size:0.85em;">— used for Frigate clips</span></div>
               <div class="selectwrap" style="margin-top:4px;">
                 <select class="select ${frigateDeleteOk ? "" : "invalid"}" id="frigate-delservice">
                   ${
@@ -7307,7 +7371,7 @@ class CameraGalleryCardEditor extends HTMLElement {
           <div class="row-head">
             <div>
               <div class="lbl">Debug mode</div>
-              <div class="desc">Show a debug pill in live view that opens a diagnostics report (card version, HA info, runtime state). Useful for support questions.</div>
+              <div class="desc">Adds a small Debug badge on the live view; tapping it opens a diagnostics report (card version, HA info, runtime state). Handy when reporting bugs.</div>
             </div>
             <div class="togrow">
               <label class="cgc-switch"><input type="checkbox" id="debug-enabled" ${this._config?.debug_enabled ? "checked" : ""}><span class="cgc-track"></span></label>
@@ -7483,7 +7547,7 @@ class CameraGalleryCardEditor extends HTMLElement {
                 <div class="row-head">
                   <div>
                     <div class="lbl">Debug mode</div>
-                    <div class="desc">Show a debug pill in live view that opens a diagnostics report (card version, HA info, runtime state). Useful for support questions.</div>
+                    <div class="desc">Adds a small Debug badge on the live view; tapping it opens a diagnostics report (card version, HA info, runtime state). Handy when reporting bugs.</div>
                   </div>
                   <div class="togrow">
                     <label class="cgc-switch"><input type="checkbox" id="debug-enabled" ${this._config?.debug_enabled ? "checked" : ""}><span class="cgc-track"></span></label>
@@ -7832,14 +7896,14 @@ class CameraGalleryCardEditor extends HTMLElement {
                                 </div>
                               </div>
                               <div>
-                                <div style="font-size:0.75em;opacity:0.6;margin-bottom:2px;">Icon (off)</div>
+                                <div style="font-size:0.75em;opacity:0.6;margin-bottom:2px;">Off icon</div>
                                 <div class="field">
                                   <input type="text" class="ed-input" data-menubtn="${i}" data-mbfield="icon" value="${(btn.icon||"").replace(/"/g,"&quot;")}" placeholder="mdi:lightbulb" autocomplete="off" />
                                   <div class="suggestions" data-menubtn-icon-sugg="${i}" hidden></div>
                                 </div>
                               </div>
                               <div>
-                                <div style="font-size:0.75em;opacity:0.6;margin-bottom:2px;">Icon (on)</div>
+                                <div style="font-size:0.75em;opacity:0.6;margin-bottom:2px;">On icon</div>
                                 <div class="field">
                                   <input type="text" class="ed-input" data-menubtn="${i}" data-mbfield="icon_on" value="${(btn.icon_on||"").replace(/"/g,"&quot;")}" placeholder="mdi:lightbulb" autocomplete="off" />
                                   <div class="suggestions" data-menubtn-iconon-sugg="${i}" hidden></div>
@@ -7854,8 +7918,8 @@ class CameraGalleryCardEditor extends HTMLElement {
                                 <div class="field"><input type="text" class="ed-input" data-menubtn="${i}" data-mbfield="service" value="${(btn.service||"").replace(/"/g,"&quot;")}" placeholder="e.g. light.toggle" /></div>
                               </div>
                               <div>
-                                <div style="font-size:0.75em;opacity:0.6;margin-bottom:2px;">State (on)</div>
-                                <div class="field"><input type="text" class="ed-input" data-menubtn="${i}" data-mbfield="state_on" value="${(btn.state_on||"").replace(/"/g,"&quot;")}" placeholder="e.g. open" /></div>
+                                <div style="font-size:0.75em;opacity:0.6;margin-bottom:2px;">On-state value</div>
+                                <div class="field"><input type="text" class="ed-input" data-menubtn="${i}" data-mbfield="state_on" value="${(btn.state_on||"").replace(/"/g,"&quot;")}" placeholder="e.g. open, playing, on" /></div>
                               </div>
                             </div>
                           </div>
@@ -8190,6 +8254,13 @@ class CameraGalleryCardEditor extends HTMLElement {
         .wrap.v2 .objchip-icon .cgc-svg-icon {
           width: 22px;
           height: 22px;
+        }
+
+        /* Styling tab wraps its collapsibles in an extra .style-sections
+           div with gap: 8px, while the other v2 tabs use .tabpanel's
+           gap: 14px directly. Match here so spacing is consistent. */
+        .wrap.v2 .style-sections {
+          gap: 14px;
         }
 
         /* v2 rows: drop the per-row card (border + background + chunky
@@ -9929,6 +10000,27 @@ details summary { user-select: none; }
     const _sig = { signal: this._evtCtrl.signal };
 
     this._initCollapsibleRows(_sig);
+
+    // Sync user open/close gestures on v2 collapsibles back into
+    // _v2OpenSections + localStorage so tab switches / page reloads
+    // don't lose the state.
+    this.shadowRoot.querySelectorAll("details[data-v2-section]").forEach((d) => {
+      d.addEventListener(
+        "toggle",
+        () => {
+          const id = d.getAttribute("data-v2-section");
+          if (!id) return;
+          this._v2OpenSections.set(`${this._activeTab}.${id}`, d.hasAttribute("open"));
+          try {
+            localStorage.setItem(
+              "cgc_v2_open_sections",
+              JSON.stringify(Object.fromEntries(this._v2OpenSections))
+            );
+          } catch (_) { /* ignore quota / disabled storage */ }
+        },
+        _sig
+      );
+    });
 
     // v2 "Expand all / Collapse all" — toggle every details.style-section
     // inside the current tabpanel. Every v2 tab has at least two
