@@ -898,8 +898,9 @@ export class MediaSourceClient {
     config: CameraGalleryCardConfig
   ): Promise<void> {
     const now = Date.now();
-    const resolution =
-      String(config.reolink_media_resolution ?? "high").toLowerCase() === "low" ? "sub" : "main";
+    // Struct guarantees `reolink_media_resolution` is `"high" | "low"`,
+    // defaulted to `"high"`. Map to the URI suffix the engine expects.
+    const resolution: "main" | "sub" = config.reolink_media_resolution === "low" ? "sub" : "main";
     const key = `reolink:${keyFromRoots(roots)}:${resolution}`;
     const sameKey = this.state.key === key;
     const fresh = sameKey && now - (this.state.loadedAt ?? 0) < ENSURE_LOADED_FRESHNESS_MS;
@@ -1151,8 +1152,10 @@ export class MediaSourceClient {
     }
   }
 
-  /** Phase-B loader for Reolink dayKeys. No path-format, no localStorage
-   * day-cache (Reolink files are cheap to re-list; saves ~50KB JSON per day). */
+  /** Phase-B loader for Reolink dayKeys. Mirrors `_loadDayInternal` but
+   * uses the Reolink-specific browse+title-parse path; no localStorage
+   * day-cache (Reolink browse is a single round-trip per day, so the
+   * persistence is more complexity than payoff). */
   private async _loadReolinkDayInternal(
     dayKey: string,
     calendar: Calendar,

@@ -14,9 +14,10 @@
  *               └─ media-source://reolink/FILE|<configEntry>|<basename>.mp4|<start>|<end>
  *
  * Title formats:
- *   - DAY folders:  `"2026/4/9"`  (unpadded month/day)
- *   - FILE clips:   `"14:24:00 0:01:08 Motion Person Doorbell"`
- *                    └─time─┘ └─dur─┘ └─detection labels─┘
+ *   - DAY folders: `"2026/4/9"` (unpadded month/day)
+ *   - FILE clips:  `"HH:mm:ss ..."` — only the leading time token is
+ *                  parsed; the tail (duration + detection labels) is
+ *                  ignored since nothing downstream consumes it.
  *
  * Playback path: HA's Reolink integration resolves FILE content-ids to
  * a `/api/reolink/...` MP4 proxy URL via `media_source/resolve_media`
@@ -33,10 +34,13 @@ const CAM_RE = /^media-source:\/\/reolink\/CAM\|([^|]+)\|(\d+)$/;
 const DAY_TITLE_RE = /^(\d{4})\/(\d{1,2})\/(\d{1,2})$/;
 const FILE_TIME_RE = /^(\d{1,2}):(\d{2}):(\d{2})\b/;
 
-/** `true` when the id is any Reolink media-source URI. */
+/** `true` when the id is any Reolink media-source URI. Case-sensitive
+ * because HA emits the prefix lowercase by convention and a fresh
+ * allocation per call (via `toLowerCase()`) is wasteful — this runs in
+ * the poster-cache enqueue hot path. */
 export function isReolinkRoot(id: string | null | undefined): boolean {
   if (id === null || id === undefined) return false;
-  return String(id).toLowerCase().startsWith(REOLINK_PREFIX);
+  return String(id).startsWith(REOLINK_PREFIX);
 }
 
 /**
