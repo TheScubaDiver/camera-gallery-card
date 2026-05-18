@@ -190,6 +190,16 @@ export const cameraGalleryCardConfigStruct = type({
   // (e.g. `YYYY/MM/DD/HHmmss`). Replaces the legacy folder+filename pair.
   path_datetime_format: defaulted(string(), ""),
 
+  // ─── Gallery toolbar button visibility ────────────────────
+  // Per-button toggles for the gallery toolbar (Today, media-filter,
+  // favorite, LIVE). Defaults to visible. `show_media_filter` only takes
+  // effect when the gallery actually contains both video and image clips
+  // (the underlying filter is hidden otherwise).
+  show_favorite: defaulted(boolean(), true),
+  show_live: defaulted(boolean(), true),
+  show_today: defaulted(boolean(), true),
+  show_media_filter: defaulted(boolean(), true),
+
   // ─── Playback ──────────────────────────────────────────────
   autoplay: defaulted(boolean(), DEFAULT_AUTOPLAY),
   auto_muted: defaulted(boolean(), DEFAULT_AUTOMUTED),

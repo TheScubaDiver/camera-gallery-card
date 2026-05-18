@@ -4338,26 +4338,28 @@ class CameraGalleryCard extends LitElement {
 
           ${showGalleryControls ? html`
             <div class="topbar">
-              <div class="seg" role="tablist" aria-label="Filter">
-                <button
-                  class="segbtn ${isToday ? "on" : ""}"
-                  @click=${() => {
-                    this._selectedDay = newestDay;
-                    this._selectedIndex = 0;
-                    this._pendingScrollToI = null;
-                    this._forceThumbReset = true;
-                    this._exitSelectMode();
-                    if (this.config?.clean_mode) this._previewOpen = false;
-                    if (this._isLiveActive()) this._setViewMode("media");
-                    this.requestUpdate();
-                  }}
-                  title="Today"
-                  role="tab"
-                  aria-selected=${isToday}
-                >
-                  <span>Today</span>
-                </button>
-              </div>
+              ${this.config?.show_today !== false ? html`
+                <div class="seg" role="tablist" aria-label="Filter">
+                  <button
+                    class="segbtn ${isToday ? "on" : ""}"
+                    @click=${() => {
+                      this._selectedDay = newestDay;
+                      this._selectedIndex = 0;
+                      this._pendingScrollToI = null;
+                      this._forceThumbReset = true;
+                      this._exitSelectMode();
+                      if (this.config?.clean_mode) this._previewOpen = false;
+                      if (this._isLiveActive()) this._setViewMode("media");
+                      this.requestUpdate();
+                    }}
+                    title="Today"
+                    role="tab"
+                    aria-selected=${isToday}
+                  >
+                    <span>Today</span>
+                  </button>
+                </div>
+              ` : html``}
 
               ${useDatePicker ? html`
                 <div class="datepill has-filters" role="group" aria-label="Day navigation">
@@ -4379,7 +4381,7 @@ class CameraGalleryCard extends LitElement {
                 </div>
               `}
 
-              ${showTypeFilter ? html`
+              ${showTypeFilter && this.config?.show_media_filter !== false ? html`
                 <div class="seg" style="${isLive ? "opacity:0.35;pointer-events:none" : ""}">
                   <button class="segbtn ${this._filterVideo ? "on" : ""}" @click=${() => this._toggleFilterVideo()} title="Videos" style="border-radius:10px 0 0 10px">
                     <ha-icon icon="mdi:video" style="--mdc-icon-size:16px"></ha-icon>
@@ -4390,13 +4392,15 @@ class CameraGalleryCard extends LitElement {
                 </div>
               ` : html``}
 
-              <div class="seg">
-                <button class="segbtn ${this._filterFavorites ? "on" : ""}" @click=${() => this._toggleFilterFavorites()} title="Favorites" style="border-radius:10px">
-                  <ha-icon icon="mdi:star" style="--mdc-icon-size:16px"></ha-icon>
-                </button>
-              </div>
+              ${this.config?.show_favorite !== false ? html`
+                <div class="seg">
+                  <button class="segbtn ${this._filterFavorites ? "on" : ""}" @click=${() => this._toggleFilterFavorites()} title="Favorites" style="border-radius:10px">
+                    <ha-icon icon="mdi:star" style="--mdc-icon-size:16px"></ha-icon>
+                  </button>
+                </div>
+              ` : html``}
 
-              ${showLiveToggle
+              ${showLiveToggle && this.config?.show_live !== false
                 ? html`
                     <div class="seg">
                       <button
@@ -6328,6 +6332,38 @@ class CameraGalleryCardEditor extends HTMLElement {
                     <div class="lbl">Auto muted</div>
                     <div class="togrow">
                       <label class="cgc-switch"><input type="checkbox" id="auto_muted"><span class="cgc-track"></span></label>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="row">
+                <div class="row-head">
+                  <div class="lbl">Gallery toolbar</div>
+                </div>
+                <div class="subrows">
+                  <div class="row-head">
+                    <div class="lbl sub">Today</div>
+                    <div class="togrow">
+                      <label class="cgc-switch"><input type="checkbox" id="show_today" ${c.show_today !== false ? "checked" : ""}><span class="cgc-track"></span></label>
+                    </div>
+                  </div>
+                  <div class="row-head">
+                    <div class="lbl sub">Media filter (video / image)</div>
+                    <div class="togrow">
+                      <label class="cgc-switch"><input type="checkbox" id="show_media_filter" ${c.show_media_filter !== false ? "checked" : ""}><span class="cgc-track"></span></label>
+                    </div>
+                  </div>
+                  <div class="row-head">
+                    <div class="lbl sub">Favorite</div>
+                    <div class="togrow">
+                      <label class="cgc-switch"><input type="checkbox" id="show_favorite" ${c.show_favorite !== false ? "checked" : ""}><span class="cgc-track"></span></label>
+                    </div>
+                  </div>
+                  <div class="row-head">
+                    <div class="lbl sub">LIVE</div>
+                    <div class="togrow">
+                      <label class="cgc-switch"><input type="checkbox" id="show_live" ${c.show_live !== false ? "checked" : ""}><span class="cgc-track"></span></label>
                     </div>
                   </div>
                 </div>
@@ -8967,6 +9003,21 @@ if (oldPanel && tmp.firstElementChild) {
     $("showcameratitle")?.addEventListener("change", (e) => {
       this._set("show_camera_title", !!e.target.checked);
     });
+
+    // Gallery toolbar visibility — default true, so we omit the key from
+    // YAML when the user ticks it back on (keeps configs clean).
+    for (const key of ["show_today", "show_media_filter", "show_favorite", "show_live"]) {
+      $(key)?.addEventListener("change", (e) => {
+        if (e.target.checked) {
+          const next = { ...(this._config ?? {}) };
+          delete next[key];
+          this._config = this._stripAlwaysTrueKeys(next);
+          this._fire();
+        } else {
+          this._set(key, false);
+        }
+      });
+    }
 
     autoplayEl?.addEventListener("change", (e) => {
       this._set("autoplay", !!e.target.checked);
