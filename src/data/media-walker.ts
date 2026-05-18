@@ -726,7 +726,7 @@ export class MediaSourceClient {
     this.state.frigateItems = frigateItems;
 
     if (reolinkRoots.length > 0) {
-      await this._loadReolinkPath(reolinkRoots, config);
+      await this._loadReolinkPath(reolinkRoots);
     } else if (otherRoots.length > 0) {
       await this._loadCalendarPath(otherRoots);
     }
@@ -893,15 +893,9 @@ export class MediaSourceClient {
    * Populates `state.calendar` + `state.dayCache` the same way the
    * generic calendar path does, so the picker UI is engine-agnostic.
    */
-  private async _loadReolinkPath(
-    roots: readonly string[],
-    config: CameraGalleryCardConfig
-  ): Promise<void> {
+  private async _loadReolinkPath(roots: readonly string[]): Promise<void> {
     const now = Date.now();
-    // Struct guarantees `reolink_media_resolution` is `"high" | "low"`,
-    // defaulted to `"high"`. Map to the URI suffix the engine expects.
-    const resolution: "main" | "sub" = config.reolink_media_resolution === "low" ? "sub" : "main";
-    const key = `reolink:${keyFromRoots(roots)}:${resolution}`;
+    const key = `reolink:${keyFromRoots(roots)}`;
     const sameKey = this.state.key === key;
     const fresh = sameKey && now - (this.state.loadedAt ?? 0) < ENSURE_LOADED_FRESHNESS_MS;
     if (this.state.loading || fresh) return;
@@ -921,7 +915,6 @@ export class MediaSourceClient {
 
     try {
       const calendar = await discoverReolink(roots, browseFn, {
-        resolution,
         isStale: () => this._isStale(gen),
       });
       if (this._isStale(gen)) return;

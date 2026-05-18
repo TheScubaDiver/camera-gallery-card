@@ -44,26 +44,20 @@ export function isReolinkRoot(id: string | null | undefined): boolean {
 }
 
 /**
- * Promote a CAM URI to a RES URI using the requested resolution. RES and
- * deeper URIs pass through unchanged. Returns `null` when the input is
- * malformed (so the caller can surface a config error rather than walk
- * a garbage root).
- *
- * `resolution` defaults to "main" (high-res stream); `low` maps to "sub".
+ * Promote a CAM URI to a RES URI on the main (high-res) stream. RES and
+ * deeper URIs pass through unchanged — a user who hand-wrote
+ * `RES|...|sub` keeps the sub stream they asked for. Returns `null` when
+ * the input is malformed (so the caller can surface a config error
+ * rather than walk a garbage root).
  */
-export function normalizeReolinkRoot(
-  id: string,
-  resolution: "main" | "sub" = "main"
-): string | null {
+export function normalizeReolinkRoot(id: string): string | null {
   if (!isReolinkRoot(id)) return null;
   const camMatch = CAM_RE.exec(id);
   if (camMatch) {
     const [, configEntry, channel] = camMatch;
-    return `media-source://reolink/RES|${configEntry}|${channel}|${resolution}`;
+    return `media-source://reolink/RES|${configEntry}|${channel}|main`;
   }
-  // Already at RES level or deeper — pass through. We don't downgrade
-  // explicit RES/DAY/FILE URIs even if `resolution` disagrees; the user
-  // who hand-wrote a deeper URI knows what they want.
+  // Already at RES level or deeper — pass through.
   return id;
 }
 
@@ -138,17 +132,15 @@ export async function discoverReolink(
   roots: readonly string[],
   browse: BrowseFn,
   opts: {
-    resolution?: "main" | "sub";
     isStale?: () => boolean;
   } = {}
 ): Promise<Calendar> {
-  const resolution = opts.resolution ?? "main";
   const isStale = opts.isStale ?? (() => false);
   const byDay = new Map<string, CalendarEntry[]>();
 
   for (const raw of roots) {
     if (isStale()) break;
-    const root = normalizeReolinkRoot(raw, resolution);
+    const root = normalizeReolinkRoot(raw);
     if (!root) continue;
     const node = await browse(root);
     if (!node || isStale()) continue;

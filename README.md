@@ -220,8 +220,6 @@ Then in the card editor: **General → Delete services → Frigate** → pick `r
 | `max_media` | Max media items |
 | **Frigate** | |
 | `frigate_url` | Optional direct Frigate REST API URL (e.g. `http://192.168.1.x:5000`). If omitted, the card uses the HA Frigate integration via WebSocket |
-| **Reolink** | |
-| `reolink_media_resolution` | `high` (main stream — default) or `low` (sub stream). Only applies to `media-source://reolink/...` sources |
 | **Gallery view** | |
 | `start_mode` | Default view: `gallery` or `live` |
 | `preview_position` | `top` or `bottom` |
@@ -359,16 +357,16 @@ type: custom:camera-gallery-card
 source_mode: media
 media_sources:
   - media-source://reolink/CAM|01JVCNA6DC12AMNF2QE2SWXNK3|0
-reolink_media_resolution: high   # or "low" for the sub stream
 live_enabled: true
 live_camera_entities:
   - camera.deurbel
 ```
 
 How it works under the hood:
-- The engine auto-promotes a `CAM|...` URI to `RES|...|main` (or `|sub`
-  when `reolink_media_resolution: low`) so the user only has to copy
-  the camera-level URI from HA's media browser.
+- The engine auto-promotes a `CAM|...` URI to `RES|...|main` so the user
+  only has to copy the camera-level URI from HA's media browser. (Want
+  the sub stream? Paste the `RES|...|sub` URI directly — the engine
+  leaves explicit RES URIs alone.)
 - Day folders titled `2026/4/9` (unpadded) are parsed directly — no
   date-token configuration.
 - File titles starting with `HH:mm:ss` are parsed to derive each clip's

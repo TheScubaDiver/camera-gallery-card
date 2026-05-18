@@ -64,22 +64,18 @@ describe("isReolinkRoot", () => {
 });
 
 describe("normalizeReolinkRoot", () => {
-  it("promotes a CAM URI to RES with the requested resolution", () => {
+  it("promotes a CAM URI to RES on the main stream", () => {
     expect(normalizeReolinkRoot("media-source://reolink/CAM|01JABC|0")).toBe(
       "media-source://reolink/RES|01JABC|0|main"
     );
-    expect(normalizeReolinkRoot("media-source://reolink/CAM|01JABC|0", "sub")).toBe(
-      "media-source://reolink/RES|01JABC|0|sub"
-    );
   });
 
-  it("passes through an explicit RES URI unchanged", () => {
+  it("passes through explicit RES URIs unchanged (main or sub)", () => {
     expect(normalizeReolinkRoot("media-source://reolink/RES|01JABC|0|main")).toBe(
       "media-source://reolink/RES|01JABC|0|main"
     );
-    // Even if the requested resolution disagrees — the user wrote RES|sub
-    // explicitly, we respect that.
-    expect(normalizeReolinkRoot("media-source://reolink/RES|01JABC|0|sub", "main")).toBe(
+    // A user who hand-wrote RES|sub keeps the sub stream.
+    expect(normalizeReolinkRoot("media-source://reolink/RES|01JABC|0|sub")).toBe(
       "media-source://reolink/RES|01JABC|0|sub"
     );
   });
@@ -150,20 +146,18 @@ describe("discoverReolink — Phase A", () => {
     );
   });
 
-  it("auto-promotes a CAM root to RES using `resolution`", async () => {
+  it("auto-promotes a CAM root to RES on the main stream", async () => {
     const camTree: Record<string, MediaSourceItem> = {
-      "media-source://reolink/RES|01JABC|0|sub": folder(
-        "media-source://reolink/RES|01JABC|0|sub",
-        "Low res.",
-        [folder("media-source://reolink/DAY|01JABC|0|sub|2026|5|17", "2026/5/17")]
+      "media-source://reolink/RES|01JABC|0|main": folder(
+        "media-source://reolink/RES|01JABC|0|main",
+        "High res.",
+        [folder("media-source://reolink/DAY|01JABC|0|main|2026|5|17", "2026/5/17")]
       ),
     };
     const { browse, browsedIds } = makeBrowse(camTree);
-    const cal = await discoverReolink(["media-source://reolink/CAM|01JABC|0"], browse, {
-      resolution: "sub",
-    });
+    const cal = await discoverReolink(["media-source://reolink/CAM|01JABC|0"], browse);
     expect(cal.days).toEqual(["2026-05-17"]);
-    expect(browsedIds).toContain("media-source://reolink/RES|01JABC|0|sub");
+    expect(browsedIds).toContain("media-source://reolink/RES|01JABC|0|main");
   });
 
   it("skips non-Reolink roots silently", async () => {
