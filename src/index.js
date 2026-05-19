@@ -152,6 +152,8 @@ class CameraGalleryCard extends LitElement {
       _micState: { type: String },
       _micErrorCode: { type: String },
       _micLevelTick: { type: Number },
+      _scrollPillText: { type: String },
+      _scrollPillVisible: { type: Boolean },
       _hamburgerOpen: { type: Boolean },
       _filterVideo: { type: Boolean },
       _filterImage: { type: Boolean },
@@ -298,6 +300,9 @@ class CameraGalleryCard extends LitElement {
     this._thumbSwipeStartY = 0;
     this._thumbSwipeDx = 0;
     this._thumbSwipeActive = false;
+    this._scrollPillText = "";
+    this._scrollPillVisible = false;
+    this._scrollPillTimer = null;
     this._onMicPointerDown = (e) => {
       e.stopPropagation();
       // Resolve the mic stream for the camera that's currently in focus.
@@ -588,6 +593,8 @@ class CameraGalleryCard extends LitElement {
     if (this._liveQuickSwitchTimer) clearTimeout(this._liveQuickSwitchTimer);
     if (this._navHideT) clearTimeout(this._navHideT);
     if (this._bulkHintTimer) clearTimeout(this._bulkHintTimer);
+    if (this._scrollPillTimer) { clearTimeout(this._scrollPillTimer); this._scrollPillTimer = null; }
+    this._scrollPillVisible = false;
     this._cancelMicLevelRaf();
 
     this._liveQuickSwitchTimer = null;
@@ -3496,6 +3503,62 @@ class CameraGalleryCard extends LitElement {
     this._showPills();
   }
 
+  /** iOS-Photos-style sticky time pill — surfaces the date/time of the
+   * center-most visible thumbnail while the user is scrolling, fades out
+   * ~800 ms after the last scroll event. */
+  _onThumbsScroll(e) {
+    const el = e.currentTarget;
+    if (!el) return;
+
+    const thumbs = el.querySelectorAll(".tthumb");
+    if (!thumbs.length) return;
+
+    const isVertical = this._isThumbLayoutVertical();
+    const rect = el.getBoundingClientRect();
+    const targetX = rect.left + rect.width / 2;
+    const targetY = rect.top + rect.height / 2;
+
+    let bestThumb = null;
+    let bestDist = Infinity;
+    for (const t of thumbs) {
+      const tRect = t.getBoundingClientRect();
+      const cx = tRect.left + tRect.width / 2;
+      const cy = tRect.top + tRect.height / 2;
+      const d = isVertical ? Math.abs(cy - targetY) : Math.abs(cx - targetX);
+      if (d < bestDist) {
+        bestDist = d;
+        bestThumb = t;
+      }
+    }
+    if (!bestThumb) return;
+
+    const src = bestThumb.dataset.lazySrc || bestThumb.dataset.src || "";
+    const dtMs = this._pipeline?.resolveItemMs?.(src);
+    if (typeof dtMs !== "number" || !Number.isFinite(dtMs)) return;
+
+    this._scrollPillText = this._formatScrollPillTime(dtMs);
+    this._scrollPillVisible = true;
+    if (this._scrollPillTimer) clearTimeout(this._scrollPillTimer);
+    this._scrollPillTimer = setTimeout(() => {
+      this._scrollPillVisible = false;
+      this._scrollPillTimer = null;
+    }, 800);
+  }
+
+  _formatScrollPillTime(ms) {
+    try {
+      const lang = this._hass?.locale?.language || "nl-NL";
+      return new Date(ms).toLocaleString(lang, {
+        day: "numeric",
+        month: "short",
+        hour: "2-digit",
+        minute: "2-digit",
+      });
+    } catch {
+      return new Date(ms).toLocaleString();
+    }
+  }
+
   _onThumbWheel(e) {
     if (this._isThumbLayoutVertical()) return;
 
@@ -4272,12 +4335,14 @@ class CameraGalleryCard extends LitElement {
         <div
           class="tthumbs-wrap ${isVerticalThumbs ? "vertical" : "horizontal"} ${noResultsForFilter ? "empty" : ""}"
         >
+          <div class="scroll-time-pill ${this._scrollPillVisible ? "visible" : ""}" aria-hidden="true">${this._scrollPillText}</div>
           ${thumbs.length
             ? html`
                 <div
                   class="tthumbs ${isVerticalThumbs ? "vertical" : "horizontal"}"
                   style="--cgc-thumb-gap:${THUMB_GAP}px;"
                   @wheel=${isVerticalThumbs ? null : this._onThumbWheel}
+                  @scroll=${(e) => this._onThumbsScroll(e)}
                 >
                   ${thumbs.map((it) => {
                     const isOn = it.i === idx && !isLive;
