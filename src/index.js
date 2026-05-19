@@ -3548,14 +3548,12 @@ class CameraGalleryCard extends LitElement {
   _formatScrollPillTime(ms) {
     try {
       const lang = this._hass?.locale?.language || "nl-NL";
-      return new Date(ms).toLocaleString(lang, {
-        day: "numeric",
-        month: "short",
+      return new Date(ms).toLocaleTimeString(lang, {
         hour: "2-digit",
         minute: "2-digit",
       });
     } catch {
-      return new Date(ms).toLocaleString();
+      return new Date(ms).toLocaleTimeString();
     }
   }
 

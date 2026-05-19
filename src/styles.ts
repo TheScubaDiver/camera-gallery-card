@@ -709,9 +709,9 @@ export const cardStyles = css`
     top: 8px;
     left: 50%;
     transform: translateX(-50%) translateY(-6px);
-    background: rgba(0, 0, 0, 0.72);
-    backdrop-filter: blur(10px) saturate(160%);
-    -webkit-backdrop-filter: blur(10px) saturate(160%);
+    background: rgba(0, 0, 0, 0.32);
+    backdrop-filter: blur(16px) saturate(160%);
+    -webkit-backdrop-filter: blur(16px) saturate(160%);
     color: #fff;
     padding: 5px 12px;
     border-radius: 14px;
@@ -724,9 +724,8 @@ export const cardStyles = css`
     transition:
       opacity 220ms ease-out,
       transform 220ms ease-out;
-    box-shadow:
-      0 2px 10px rgba(0, 0, 0, 0.35),
-      inset 0 1px 0 rgba(255, 255, 255, 0.12);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14);
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
     white-space: nowrap;
   }
   .scroll-time-pill.visible {
