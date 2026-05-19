@@ -4436,7 +4436,25 @@ class CameraGalleryCard extends LitElement {
                         ${this.config?.show_favorite === false ? html`` : html`
                         <div
                           class="fav-btn ${this._favorites.has(it.src) ? 'on' : ''}"
-                          @click=${(e) => { e.stopPropagation(); this._favorites.toggle(it.src); }}
+                          @click=${(e) => {
+                            e.stopPropagation();
+                            const wasOn = this._favorites.has(it.src);
+                            this._favorites.toggle(it.src);
+                            // Star-pop animation when *adding* a favourite — skip on removal so
+                            // accidental clicks don't get a celebratory burst.
+                            if (!wasOn && !window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) {
+                              try {
+                                e.currentTarget.animate(
+                                  [
+                                    { transform: "scale(1)",   filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.6))" },
+                                    { transform: "scale(1.4)", filter: "drop-shadow(0 0 12px gold) drop-shadow(0 1px 2px rgba(0,0,0,0.6))", offset: 0.5 },
+                                    { transform: "scale(1)",   filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.6))" },
+                                  ],
+                                  { duration: 200, easing: "cubic-bezier(.22, 1, .36, 1)" }
+                                );
+                              } catch (_) { /* WAAPI not supported — silently skip */ }
+                            }
+                          }}
                           @pointerdown=${(e) => e.stopPropagation()}
                           role="button"
                           title="Favorite"
