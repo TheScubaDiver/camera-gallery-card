@@ -21,6 +21,24 @@ Custom **Home Assistant Lovelace card** for browsing camera media in a clean **t
 2. Click **Download**
 3. Restart Home Assistant
 
+## Quick start
+
+Got the card installed? Here's the fastest way to see something on screen.
+
+1. In Home Assistant, open your dashboard and click **Edit dashboard** (top right).
+2. Click **Add card** and search for **Camera Gallery Card**.
+3. Pick a **source mode** when prompted:
+   - **Sensor mode** — you have snapshot files in `/config/www/...` (e.g. saved by an automation). Also requires [FileTrack](#filetrack-optional--for-sensor-mode).
+   - **Media mode** — you use Frigate, a NAS folder, or anything reachable via Home Assistant's media browser.
+   - **Combined mode** — both at once, merged into one timeline.
+4. Save. The editor walks you through the rest.
+
+> [!TIP]
+> Not sure which mode? See [Choosing a source mode](#choosing-a-source-mode) below.
+
+> [!NOTE]
+> The card shows files that **already exist**. It does *not* trigger snapshots itself — that's the job of a Home Assistant automation or your camera integration (e.g. Frigate). If your gallery is empty, you probably need to set up a snapshot automation first.
+
 ### FileTrack (optional – for sensor mode)
 
 > **Using sensor mode?** Follow the steps below to set up your file sensors.
@@ -59,15 +77,33 @@ FileTrack is a fork of the archived [files integration by TarheelGrad1998](https
 - Mobile friendly
 - Media type icon (image / video)
 - Cover / Contain option for media display
+- **Favorites** — star any item with a tap; filter the timeline to show only favorites
+- **Prev / next + keyboard navigation** — arrow buttons in the fullscreen viewer, plus <kbd>←</kbd>/<kbd>→</kbd> on desktop
+- **Runtime mute pill** — tap-to-mute pill on the video preview, independent of the global auto-mute toggle
 
 <img width="490" height="407" alt="Scherm­afbeelding 2026-03-29 om 17 05 49" src="https://github.com/user-attachments/assets/6817a0ae-5d57-4ebf-8c8d-b5452c66ad66" />
 
 ### Sources
 
-- Sensor entities with `fileList`
-- Home Assistant `media_source`
+- Sensor entities with `fileList` (sensor mode)
+- Home Assistant `media_source` (media mode)
 - **Combined mode** — use a sensor entity and a media source simultaneously, merged into a single timeline
 - Multiple sensors or media folders
+
+#### Choosing a source mode
+
+| You have… | Use |
+|---|---|
+| Frigate (add-on or container) | `media` |
+| Files in `/config/www/<folder>/` saved by an automation | `sensor` (+ FileTrack) |
+| A NAS or external folder mounted as a media source | `media` |
+| A mix of the above | `combined` |
+
+**Sensor mode** reads file paths from a Home Assistant sensor's `fileList` attribute. You create that sensor with the **FileTrack** integration.
+
+**Media mode** uses Home Assistant's built-in media browser — anything you can browse in HA (Frigate, Samba, local media) works as a source.
+
+**Combined mode** merges a sensor source and a media source into one timeline (useful when you have both legacy snapshot files and a newer Frigate setup).
 
 ### Live view
 
@@ -81,10 +117,12 @@ FileTrack is a fork of the archived [files integration by TarheelGrad1998](https
 - **Multiple live cameras** — configure several cameras and switch between them using chevron arrows
 - **Multi-camera grid layout** (`live_layout: grid`) — show all cameras at once, tap a tile to focus on one
 - **Multiple RTSP streams** — configure multiple named RTSP streams via `live_stream_urls`
+- **Offline camera placeholder** — unavailable cameras show a clear "offline" tile instead of a black frame
+- **Keyboard navigation** — <kbd>←</kbd>/<kbd>→</kbd> to switch between cameras in single layout
 - Default live camera
 - Camera friendly names and entity IDs in selector
 - Auto-teardown of stream + push-to-talk on view switch (no audio/bandwidth leak)
-- **Two-way audio (talkback)** — tap the mic pill in live view to talk back through go2rtc. **Per-camera** — multi-camera setups can have mic talkback on some entries and not others; the pill appears/disappears as the user navigates the picker. Supports toggle and push-to-talk interaction, live input-level ring, four typed visual states (idle / connecting / active / error), retry on transient WebSocket glitches, screen-reader announcements, and reduced-motion fallback. **Prerequisites:** a camera with an audio backchannel speaker, the [AlexxIT/WebRTC](https://github.com/AlexxIT/WebRTC) HACS integration installed (provides the signed `/api/webrtc/ws` endpoint the card connects to), and a go2rtc `streams:` entry that routes the camera's backchannel. Configure with `live_mic_streams: { <camera_id>: <go2rtc_stream> }` (and optionally `live_mic_mode: ptt`, `live_mic_audio_processing`, or custom ICE servers via `live_mic_ice_servers` / `live_mic_force_relay`)
+- **Two-way audio (talkback)** — tap the mic pill in live view to speak through a camera's backchannel speaker. Per-camera, with tap-to-toggle or push-to-talk modes. *Advanced setup* — see [Two-way audio](#two-way-audio-advanced) below.
 
 ### Actions
 
@@ -96,7 +134,7 @@ FileTrack is a fork of the archived [files integration by TarheelGrad1998](https
 
 ### Frigate
 
-- **WebSocket via HA integration** (default) — uses the official Frigate HA integration's WS API. CORS-free, no `frigate_url` required, works with standalone Frigate containers
+- **WebSocket via HA integration** (default) — uses the official Frigate HA integration's WS API. CORS-free, no `frigate_url` required, works with standalone Frigate containers. **New events arrive in real time** — no polling, no refresh.
 - **Direct REST API** (`frigate_url`, optional) — even faster if your Frigate is reachable from the browser
 - Automatic fallback: if REST fails, WS path takes over
 - Automatic Frigate snapshot thumbnails
@@ -108,6 +146,7 @@ FileTrack is a fork of the archived [files integration by TarheelGrad1998](https
   - Frigate cameras: Frigate snapshot
   - All other sources (NAS, Blue Iris, etc.): first-frame capture
 - Sensor mode: first-frame capture
+- **Paired image + video** — when a snapshot and clip share the same filename stem they're shown as one item, with the image used as the thumbnail
 
 ### Video controls
 
@@ -198,6 +237,9 @@ Then in the card editor: **General → Delete services → Frigate** → pick `r
 > [!TIP]
 > Frigate's DELETE event endpoint wipes the clip, snapshot, and thumbnail in one call. The card hides paired items together after a successful delete.
 
+> [!WARNING]
+> The variable names in your `shell_command` and `rest_command` templates **must stay exactly as shown**. The card passes `{{ path }}` to the sensor delete service, and `{{ event_id }}` plus `{{ camera }}` to the Frigate delete service (so you can template `{{ camera }}` into the URL if your Frigate setup needs it). Renaming any of these (e.g. `{{ path }}` → `{{ filepath }}`) silently breaks the call. After editing `configuration.yaml`, restart Home Assistant (or reload YAML via *Developer Tools → YAML*).
+
 ### Confirmation & bulk
 
 - `delete_confirm` — show confirmation dialog (default: `true`)
@@ -216,7 +258,7 @@ Then in the card editor: **General → Delete services → Frigate** → pick `r
 | `source_mode` | `sensor`, `media`, or `combined` |
 | `entity / entities` | Sensor source(s) |
 | `media_source / media_sources` | Media browser source(s) |
-| `path_datetime_format` | Format pattern for parsing timestamps from paths (required for `media` / `combined`) |
+| `path_datetime_format` | Format pattern for parsing timestamps from paths. Needed in **all source modes** for day grouping and time sort. Only exception: Frigate via `media-source://frigate/...` URIs (carry their own event-id timestamps) |
 | `max_media` | Max media items |
 | **Frigate** | |
 | `frigate_url` | Optional direct Frigate REST API URL (e.g. `http://192.168.1.x:5000`). If omitted, the card uses the HA Frigate integration via WebSocket |
@@ -247,13 +289,13 @@ Then in the card editor: **General → Delete services → Frigate** → pick `r
 | `show_camera_title` | Show camera name in controls bar |
 | `persistent_controls` | Always show controls (don't fade out) |
 | `menu_buttons` | Configurable action buttons in the hamburger menu |
-| `live_mic_streams` | Per-camera map of go2rtc backchannel streams. Keys are camera entity ids (`camera.front_door`) or synthetic stream ids (`__cgc_stream_0__` — see caveat below); values are non-empty go2rtc stream names. The mic pill appears only on cameras present in the map. Once *any* row is filled, the map is authoritative — cameras absent from it have no mic. Example: `live_mic_streams: { camera.front_door: front_door, camera.driveway: driveway }` |
-| `live_go2rtc_stream` | Legacy single-camera fallback. Applies globally only when `live_mic_streams` is empty/absent. Filling any row in `live_mic_streams` makes the map authoritative and this key is ignored |
-| `live_go2rtc_url` | Optional. Direct connection URL to an external go2rtc instance (e.g. `http://192.168.1.x:1984`) — used by the **live video** fast-path only, not by the mic. Leave empty to route through the WebRTC integration |
-| `live_mic_mode` | Mic interaction model: `toggle` (default — tap to start/stop) or `ptt` (push-to-talk — press and hold while speaking) |
-| `live_mic_audio_processing` | Per-mic Web Audio constraints. All true by default. Sub-keys: `echo_cancellation`, `noise_suppression`, `auto_gain_control`. (Capture is always mono — `channelCount: 1` — to halve upstream bandwidth without losing voice quality.) |
-| `live_mic_ice_servers` | Advanced. Override the built-in STUN-only list with your own STUN/TURN servers. Same shape as WebRTC's `RTCIceServer`: `[{urls: "...", username: "...", credential: "..."}, ...]`. Default is STUN-only (Cloudflare + Google) — voice traffic stays direct and never proxies through a third party. Add a TURN entry here only if you're behind symmetric NAT (see Coturn example below) |
-| `live_mic_force_relay` | Advanced. Set to `true` to force `iceTransportPolicy: "relay"` (TURN-only). Useless without a TURN server configured in `live_mic_ice_servers` |
+| `live_mic_streams` | Per-camera map of go2rtc backchannel streams. See [Two-way audio](#two-way-audio-advanced) |
+| `live_go2rtc_stream` | Legacy single-camera fallback for talkback |
+| `live_go2rtc_url` | Optional direct go2rtc URL for the live video fast-path |
+| `live_mic_mode` | Mic interaction model: `toggle` (default) or `ptt` |
+| `live_mic_audio_processing` | Per-mic Web Audio constraints |
+| `live_mic_ice_servers` | Advanced. Override built-in STUN list with custom STUN/TURN |
+| `live_mic_force_relay` | Advanced. Force `iceTransportPolicy: "relay"` (TURN-only) |
 | **Filters** | |
 | `object_filters` | Filter buttons (built-in and custom) |
 | `object_colors` | Color per object filter |
@@ -265,6 +307,7 @@ Then in the card editor: **General → Delete services → Frigate** → pick `r
 | **Layout & misc** | |
 | `card_height` | Card height in px |
 | `pill_size` | Pill text size (px) — pills scale around this |
+| `row_gap` | Vertical spacing between rows (preview / controls / topbar / filters / thumbnails) in px. Default `8`, range 0–40 |
 | `debug_enabled` | Show debug pill with diagnostics in live view |
 | `style_variables` | Custom CSS variable overrides |
 
@@ -292,24 +335,11 @@ live_mic_streams:
 live_mic_mode: ptt        # press-and-hold; omit for tap-to-toggle
 ```
 
-**Caveat for `live_stream_urls` (synthetic ids).** When you put mic config on a stream-URL entry, the key is `__cgc_stream_<N>__` where `N` is the position in `live_stream_urls`. If you reorder the array, the keys point at the wrong streams. Use the editor (it re-binds the inputs to the visible names) or stick to entity-keyed entries for stability.
-
-**Custom TURN (Coturn) for symmetric NAT.** Default is STUN-only — voice traffic stays direct on your LAN. If you need a relay (e.g. talking to a Tailscale endpoint from a flaky cellular network):
-
-```yaml
-live_mic_ice_servers:
-  - urls: stun:stun.cloudflare.com:3478
-  - urls:
-      - turn:turn.example.com:3478
-      - turns:turn.example.com:5349
-    username: your_username
-    credential: your_secret
-# live_mic_force_relay: true   # only if direct ICE never succeeds
-```
+See [Two-way audio (advanced)](#two-way-audio-advanced) for prerequisites and TURN setup.
 
 ### Minimal — sensor mode
 
-For users with file sensors (FileTrack) pointing at local camera storage:
+For users with file sensors (FileTrack) pointing at local camera storage. **Create the FileTrack sensors first** via *Settings → Devices & Services → FileTrack* (or use the editor's **Create new FileTrack sensor** button on the General tab) — the entity ids below should match what you created.
 
 ```yaml
 type: custom:camera-gallery-card
@@ -317,15 +347,19 @@ source_mode: sensor
 entities:
   - sensor.frontdoor_files
   - sensor.driveway_files
-delete_service: shell_command.gallery_delete
+path_datetime_format: YYYY-MM-DD_HH-mm-ss   # matches "2026-03-09_12-31-10_person.jpg"
+delete_service: shell_command.gallery_delete   # see "Delete setup"
 object_filters:
   - person
   - car
 ```
 
+> [!NOTE]
+> The `path_datetime_format` line is what gives your items dates. Adjust it to match how your snapshot files are actually named — the example here matches the recommended filename format (`YYYY-MM-DD_HH-mm-ss_<object>.jpg`). See [Path datetime format](#path-datetime-format) for more layouts, or use **Auto-detect** in the editor.
+
 ### Frigate via HA integration (no `frigate_url` needed)
 
-For Frigate add-on or standalone container — uses the HA WebSocket path, CORS-free:
+For Frigate add-on or standalone container — uses the HA WebSocket path, CORS-free. If you also want clip delete to work, set up `rest_command.delete_frigate` first — see [Delete setup](#delete-setup).
 
 ```yaml
 type: custom:camera-gallery-card
@@ -400,7 +434,10 @@ Object filter colors can be assigned per filter type in the editor.
 
 ## Path datetime format
 
-The card extracts timestamps from a single configurable pattern, `path_datetime_format`, that matches the *tail* of each item's path (or media-source URI). The `/` character separates directory levels; the leaf segment matches the filename. The format is required for `media` and `combined` modes (Frigate REST is exempt — it uses event-id timestamps).
+The card extracts timestamps from a single configurable pattern, `path_datetime_format`, that matches the *tail* of each item's path (or media-source URI). The `/` character separates directory levels; the leaf segment matches the filename.
+
+> [!WARNING]
+> `path_datetime_format` is needed in **all source modes** (sensor, media, combined) — without it, items load but have no dates: no day grouping, no day navigation, no time sort. The only built-in exception is Frigate via `media-source://frigate/...` URIs, which carry their own event-id timestamps. Use the editor's **Auto-detect path datetime format** button (General tab) if you're unsure what to set.
 
 | Token | Meaning |
 |------|------|
@@ -468,6 +505,68 @@ path_datetime_format: YYYY-MM-DD/HH.mm.ss-HH.mm.ss
 ```
 
 Reolink SD-card exports and Dahua/Amcrest filenames carry two same-format timestamps; the first wins.
+
+---
+
+## Troubleshooting
+
+**Gallery is empty.**
+
+- In **sensor mode**: check that the sensor entity exists (*Developer Tools → States*) and its `fileList` attribute actually has files. If empty, FileTrack isn't seeing the folder.
+- In **media mode**: open the editor and use the **media folder browser** — can you see your files there?
+- Frigate? Make sure the Frigate HA integration is loaded (*Settings → Devices & Services*).
+
+**Live view says "offline" or shows a placeholder.**
+The camera entity is unavailable in Home Assistant. Check it in *Developer Tools → States* — it must report a live state to stream.
+
+**Frigate clips don't appear.**
+The `path_datetime_format` must match Frigate's path layout. Use the editor's **Auto-detect path datetime format** button (General tab) to let the card propose the right pattern, or see [Path datetime format](#path-datetime-format) for examples.
+
+**Items load but aren't grouped by day (no dates, no day navigation).**
+`path_datetime_format` is missing or doesn't match your filenames. The card needs it to extract dates from paths — without a match, items stay undated and the timeline loses day grouping, day navigation and time-based sort. The only built-in exception is Frigate via `media-source://frigate/...` URIs, which carry their own event-id timestamps. Use **Auto-detect** in the editor's General tab, or see [Path datetime format](#path-datetime-format).
+
+**Delete does nothing / errors.**
+Check that the `shell_command` or `rest_command` you point to is actually defined in `configuration.yaml` and that you restarted (or reloaded YAML) afterwards. Variable names like `{{ path }}` and `{{ event_id }}` must be **exact** — the card passes those names, renaming them breaks the call.
+
+**Need more info?** Enable **Debug mode** in the General tab — a debug pill appears in live view; tap it for a diagnostics modal with version, HA info, Frigate state and runtime stats. Attach the contents when filing an [issue](https://github.com/TheScubaDiver/camera-gallery-card/issues).
+
+---
+
+## Two-way audio (advanced)
+
+Two-way audio (talkback) lets you speak through a camera's backchannel speaker from the live view. Setup is more involved than the rest of the card — read this if you want to enable it.
+
+**You need:**
+
+- A camera with an **audio backchannel speaker** (most Reolink doorbells, some Hikvision, Tapo, etc.).
+- The [AlexxIT/WebRTC](https://github.com/AlexxIT/WebRTC) HACS integration — provides the signed `/api/webrtc/ws` endpoint the card connects to.
+- A go2rtc `streams:` entry that routes the camera's backchannel audio.
+
+**Configuration:**
+
+- `live_mic_streams: { <camera_id>: <go2rtc_stream_key> }` — map of cameras → go2rtc stream keys. The mic pill appears only on cameras present in this map.
+- Optional `live_mic_mode: ptt` for push-to-talk (default is tap-to-toggle).
+- Optional `live_mic_audio_processing` to tweak echo cancellation, noise suppression, AGC.
+- Optional `live_mic_ice_servers` / `live_mic_force_relay` if you're behind symmetric NAT and need a TURN relay.
+
+**Visual states:** the pill cycles through four states — idle, connecting, active, error — and announces them to screen readers. Transient WebSocket glitches retry automatically.
+
+**Custom TURN (Coturn) for symmetric NAT.** Default is STUN-only — voice traffic stays direct on your LAN. If you need a relay (e.g. talking to a Tailscale endpoint from a flaky cellular network):
+
+```yaml
+live_mic_ice_servers:
+  - urls: stun:stun.cloudflare.com:3478
+  - urls:
+      - turn:turn.example.com:3478
+      - turns:turn.example.com:5349
+    username: your_username
+    credential: your_secret
+# live_mic_force_relay: true   # only if direct ICE never succeeds
+```
+
+**Caveat for `live_stream_urls` (synthetic ids).** When you put mic config on a stream-URL entry, the key is `__cgc_stream_<N>__` where `N` is the position in `live_stream_urls`. If you reorder the array, the keys point at the wrong streams. Use the editor (it re-binds the inputs to the visible names) or stick to entity-keyed entries for stability.
+
+See the [Two-way audio YAML example](#two-way-audio-talkback) for a working config.
 
 ---
 
