@@ -4446,11 +4446,11 @@ class CameraGalleryCard extends LitElement {
                               try {
                                 e.currentTarget.animate(
                                   [
-                                    { transform: "scale(1)",   filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.6))" },
-                                    { transform: "scale(1.4)", filter: "drop-shadow(0 0 12px gold) drop-shadow(0 1px 2px rgba(0,0,0,0.6))", offset: 0.5 },
-                                    { transform: "scale(1)",   filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.6))" },
+                                    { transform: "scale(1) rotate(0deg)",     filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.6))" },
+                                    { transform: "scale(1.85) rotate(-14deg)", filter: "drop-shadow(0 0 22px gold) drop-shadow(0 0 10px gold) drop-shadow(0 1px 2px rgba(0,0,0,0.6))", offset: 0.45 },
+                                    { transform: "scale(1) rotate(0deg)",     filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.6))" },
                                   ],
-                                  { duration: 200, easing: "cubic-bezier(.22, 1, .36, 1)" }
+                                  { duration: 380, easing: "cubic-bezier(.34, 1.56, .64, 1)" }
                                 );
                               } catch (_) { /* WAAPI not supported — silently skip */ }
                             }
