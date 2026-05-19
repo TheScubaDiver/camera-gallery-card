@@ -1385,6 +1385,39 @@ export const cardStyles = css`
       pointer-events: none;
       box-sizing: border-box;
     }
+    /* Touch swipe-to-delete — the red tint fades in with the swipe
+       progress, and the thumb itself rides translateX with the finger. */
+    &::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      border-radius: inherit;
+      background: rgba(220, 38, 38, 0.78);
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.18s ease;
+      z-index: 2;
+    }
+    &.swiping {
+      transform: translateX(var(--swipe-dx, 0px)) scale(0.94);
+      transition: none;
+    }
+    &.on.swiping {
+      transform: translateX(var(--swipe-dx, 0px)) scale(1);
+    }
+    &.swiping::before {
+      opacity: var(--swipe-progress, 0);
+    }
+    &.swipe-off {
+      transform: translateX(-110%) scale(0.94);
+      opacity: 0;
+      transition:
+        transform 0.22s ease-out,
+        opacity 0.22s ease-out;
+    }
+    &.on.swipe-off {
+      transform: translateX(-110%) scale(1);
+    }
   }
 
   .timg {
