@@ -2700,19 +2700,15 @@ class CameraGalleryCard extends LitElement {
 
   async _handleSwipeDelete(item, el) {
     if (!item?.src) return;
-    if (this.config?.delete_confirm) {
-      const ok = window.confirm("Delete this item?");
-      if (!ok) {
-        // Cancelled: undo the slide-off visual.
-        if (el) {
-          el.classList.remove("swiping", "swipe-off");
-          el.style.removeProperty("--swipe-dx");
-          el.style.removeProperty("--swipe-progress");
-        }
-        return;
-      }
-    }
+    // deleteItem() handles the confirm prompt itself when config.delete_confirm
+    // is set, so we just await the pipeline. If the user cancels (or the
+    // service call fails), we reset the visual so the thumb pops back in.
     await this._deleteSingle(item.src);
+    if (el && el.isConnected) {
+      el.classList.remove("swiping", "swipe-off");
+      el.style.removeProperty("--swipe-dx");
+      el.style.removeProperty("--swipe-progress");
+    }
   }
 
   _openThumbMenu(item) {
