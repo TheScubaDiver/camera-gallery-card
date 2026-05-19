@@ -2642,6 +2642,8 @@ class CameraGalleryCard extends LitElement {
       if (Math.abs(dy) > 10 && Math.abs(dy) > Math.abs(dx) * 1.2) {
         this._thumbSwipeEl = null;
         this._thumbSwipeItem = null;
+        this._thumbSwipeActive = false;
+        this._thumbSwipeDx = 0;
         return;
       }
       if (dx < -10 && Math.abs(dx) > Math.abs(dy) * 1.3) {
@@ -2661,7 +2663,7 @@ class CameraGalleryCard extends LitElement {
     e.preventDefault?.();
   }
 
-  _onThumbPointerUp(e) {
+  _onThumbPointerUp() {
     this._clearThumbLongPress();
 
     if (this._thumbSwipeEl && this._thumbSwipeActive) {
@@ -2695,6 +2697,7 @@ class CameraGalleryCard extends LitElement {
       this._thumbSwipeEl = null;
       this._thumbSwipeItem = null;
       this._thumbSwipeActive = false;
+      this._thumbSwipeDx = 0;
     }
   }
 
@@ -4334,7 +4337,7 @@ class CameraGalleryCard extends LitElement {
                           this._onThumbPointerDown(e, it);
                         }}
                         @pointermove=${(e) => this._onThumbPointerMove(e)}
-                        @pointerup=${(e) => this._onThumbPointerUp(e)}
+                        @pointerup=${() => this._onThumbPointerUp()}
                         @pointercancel=${(e) => this._onThumbPointerCancel(e)}
                         @pointerleave=${() => this._onThumbPointerCancel()}
                         @contextmenu=${(e) => this._onThumbContextMenu(e, it)}
