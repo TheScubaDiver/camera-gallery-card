@@ -4447,7 +4447,7 @@ class CameraGalleryCard extends LitElement {
                                 e.currentTarget.animate(
                                   [
                                     { transform: "scale(1) rotate(0deg)",     filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.6))" },
-                                    { transform: "scale(1.85) rotate(-14deg)", filter: "drop-shadow(0 0 22px gold) drop-shadow(0 0 10px gold) drop-shadow(0 1px 2px rgba(0,0,0,0.6))", offset: 0.45 },
+                                    { transform: "scale(2.2) rotate(-14deg)", filter: "drop-shadow(0 0 22px gold) drop-shadow(0 0 10px gold) drop-shadow(0 1px 2px rgba(0,0,0,0.6))", offset: 0.45 },
                                     { transform: "scale(1) rotate(0deg)",     filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.6))" },
                                   ],
                                   { duration: 380, easing: "cubic-bezier(.34, 1.56, .64, 1)" }
