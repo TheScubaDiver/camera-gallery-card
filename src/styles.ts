@@ -724,7 +724,6 @@ export const cardStyles = css`
     transition:
       opacity 220ms ease-out,
       transform 220ms ease-out;
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14);
     text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
     white-space: nowrap;
   }
