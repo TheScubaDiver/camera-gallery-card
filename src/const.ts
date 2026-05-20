@@ -186,6 +186,12 @@ export const MIC_MAX_TRANSIENT_RETRIES = 1;
 export const THUMB_LONG_PRESS_MOVE_PX = 12;
 export const THUMB_LONG_PRESS_MS = 520;
 
+// -------- Swipe-to-delete (touch only, per-thumb) --------
+/** Pixels at which the swipe is considered committed on release. */
+export const THUMB_SWIPE_COMMIT = -80;
+/** Visual ceiling — even if the finger drags further, the thumb stops here. */
+export const THUMB_SWIPE_MAX = -120;
+
 // -------- Datetime parsing --------
 
 /**

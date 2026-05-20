@@ -103,6 +103,8 @@ import {
   THUMB_GAP,
   THUMB_LONG_PRESS_MOVE_PX,
   THUMB_LONG_PRESS_MS,
+  THUMB_SWIPE_COMMIT,
+  THUMB_SWIPE_MAX,
   THUMB_RADIUS,
   THUMB_SIZE,
   THUMBS_ENABLED,
@@ -288,6 +290,12 @@ class CameraGalleryCard extends LitElement {
     this._viewMode = "media";
     this._liveSelectedCamera = "";
     this._liveMuted = false;
+    this._thumbSwipeEl = null;
+    this._thumbSwipeItem = null;
+    this._thumbSwipeStartX = 0;
+    this._thumbSwipeStartY = 0;
+    this._thumbSwipeDx = 0;
+    this._thumbSwipeActive = false;
     this._onMicPointerDown = (e) => {
       e.stopPropagation();
       // Resolve the mic stream for the camera that's currently in focus.
@@ -2572,6 +2580,17 @@ class CameraGalleryCard extends LitElement {
 
   _onThumbPointerCancel() {
     this._clearThumbLongPress();
+    // Abort any in-flight swipe gesture: snap the thumb back, clear state.
+    if (this._thumbSwipeEl) {
+      const el = this._thumbSwipeEl;
+      el.classList.remove("swiping");
+      el.style.removeProperty("--swipe-dx");
+      el.style.removeProperty("--swipe-progress");
+    }
+    this._thumbSwipeEl = null;
+    this._thumbSwipeItem = null;
+    this._thumbSwipeActive = false;
+    this._thumbSwipeDx = 0;
   }
 
   _onThumbPointerDown(e, item) {
@@ -2589,19 +2608,110 @@ class CameraGalleryCard extends LitElement {
       this._suppressNextThumbClick = true;
       this._openThumbMenu(item);
     }, THUMB_LONG_PRESS_MS);
+
+    // Touch swipe-to-delete: start tracking only on touch pointers and only
+    // when the item is actually delete-eligible — for everything else (mouse,
+    // read-only Frigate items without rest_command, etc.) we don't even arm
+    // the gesture, so the existing tap/click flow is untouched.
+    if (e.pointerType === "touch" && this._thumbCanDelete(item)) {
+      this._thumbSwipeEl = e.currentTarget;
+      this._thumbSwipeItem = item;
+      this._thumbSwipeStartX = e.clientX ?? 0;
+      this._thumbSwipeStartY = e.clientY ?? 0;
+      this._thumbSwipeDx = 0;
+      this._thumbSwipeActive = false;
+    }
   }
 
   _onThumbPointerMove(e) {
-    if (!this._thumbLongPressTimer) return;
-    const dx = Math.abs((e.clientX ?? 0) - this._thumbLongPressStartX);
-    const dy = Math.abs((e.clientY ?? 0) - this._thumbLongPressStartY);
-    if (dx > THUMB_LONG_PRESS_MOVE_PX || dy > THUMB_LONG_PRESS_MOVE_PX) {
-      this._clearThumbLongPress();
+    if (this._thumbLongPressTimer) {
+      const dxAbs = Math.abs((e.clientX ?? 0) - this._thumbLongPressStartX);
+      const dyAbs = Math.abs((e.clientY ?? 0) - this._thumbLongPressStartY);
+      if (dxAbs > THUMB_LONG_PRESS_MOVE_PX || dyAbs > THUMB_LONG_PRESS_MOVE_PX) {
+        this._clearThumbLongPress();
+      }
     }
+
+    if (!this._thumbSwipeEl) return;
+    const dx = (e.clientX ?? 0) - this._thumbSwipeStartX;
+    const dy = (e.clientY ?? 0) - this._thumbSwipeStartY;
+
+    if (!this._thumbSwipeActive) {
+      // Decide direction once: if user is clearly swiping left, lock into
+      // swipe mode; if they're scrolling vertically, abandon.
+      if (Math.abs(dy) > 10 && Math.abs(dy) > Math.abs(dx) * 1.2) {
+        this._thumbSwipeEl = null;
+        this._thumbSwipeItem = null;
+        this._thumbSwipeActive = false;
+        this._thumbSwipeDx = 0;
+        return;
+      }
+      if (dx < -10 && Math.abs(dx) > Math.abs(dy) * 1.3) {
+        this._thumbSwipeActive = true;
+        this._suppressNextThumbClick = true; // don't open the item after a release
+      } else {
+        return;
+      }
+    }
+
+    const clamped = Math.max(THUMB_SWIPE_MAX, Math.min(0, dx));
+    this._thumbSwipeDx = clamped;
+    const progress = Math.min(1, Math.abs(clamped) / THUMB_SWIPE_COMMIT);
+    this._thumbSwipeEl.style.setProperty("--swipe-dx", `${clamped}px`);
+    this._thumbSwipeEl.style.setProperty("--swipe-progress", progress.toFixed(3));
+    this._thumbSwipeEl.classList.add("swiping");
+    e.preventDefault?.();
   }
 
   _onThumbPointerUp() {
     this._clearThumbLongPress();
+
+    if (this._thumbSwipeEl && this._thumbSwipeActive) {
+      const el = this._thumbSwipeEl;
+      const item = this._thumbSwipeItem;
+      const committed = this._thumbSwipeDx <= THUMB_SWIPE_COMMIT;
+      this._thumbSwipeEl = null;
+      this._thumbSwipeItem = null;
+      this._thumbSwipeActive = false;
+      this._thumbSwipeDx = 0;
+
+      if (committed) {
+        // Swap to the .swipe-off class so CSS handles the slide-off
+        // transition. Inline CSS vars get cleared so the class's transform
+        // wins.
+        el.classList.remove("swiping");
+        el.classList.add("swipe-off");
+        el.style.removeProperty("--swipe-dx");
+        el.style.removeProperty("--swipe-progress");
+        try { navigator.vibrate?.(15); } catch (_) {}
+        setTimeout(() => this._handleSwipeDelete(item, el), 220);
+      } else {
+        // Snap back: clearing inline vars + removing the .swiping class
+        // returns the thumb to its resting transform with the default
+        // transition.
+        el.classList.remove("swiping");
+        el.style.removeProperty("--swipe-dx");
+        el.style.removeProperty("--swipe-progress");
+      }
+    } else if (this._thumbSwipeEl) {
+      this._thumbSwipeEl = null;
+      this._thumbSwipeItem = null;
+      this._thumbSwipeActive = false;
+      this._thumbSwipeDx = 0;
+    }
+  }
+
+  async _handleSwipeDelete(item, el) {
+    if (!item?.src) return;
+    // deleteItem() handles the confirm prompt itself when config.delete_confirm
+    // is set, so we just await the pipeline. If the user cancels (or the
+    // service call fails), we reset the visual so the thumb pops back in.
+    await this._deleteSingle(item.src);
+    if (el && el.isConnected) {
+      el.classList.remove("swiping", "swipe-off");
+      el.style.removeProperty("--swipe-dx");
+      el.style.removeProperty("--swipe-progress");
+    }
   }
 
   _openThumbMenu(item) {
@@ -2754,18 +2864,30 @@ class CameraGalleryCard extends LitElement {
   // ─── Media / delete / download ────────────────────────────────────
 
   async _deleteSingle(src) {
+    const eventId = frigateEventIdFromSrc(src);
+    const isFrigate = eventId !== null && isFrigateRoot(src);
+
+    // Run the confirm here (not inside deleteItem) so a Cancel is a silent
+    // no-op — otherwise deleteItem returns false for both "user cancelled"
+    // and "service call failed" and the caller can't tell them apart.
+    if (this.config?.delete_confirm) {
+      const msg = isFrigate
+        ? "Delete this Frigate event?"
+        : "Are you sure you want to delete this file?";
+      if (!window.confirm(msg)) return;
+    }
+
     const ok = await deleteItem({
       hass: this._hass,
       src,
       config: this.config,
       srcEntityMap: this._sensorClient.getSrcEntityMap(),
+      confirm: () => true,
     });
     if (!ok) {
       // Surface the failure via an in-card toast instead of swallowing it
       // silently — otherwise the user taps Delete, nothing happens, and they
       // have no idea why.
-      const eventId = frigateEventIdFromSrc(src);
-      const isFrigate = eventId !== null && isFrigateRoot(src);
       this._showErrorToast(
         "Delete failed",
         isFrigate
@@ -2783,7 +2905,6 @@ class CameraGalleryCard extends LitElement {
     // one call, so any item whose URI carries the same event id should
     // be hidden together. Event-id-keyed filter survives URI shape and
     // re-fetches better than exact-URI-only matching.
-    const eventId = frigateEventIdFromSrc(src);
     let alsoHidden = [];
     if (eventId) {
       this._deletedFrigateEventIds.add(eventId);
@@ -4228,7 +4349,7 @@ class CameraGalleryCard extends LitElement {
                         }}
                         @pointermove=${(e) => this._onThumbPointerMove(e)}
                         @pointerup=${() => this._onThumbPointerUp()}
-                        @pointercancel=${() => this._onThumbPointerCancel()}
+                        @pointercancel=${(e) => this._onThumbPointerCancel(e)}
                         @pointerleave=${() => this._onThumbPointerCancel()}
                         @contextmenu=${(e) => this._onThumbContextMenu(e, it)}
                         @click=${(e) => {
