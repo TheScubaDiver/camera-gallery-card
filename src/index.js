@@ -4302,6 +4302,7 @@ class CameraGalleryCard extends LitElement {
                           ? html`<div class="selOverlay ${isSel ? "on" : ""}"></div>`
                           : html``}
 
+                        ${this.config?.show_favorite === false ? html`` : html`
                         <div
                           class="fav-btn ${this._favorites.has(it.src) ? 'on' : ''}"
                           @click=${(e) => { e.stopPropagation(); this._favorites.toggle(it.src); }}
@@ -4311,6 +4312,7 @@ class CameraGalleryCard extends LitElement {
                         >
                           <ha-icon icon="${this._favorites.has(it.src) ? 'mdi:star' : 'mdi:star-outline'}"></ha-icon>
                         </div>
+                        `}
                       </button>
                     `;
                   })}
