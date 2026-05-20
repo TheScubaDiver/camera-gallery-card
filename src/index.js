@@ -2864,18 +2864,30 @@ class CameraGalleryCard extends LitElement {
   // ─── Media / delete / download ────────────────────────────────────
 
   async _deleteSingle(src) {
+    const eventId = frigateEventIdFromSrc(src);
+    const isFrigate = eventId !== null && isFrigateRoot(src);
+
+    // Run the confirm here (not inside deleteItem) so a Cancel is a silent
+    // no-op — otherwise deleteItem returns false for both "user cancelled"
+    // and "service call failed" and the caller can't tell them apart.
+    if (this.config?.delete_confirm) {
+      const msg = isFrigate
+        ? "Delete this Frigate event?"
+        : "Are you sure you want to delete this file?";
+      if (!window.confirm(msg)) return;
+    }
+
     const ok = await deleteItem({
       hass: this._hass,
       src,
       config: this.config,
       srcEntityMap: this._sensorClient.getSrcEntityMap(),
+      confirm: () => true,
     });
     if (!ok) {
       // Surface the failure via an in-card toast instead of swallowing it
       // silently — otherwise the user taps Delete, nothing happens, and they
       // have no idea why.
-      const eventId = frigateEventIdFromSrc(src);
-      const isFrigate = eventId !== null && isFrigateRoot(src);
       this._showErrorToast(
         "Delete failed",
         isFrigate
@@ -2893,7 +2905,6 @@ class CameraGalleryCard extends LitElement {
     // one call, so any item whose URI carries the same event id should
     // be hidden together. Event-id-keyed filter survives URI shape and
     // re-fetches better than exact-URI-only matching.
-    const eventId = frigateEventIdFromSrc(src);
     let alsoHidden = [];
     if (eventId) {
       this._deletedFrigateEventIds.add(eventId);
