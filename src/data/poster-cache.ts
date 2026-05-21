@@ -44,6 +44,7 @@ import type { HomeAssistant } from "../types/hass";
 import { fnv1aHash } from "../util/hash";
 import { posterStore as defaultPosterStore, type PosterStore } from "../util/poster-store";
 import { isVideo } from "../util/media-type";
+import { isReolinkRoot } from "./reolink-engine";
 
 // ─── Exported pure helpers ────────────────────────────────────────────
 
@@ -646,6 +647,11 @@ export class PosterCacheClient {
   enqueue(src: string, stableKey?: string): void {
     const key = String(src ?? "").trim();
     if (!key) return;
+    // Reolink integration provides no server thumbnails and first-frame
+    // capture would re-fetch the entire MP4 via the camera proxy — twice
+    // the load on the camera per clip. Bail before queueing. Matches the
+    // `willNeverLoad`/UI-placeholder branch.
+    if (isReolinkRoot(stableKey ?? key) || /^\/api\/reolink\//i.test(key)) return;
     if (stableKey && stableKey !== key) {
       this._posterStableKeys.set(key, stableKey);
     }
@@ -868,9 +874,16 @@ export class PosterCacheClient {
   }
 
   /** `true` iff this video item has no possible poster source under the
-   * current config: no server-side thumbnail AND `capture_video_thumbnails`
-   * is explicitly off. */
+   * current config: no server-side thumbnail AND no realistic capture
+   * path. Two cases:
+   *   1. `capture_video_thumbnails: false` AND no server thumb.
+   *   2. Reolink media-source item — the HA integration provides no
+   *      server thumb, and first-frame capture would re-fetch the
+   *      whole MP4 via the camera proxy (expensive, doubles the load
+   *      Reolink takes per clip). Skip it outright.
+   */
   willNeverLoad(it: CardItem, isMs: boolean, tThumb: string): boolean {
+    if (isMs && isReolinkRoot(it.src)) return true;
     if (this._inputs.captureAllowed()) return false;
     return !this.hasServerThumbForVideo(it, isMs, tThumb);
   }

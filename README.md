@@ -105,6 +105,25 @@ FileTrack is a fork of the archived [files integration by TarheelGrad1998](https
 
 **Combined mode** merges a sensor source and a media source into one timeline (useful when you have both legacy snapshot files and a newer Frigate setup).
 
+> [!TIP]
+> Curious how Frigate, Reolink and custom NVRs are handled internally? See [How sources are routed](#how-sources-are-routed-under-the-hood) below.
+
+#### How sources are routed under the hood
+
+When you use `source_mode: media` (or `combined`), the card picks an engine per media-source URI:
+
+| URI prefix | Engine | `path_datetime_format` |
+|---|---|---|
+| `media-source://frigate/...` | Frigate REST / events path — uses event-id timestamps directly | not needed |
+| `media-source://reolink/...` | Dedicated Reolink engine — parses Reolink's folder/file titles intrinsically | not needed |
+| Anything else (Synology, BlueIris, NAS, custom NVR, ...) | Generic calendar walker | **required** — set this to match how dates appear in your file paths |
+
+A few notes on the generic walker:
+
+- The NVR must be visible as a `media-source://...` in Home Assistant's **Media** browser (sidebar). Without that, the card can't browse it.
+- NVRs that only expose RTSP / SMB without a media-source integration can fall back to `source_mode: sensor` with a FileTrack-style sensor that lists the file paths.
+- If `path_datetime_format` is missing or wrong, the gallery won't be able to group by day or sort by time — but clips still appear. Use the **Auto-detect format** button in the editor to probe your sources and suggest a format.
+
 ### Live view
 
 - Native Home Assistant **WebRTC live preview**
@@ -258,7 +277,7 @@ Then in the card editor: **General → Delete services → Frigate** → pick `r
 | `source_mode` | `sensor`, `media`, or `combined` |
 | `entity / entities` | Sensor source(s) |
 | `media_source / media_sources` | Media browser source(s) |
-| `path_datetime_format` | Format pattern for parsing timestamps from paths. Needed in **all source modes** for day grouping and time sort. Only exception: Frigate via `media-source://frigate/...` URIs (carry their own event-id timestamps) |
+| `path_datetime_format` | Format pattern for parsing timestamps from paths. Needed in **all source modes** for day grouping and time sort. Exceptions: Frigate sources (`media-source://frigate/...`) carry their own event-id timestamps, and Reolink sources (`media-source://reolink/...`) are parsed intrinsically by the dedicated engine |
 | `max_media` | Max media items |
 | **Frigate** | |
 | `frigate_url` | Optional direct Frigate REST API URL (e.g. `http://192.168.1.x:5000`). If omitted, the card uses the HA Frigate integration via WebSocket |
@@ -377,6 +396,46 @@ object_filters:
   - person
   - car
 ```
+
+### Reolink NVR / Doorbell / camera
+
+The official **Reolink HA integration** exposes recordings under
+`media-source://reolink/...`. The card detects this prefix and routes
+those sources through a dedicated engine (mirrors Advanced Camera
+Card's approach) — no `path_datetime_format` needed, no `M`/`D` token
+gymnastics, no manual day-URI:
+
+```yaml
+type: custom:camera-gallery-card
+source_mode: media
+media_sources:
+  - media-source://reolink/CAM|01JVCNA6DC12AMNF2QE2SWXNK3|0
+live_enabled: true
+live_camera_entities:
+  - camera.deurbel
+```
+
+How it works under the hood:
+- The engine auto-promotes a `CAM|...` URI to `RES|...|main` so the user
+  only has to copy the camera-level URI from HA's media browser. (Want
+  the sub stream? Paste the `RES|...|sub` URI directly — the engine
+  leaves explicit RES URIs alone.)
+- Day folders titled `2026/4/9` (unpadded) are parsed directly — no
+  date-token configuration.
+- File titles starting with `HH:mm:ss` are parsed to derive each clip's
+  timestamp; the rest of the title (duration, detection tags) is ignored
+  for now.
+- Playback uses HA's MP4 proxy URL via `media_source/resolve_media` —
+  same fast path that Advanced Camera Card uses. No HLS wrapping.
+- Thumbnails are intentionally not generated for Reolink clips (the
+  integration provides none, and first-frame capture would re-fetch the
+  MP4 via the camera proxy — same trade-off ACC makes). The Reolink
+  brand mark is shown instead.
+
+**Find your CAM URI:** open Home Assistant → Media → Reolink, click on
+your camera, and copy the path from the breadcrumb. It looks like
+`media-source://reolink/CAM|<long-id>|<channel>` where `<channel>` is
+`0` for single-lens cameras and `0..N` for NVR channels.
 
 ---
 
