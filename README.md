@@ -105,6 +105,25 @@ FileTrack is a fork of the archived [files integration by TarheelGrad1998](https
 
 **Combined mode** merges a sensor source and a media source into one timeline (useful when you have both legacy snapshot files and a newer Frigate setup).
 
+> [!TIP]
+> Curious how Frigate, Reolink and custom NVRs are handled internally? See [How sources are routed](#how-sources-are-routed-under-the-hood) below.
+
+#### How sources are routed under the hood
+
+When you use `source_mode: media` (or `combined`), the card picks an engine per media-source URI:
+
+| URI prefix | Engine | `path_datetime_format` |
+|---|---|---|
+| `media-source://frigate/...` | Frigate REST / events path — uses event-id timestamps directly | not needed |
+| `media-source://reolink/...` | Dedicated Reolink engine — parses Reolink's folder/file titles intrinsically | not needed |
+| Anything else (Synology, BlueIris, NAS, custom NVR, ...) | Generic calendar walker | **required** — set this to match how dates appear in your file paths |
+
+A few notes on the generic walker:
+
+- The NVR must be visible as a `media-source://...` in Home Assistant's **Media** browser (sidebar). Without that, the card can't browse it.
+- NVRs that only expose RTSP / SMB without a media-source integration can fall back to `source_mode: sensor` with a FileTrack-style sensor that lists the file paths.
+- If `path_datetime_format` is missing or wrong, the gallery won't be able to group by day or sort by time — but clips still appear. Use the **Auto-detect format** button in the editor to probe your sources and suggest a format.
+
 ### Live view
 
 - Native Home Assistant **WebRTC live preview**
