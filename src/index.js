@@ -4864,15 +4864,11 @@ class CameraGalleryCardEditor extends HTMLElement {
     };
 
     // Editor version toggle (beta). Persisted per browser via localStorage.
-    // v1 = legacy 5-tab layout. v2 = new 6-tab layout (Source + Advanced split,
-    // Gallery/Live collapsibles, Object Filters moved from Thumbs → Gallery).
-    let storedVersion = "v1";
-    try {
-      const v = (typeof localStorage !== "undefined") && localStorage.getItem("cgc_editor_version");
-      if (v === "v2" || v === "v1") storedVersion = v;
-    } catch (_) { /* ignore */ }
-    this._editorVersion = storedVersion;
-    this._activeTab = this._editorVersion === "v2" ? "source" : "general";
+    // v2 is the only active editor layout in this build. The v1 code path
+    // remains in the source tree until the hard-cut, but the toggle UI is
+    // hidden and `_editorVersion` is force-pinned to "v2".
+    this._editorVersion = "v2";
+    this._activeTab = "source";
     // Open/closed state for v2 collapsibles, keyed `${tab}.${sectionId}`.
     // Persisted to localStorage so it survives editor close / page reload.
     this._v2OpenSections = (() => {
@@ -9914,16 +9910,8 @@ details summary { user-select: none; }
         .cgc-inline-warn .cgc-svg-icon { flex-shrink: 0; margin-top: 1px; }
       </style>
 
-      <div class="wrap ${this._editorVersion === "v2" ? "v2" : ""}" style="${rootVars}">
-        <div class="editor-version">
-          <span class="editor-version-label">Editor</span>
-          <div class="editor-version-toggle" role="tablist" aria-label="Editor version">
-            <button type="button" class="editor-version-btn ${this._editorVersion === "v1" ? "on" : ""}" data-version="v1">v1</button>
-            <button type="button" class="editor-version-btn ${this._editorVersion === "v2" ? "on" : ""}" data-version="v2">
-              v2 <span class="editor-version-beta">BETA</span>
-            </button>
-          </div>
-        </div>
+      <div class="wrap v2" style="${rootVars}">
+
         <div class="tabs">
           <div class="tabbar">
             ${this._editorVersion === "v2"
