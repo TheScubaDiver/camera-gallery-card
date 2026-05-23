@@ -181,17 +181,6 @@ export const STYLE_SECTIONS: readonly StyleSection[] = [
         default: DEFAULT_BAR_OPACITY,
         unit: "%",
       },
-      {
-        type: "select",
-        configKey: "bar_position",
-        label: "Position",
-        disabledFn: (c) => c["controls_mode"] === "fixed",
-        options: [
-          { value: "top", label: "Top" },
-          { value: "bottom", label: "Bottom" },
-          { value: "hidden", label: "Hidden" },
-        ],
-      },
     ],
   },
   {

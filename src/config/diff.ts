@@ -40,16 +40,16 @@ const SOURCE_KEYS = new Set<ConfigKey>([
  * Keys that only affect rendering (no cache invalidation needed). When
  * *every* changed key is in this set, the card just calls `requestUpdate`.
  *
- * Names match the canonical config shape in `structs.ts` — earlier copies of
- * this list carried `live_cameras` / `live_default_camera`, which never
- * existed on the canonical config and so were dead weight.
+ * Names match the canonical config shape in `structs.ts`. `live_cameras`
+ * (the unified list landed alongside #137) joins the legacy
+ * `live_camera_entities` here so changes to either don't force a re-fetch.
  */
 const UI_ONLY_KEYS = new Set<ConfigKey>([
   "bar_opacity",
   "bar_position",
   "capture_video_thumbnails",
-  "live_camera_entity",
   "live_camera_entities",
+  "live_cameras",
   "live_enabled",
   "object_filters",
   "clean_mode",

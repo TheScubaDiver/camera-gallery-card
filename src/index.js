@@ -3,6 +3,7 @@
  */
 
 import { LitElement, html } from "lit";
+import jsYaml from "js-yaml";
 
 import { cardStyles } from "./styles";
 import { STYLE_SECTIONS } from "./config/styling-config";
@@ -55,6 +56,7 @@ import {
   friendlyCameraName as liveFriendlyCameraName,
   getAllLiveCameraEntities,
   getGridCameraEntities,
+  getLiveCameraEntityIds,
   getLiveCameraOptions,
   getStreamEntries,
   getStreamEntryById,
@@ -64,7 +66,23 @@ import {
   isGridLayout,
   micStreamForCamera,
 } from "./data/live-config";
+import {
+  GALLERY_PILL_CATALOG,
+  LIVE_PILL_CATALOG,
+  TOOLBAR_CATALOG,
+  resolvePillSettings,
+  sortPillsByOrder,
+} from "./data/pill-catalog";
 import { WebRtcMicClient } from "./data/webrtc-mic";
+import {
+  detectPtzType,
+  dispatchAction as ptzDispatchAction,
+  dispatchPan as ptzDispatchPan,
+  getPtzConfig,
+  joystickResolve,
+  ptzCapabilities,
+  resolvePtzPosition,
+} from "./data/ptz";
 import { buildDiagnostics, diagnosticsToText } from "./data/diagnostics";
 import {
   FRIGATE_URI_PREFIX,
@@ -93,6 +111,7 @@ import {
   DEFAULT_LIVE_ENABLED,
   DEFAULT_MAX_MEDIA,
   DEFAULT_PREVIEW_CLOSE_ON_TAP_WHEN_GATED,
+  PTZ_SPEED_MAX,
   DEFAULT_PREVIEW_POSITION,
   DEFAULT_SOURCE_MODE,
   DEFAULT_THUMB_BAR_POSITION,
@@ -116,6 +135,87 @@ import {
 /* global __VERSION__ */
 const CARD_VERSION = __VERSION__;
 
+/* ───────────────────────── Talkback waveform renderer ─────────────────────
+ * Bars-only frequency visualiser drawn on a canvas overlay inside the
+ * talkback bar while the mic is `active`. Pure module-level helpers so
+ * the rendering is testable without a Card instance.
+ *
+ * opts shape:
+ *   sensitivity  — 'low' | 'medium' | 'high' (maps to gain)
+ *   freqBuf      — pre-allocated Uint8Array buffer
+ *   getFreq(buf) — filler that populates the buffer in place
+ */
+
+/** Gain factor fed into the tanh soft-clip; higher = more visible reaction
+ *  to quiet input. Three presets cover the practical range. */
+const WF_GAIN = { low: 2.0, medium: 3.5, high: 5.5 };
+/** Hard-coded global opacity of the rendered bars (0..1). Lab-tested value
+ *  that reads well over the standard talkback bar tint. */
+const WF_OPACITY = 0.35;
+
+/** Format a seconds count as `M:SS` (or `H:MM:SS` past an hour). Used by
+ *  the gallery time-pill. NaN / negative input returns `0:00`. */
+function formatVideoTime(seconds) {
+  if (!isFinite(seconds) || seconds < 0) return "0:00";
+  const total = Math.floor(seconds);
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  const ss = s < 10 ? `0${s}` : `${s}`;
+  if (h > 0) {
+    const mm = m < 10 ? `0${m}` : `${m}`;
+    return `${h}:${mm}:${ss}`;
+  }
+  return `${m}:${ss}`;
+}
+
+/** Render 48 frequency bars across the canvas. A linear tilt boosts higher
+ *  bins so the spectrum doesn't look lopsided left-to-right (speech naturally
+ *  rolls off above ~3 kHz). */
+function wfDrawBars(ctx, w, h, shape, buf) {
+  const visible = 48;
+  const gap = 2;
+  const bw = (w - gap * (visible - 1)) / visible;
+  for (let i = 0; i < visible; i++) {
+    const tilt = 1 + (i / visible) * 1.2;
+    const v = shape((buf[i] / 255) * tilt);
+    const barH = Math.max(2, v * h * 0.95);
+    const grad = ctx.createLinearGradient(0, h - barH, 0, h);
+    grad.addColorStop(0, `rgba(255,255,255,${0.55 * WF_OPACITY})`);
+    grad.addColorStop(1, `rgba(255,255,255,${0.15 * WF_OPACITY})`);
+    ctx.fillStyle = grad;
+    ctx.fillRect(i * (bw + gap), h - barH, bw, barH);
+  }
+}
+
+function wfDrawFrame(canvas, opts) {
+  const dpr = window.devicePixelRatio || 1;
+  const rect = canvas.getBoundingClientRect();
+  if (rect.width <= 0 || rect.height <= 0) return;
+  if (
+    canvas.width !== Math.round(rect.width * dpr) ||
+    canvas.height !== Math.round(rect.height * dpr)
+  ) {
+    canvas.width = Math.round(rect.width * dpr);
+    canvas.height = Math.round(rect.height * dpr);
+  }
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, rect.width, rect.height);
+
+  const gain = WF_GAIN[opts.sensitivity] ?? WF_GAIN.medium;
+  const shape = (v) => Math.tanh(v * gain);
+
+  if (!opts.getFreq(opts.freqBuf)) return;
+  wfDrawBars(ctx, rect.width, rect.height, shape, opts.freqBuf);
+}
+
+// Joystick geometry — used in render and in the keyboard handler that
+// animates the thumb to the rim on arrow-key press for visual feedback.
+const PTZ_JOY_BASE_SIZE = 76;
+const PTZ_JOY_THUMB_SIZE = 30;
+const PTZ_JOY_MAX_OFFSET = (PTZ_JOY_BASE_SIZE - PTZ_JOY_THUMB_SIZE) / 2;
+
 class CameraGalleryCard extends LitElement {
   static get properties() {
     return {
@@ -135,7 +235,6 @@ class CameraGalleryCard extends LitElement {
       _showDatePicker: { type: Boolean },
       _showLivePicker: { type: Boolean },
       _showLiveQuickSwitch: { type: Boolean },
-      _showNav: { type: Boolean },
       _suppressNextThumbClick: { type: Boolean },
       _swipeStartX: { type: Number },
       _swipeStartY: { type: Number },
@@ -147,6 +246,13 @@ class CameraGalleryCard extends LitElement {
       _viewMode: { type: String }, // "media" | "live"
       _liveMuted: { type: Boolean },
       _liveFullscreen: { type: Boolean },
+      _livePipActive: { type: Boolean },
+      _galleryPipActive: { type: Boolean },
+      _galleryPlaying: { type: Boolean },
+      _galleryCurrentTime: { type: Number },
+      _galleryDuration: { type: Number },
+      _galleryAutoplayAll: { type: Boolean },
+      _galleryPlaybackSpeed: { type: Number },
       _imgFsOpen: { type: Boolean },
       _aspectRatio: { type: String },
       _micState: { type: String },
@@ -158,6 +264,7 @@ class CameraGalleryCard extends LitElement {
       _filterVideo: { type: Boolean },
       _filterImage: { type: Boolean },
       _filterFavorites: { type: Boolean },
+      _ptzActive: { type: Boolean },
     };
   }
 
@@ -174,7 +281,7 @@ class CameraGalleryCard extends LitElement {
       source_mode: "sensor",
       entities: [],
       live_enabled: true,
-      live_camera_entity: cameraEntity ?? "",
+      live_cameras: cameraEntity ? [{ entity: cameraEntity, name: "" }] : [],
       thumb_size: 140,
       bar_position: "top",
       object_filters: DEFAULT_VISIBLE_OBJECT_FILTERS,
@@ -190,6 +297,17 @@ class CameraGalleryCard extends LitElement {
     this._selectedPreviewSrc = "";
     this._deleted = new Set();
     this._deletedFrigateEventIds = new Set();
+    // Clean up legacy NEW-arrival localStorage from prior builds. The
+    // feature is gone; these keys just take up storage now.
+    try {
+      localStorage.removeItem("cgc_seen_srcs");
+      localStorage.removeItem("cgc_new_arrivals");
+      localStorage.removeItem("cgc_dismissed_srcs");
+      localStorage.removeItem("cgc_seen_srcs_v2");
+      localStorage.removeItem("cgc_new_arrivals_v2");
+      localStorage.removeItem("cgc_dismissed_srcs_v2");
+      localStorage.removeItem("cgc_arrivals_v");
+    } catch (_) { /* localStorage unavailable */ }
     this._forceThumbReset = false;
     this._liveCard = null;
     this._liveCardConfigKey = "";
@@ -207,6 +325,37 @@ class CameraGalleryCard extends LitElement {
     this._micErrorCode = "";
     this._micLevelTick = 0;
     this._micLevelRaf = null;
+    // PTZ overlay state. `_ptzActive` toggles the joystick + zoom + home
+    // overlay on top of the live preview. Press-and-hold tracking lives
+    // in `_ptzHold*`: the direction (or named action like zoom) we're
+    // currently looping pulses for, the repeat-interval timer for pulse-
+    // type dispatchers, and the pointer-id guard so a stray mouse hover-
+    // out doesn't kill an active touch. Joystick thumb position is the
+    // offset from the base centre in px, snapped back to {0,0} on
+    // release.
+    this._ptzActive = false;
+    this._ptzHoldDirection = null;
+    this._ptzHoldAction = null;
+    this._ptzHoldTimer = null;
+    this._ptzHoldPointerId = null;
+    this._ptzJoystickThumb = { x: 0, y: 0 };
+    this._ptzJoystickPointerId = null;
+    // Cached joystick rect — captured at pointerdown so pointermove
+    // doesn't trigger a synchronous layout flush per frame.
+    this._ptzJoystickGeom = null;
+    // 0–1 magnitude of the active joystick drag, or null when the pan
+    // input comes from a discrete source (button / keyboard). Continuous
+    // dispatchers use it to scale speed analog.
+    this._ptzJoystickMagnitude = null;
+    // Per-axis components of the joystick (horizontal + vertical) when
+    // both clear the dead-zone — feeds the secondary-axis parameter to
+    // ONVIF dispatch for diagonal pan. Null between drags.
+    this._ptzJoystickAxes = null;
+    // Transient "just pressed" flag for the Home button. Set true on
+    // `_onPtzHome`, cleared after 220ms so the user sees a brief
+    // confirmation flash on a one-shot action.
+    this._ptzHomePressed = false;
+    this._ptzHomePressedTimer = null;
     this._micClient = new WebRtcMicClient({
       inputs: {
         signPath: (path) =>
@@ -245,7 +394,6 @@ class CameraGalleryCard extends LitElement {
     this._autoAspectVideo = null;
     this._autoAspectObs = null;
     this._liveQuickSwitchTimer = null;
-    this._navHideT = null;
     this._objectFilters = [];
     this._filterVideo = false;
     this._filterImage = false;
@@ -267,7 +415,6 @@ class CameraGalleryCard extends LitElement {
     this._showLivePicker = false;
     this._showLiveQuickSwitch = false;
     this._debugOpen = false;
-    this._showNav = false;
     this._pillsVisible = false;
     this._pillsHovered = false;
     this._pillsTimer = null;
@@ -294,6 +441,13 @@ class CameraGalleryCard extends LitElement {
     this._viewMode = "media";
     this._liveSelectedCamera = "";
     this._liveMuted = false;
+    this._livePipActive = false;
+    this._galleryPipActive = false;
+    this._galleryPlaying = false;
+    this._galleryCurrentTime = 0;
+    this._galleryDuration = 0;
+    this._galleryAutoplayAll = false;
+    this._galleryPlaybackSpeed = 1;
     this._thumbSwipeEl = null;
     this._thumbSwipeItem = null;
     this._thumbSwipeStartX = 0;
@@ -303,6 +457,8 @@ class CameraGalleryCard extends LitElement {
     this._scrollPillText = "";
     this._scrollPillVisible = false;
     this._scrollPillTimer = null;
+    this._micWaveRaf = null;
+    this._micFreqBuf = new Uint8Array(256); // fftSize/2 — freq-domain bins
     this._onMicPointerDown = (e) => {
       e.stopPropagation();
       // Resolve the mic stream for the camera that's currently in focus.
@@ -352,6 +508,9 @@ class CameraGalleryCard extends LitElement {
       if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
       if (!this._isLiveActive()) return;
       if (this._imgFsOpen) return;
+      // PTZ overlay owns the arrow keys when active — short-circuit so
+      // the user isn't both panning the camera and switching cameras.
+      if (this._ptzActive) return;
       if (this._getLiveCameraOptions().length <= 1) return;
       const tag = (e.target?.tagName || "").toLowerCase();
       if (tag === "input" || tag === "textarea" || tag === "select" || e.target?.isContentEditable) return;
@@ -360,6 +519,66 @@ class CameraGalleryCard extends LitElement {
       if (!focusInside && !hovered) return;
       e.preventDefault();
       this._navLiveCamera(e.key === "ArrowRight" ? 1 : -1);
+    };
+
+    // PTZ keyboard handlers. Active only while the overlay is on.
+    // Suppress `e.repeat` events — browsers spam keydown ~30/sec while a
+    // key is held, but our own press handler already manages repetition
+    // via `_ptzHoldTimer` for pulse-types and via the integration for
+    // continuous-types. Same focus/hover guard as the camera-nav handler.
+    this._onPtzKeyDown = (e) => {
+      if (!this._ptzActive || e.repeat) return;
+      const direction = ({
+        ArrowUp: "up",
+        ArrowDown: "down",
+        ArrowLeft: "left",
+        ArrowRight: "right",
+      })[e.key];
+      if (!direction) return;
+      const tag = (e.target?.tagName || "").toLowerCase();
+      if (tag === "input" || tag === "textarea" || tag === "select" || e.target?.isContentEditable) return;
+      const focusInside = this.contains(document.activeElement);
+      const hovered = this.matches(":hover");
+      if (!focusInside && !hovered) return;
+      e.preventDefault();
+      // Clear any joystick-magnitude leftover so keyboard input falls
+      // back on the configured global/per-camera speed instead of
+      // whatever the joystick last reported.
+      this._ptzJoystickMagnitude = null;
+      this._ptzJoystickAxes = null;
+      this._onPtzPress(direction, null);
+      // Mirror keyboard input on the joystick thumb so the user sees
+      // their direction land on the overlay. Skipped when a pointer is
+      // already driving the joystick — pointer wins as source of truth.
+      if (this._ptzJoystickPointerId === null) {
+        const o = PTZ_JOY_MAX_OFFSET;
+        const thumbByDir = {
+          up: { x: 0, y: -o },
+          down: { x: 0, y: o },
+          left: { x: -o, y: 0 },
+          right: { x: o, y: 0 },
+        };
+        this._ptzJoystickThumb = thumbByDir[direction];
+        this.requestUpdate();
+      }
+    };
+    this._onPtzKeyUp = (e) => {
+      if (!this._ptzHoldDirection) return;
+      const direction = ({
+        ArrowUp: "up",
+        ArrowDown: "down",
+        ArrowLeft: "left",
+        ArrowRight: "right",
+      })[e.key];
+      if (direction !== this._ptzHoldDirection) return;
+      this._stopPtzHold();
+      // Snap the joystick thumb back to centre. The 0.18s ease-out
+      // transition in the joystick render handles the animation when
+      // `_ptzJoystickPointerId === null` (the keyboard path).
+      if (this._ptzJoystickPointerId === null) {
+        this._ptzJoystickThumb = { x: 0, y: 0 };
+        this.requestUpdate();
+      }
     };
 
     this._onFullscreenChange = () => {
@@ -570,6 +789,9 @@ class CameraGalleryCard extends LitElement {
     window.addEventListener('mousemove', this._onZoomMouseMove);
     window.addEventListener('mouseup', this._onZoomMouseUp);
     window.addEventListener('keydown', this._onLiveCameraKeydown);
+    window.addEventListener("keydown", this._onPtzKeyDown);
+    window.addEventListener("keyup", this._onPtzKeyUp);
+    document.addEventListener("visibilitychange", this._onPtzVisibilityChange);
     if (navigator.maxTouchPoints > 0) this._showPills(5000);
     this._startMediaPoll();
     // Idempotent — if hass isn't set yet, returns early; the firstHass branch
@@ -592,19 +814,25 @@ class CameraGalleryCard extends LitElement {
     window.removeEventListener('mousemove', this._onZoomMouseMove);
     window.removeEventListener('mouseup', this._onZoomMouseUp);
     window.removeEventListener('keydown', this._onLiveCameraKeydown);
+    window.removeEventListener("keydown", this._onPtzKeyDown);
+    window.removeEventListener("keyup", this._onPtzKeyUp);
     if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
 
     this._stopMediaPoll();
     this._unsubscribeFrigateEvents();
     if (this._liveQuickSwitchTimer) clearTimeout(this._liveQuickSwitchTimer);
-    if (this._navHideT) clearTimeout(this._navHideT);
     if (this._bulkHintTimer) clearTimeout(this._bulkHintTimer);
     if (this._scrollPillTimer) { clearTimeout(this._scrollPillTimer); this._scrollPillTimer = null; }
     this._scrollPillVisible = false;
+    // Tear down the PTZ press-and-hold loop — if the card is removed mid-
+    // press (camera card replaced, dashboard navigated away), the interval
+    // would otherwise outlive the element and (for continuous types) leave
+    // the camera spinning.
+    this._stopPtzHold();
+    document.removeEventListener("visibilitychange", this._onPtzVisibilityChange);
     this._cancelMicLevelRaf();
 
     this._liveQuickSwitchTimer = null;
-    this._navHideT = null;
     this._bulkHintTimer = null;
 
     this._clearPreviewVideoHostPlayback();
@@ -655,9 +883,7 @@ class CameraGalleryCard extends LitElement {
 
     // Only re-render when an entity we actually display has changed state
     const sensorIds = this._sensorClient.getEntityIds();
-    const cameraIds = Array.isArray(this.config?.live_camera_entities)
-      ? this.config.live_camera_entities
-      : [];
+    const cameraIds = getLiveCameraEntityIds(this.config);
 
     const menuIds = (this.config?.menu_buttons ?? []).map(b => b.entity).filter(Boolean);
     const watchIds = [...sensorIds, ...cameraIds, ...menuIds];
@@ -866,7 +1092,7 @@ class CameraGalleryCard extends LitElement {
 
       video = document.createElement("video");
       video.className = "pimg";
-      video.controls = true;
+      video.controls = false;
       video.playsInline = true;
       // `auto` so the browser buffers proactively the moment we set `src`.
       // With `metadata` the browser only fetches the moov atom and waits
@@ -874,6 +1100,32 @@ class CameraGalleryCard extends LitElement {
       // click → first-frame.
       video.preload = "auto";
 
+      // Wire transport state to gallery pills (play/pause + time display).
+      // requestUpdate via the existing _galleryPlaying/_galleryCurrentTime
+      // setters keeps the pill row in sync without polling.
+      video.addEventListener("play", () => { this._galleryPlaying = true; });
+      video.addEventListener("pause", () => { this._galleryPlaying = false; });
+      video.addEventListener("ended", () => {
+        this._galleryPlaying = false;
+        if (this._galleryAutoplayAll) {
+          // Defer so the `ended` event finishes propagating before we
+          // tear down the src + swap to the next clip.
+          queueMicrotask(() => this._autoplayAdvance());
+        }
+      });
+      video.addEventListener("timeupdate", () => {
+        this._galleryCurrentTime = video.currentTime || 0;
+      });
+      video.addEventListener("loadedmetadata", () => {
+        this._galleryDuration = isFinite(video.duration) ? video.duration : 0;
+        this._galleryCurrentTime = video.currentTime || 0;
+        // playbackRate resets on src swap — reapply so the user's speed
+        // choice carries across clips during autoplay-all.
+        video.playbackRate = this._galleryPlaybackSpeed || 1;
+      });
+      video.addEventListener("durationchange", () => {
+        this._galleryDuration = isFinite(video.duration) ? video.duration : 0;
+      });
 
       host.appendChild(video);
       this._previewVideoEl = video;
@@ -1111,15 +1363,15 @@ class CameraGalleryCard extends LitElement {
     return path.some((el) => el?.classList?.contains(cls));
   }
 
-  _showNavChevrons() {
-    this._showNav = true;
+  // Tap-toggle for video previews: tap shows + arms the auto-hide timer,
+  // a second tap hides immediately. Useful on short clips where the 2.5s
+  // overlay would otherwise cover half the playback.
+  _hidePillsNow() {
+    clearTimeout(this._pillsTimer);
+    this._pillsTimer = null;
+    this._pillsHideActive = false;
+    this._pillsVisible = false;
     this.requestUpdate();
-
-    if (this._navHideT) clearTimeout(this._navHideT);
-    this._navHideT = setTimeout(() => {
-      this._showNav = false;
-      this.requestUpdate();
-    }, 2500);
   }
 
   _showPills(duration = 2500) {
@@ -1194,6 +1446,23 @@ class CameraGalleryCard extends LitElement {
       this._bulkHintTimer = null;
       this.requestUpdate();
     }, 5000);
+  }
+
+  /** Fire HA's `haptic` event on the window. The HA frontend's haptic
+   * mixin listens for it: on Android it forwards to `navigator.vibrate`,
+   * and the iOS Companion App intercepts the WKWebView bridge to call
+   * `UIImpactFeedbackGenerator` natively — which is the only way to get
+   * a tap-vibration on iPhones, since Apple's Safari/WebKit doesn't
+   * ship the Vibration API. Skip mouse / pen pointers where a haptic
+   * would be meaningless. */
+  _ptzHaptic(ev) {
+    if (ev && ev.pointerType && ev.pointerType !== "touch") return;
+    if (typeof window === "undefined") return;
+    try {
+      window.dispatchEvent(
+        new CustomEvent("haptic", { detail: "light", bubbles: true, composed: true })
+      );
+    } catch (_) {}
   }
 
   _showErrorToast(title, message) {
@@ -1326,9 +1595,7 @@ class CameraGalleryCard extends LitElement {
     // Kick off async probes for every configured camera. The probes mutate
     // `_diagResolutions` and call `requestUpdate()` when results arrive;
     // the pure builder below just reads the latched results.
-    const cams = Array.isArray(this.config?.live_camera_entities)
-      ? this.config.live_camera_entities
-      : [];
+    const cams = getLiveCameraEntityIds(this.config);
     for (const id of cams) this._probeCameraResolution(id);
 
     return buildDiagnostics({
@@ -1565,9 +1832,10 @@ class CameraGalleryCard extends LitElement {
     const selected = String(this._liveSelectedCamera || "").trim();
     if (selected) return selected;
 
+    // First entry in `live_cameras` is the default. Fall back to the first
+    // available option from the resolver when the array is empty / not yet
+    // populated (e.g. stub config).
     const options = this._getLiveCameraOptions();
-    const preferred = String(this.config?.live_camera_entity || "").trim();
-    if (preferred && options.includes(preferred)) return preferred;
     return options[0] || "";
   }
 
@@ -1769,6 +2037,149 @@ class CameraGalleryCard extends LitElement {
     // CSS fallback (Android WebView, or no native fullscreen support).
     this._liveFullscreen = true;
     this.setAttribute("data-live-fs", "");
+    this.requestUpdate();
+  }
+
+  async _toggleLivePip() {
+    const video = this._findLiveVideo();
+    if (!video) return;
+    try {
+      if (document.pictureInPictureElement === video) {
+        await document.exitPictureInPicture();
+        this._livePipActive = false;
+      } else {
+        if (video.disablePictureInPicture) return;
+        if (!this._onLivePipChange) {
+          this._onLivePipChange = (e) => {
+            const t = e?.target;
+            if (!t) return;
+            if (e.type === "enterpictureinpicture") this._livePipActive = true;
+            else if (e.type === "leavepictureinpicture") this._livePipActive = false;
+            this.requestUpdate();
+          };
+        }
+        video.addEventListener("enterpictureinpicture", this._onLivePipChange);
+        video.addEventListener("leavepictureinpicture", this._onLivePipChange);
+        await video.requestPictureInPicture();
+        this._livePipActive = true;
+      }
+      this.requestUpdate();
+    } catch (_) {
+      // user dismissed prompt or PiP unsupported on this stream
+    }
+  }
+
+  _onVidProgressDown(e) {
+    const video = this._previewVideoEl;
+    if (!video || !this._galleryDuration) return;
+    e.stopPropagation();
+    e.preventDefault();
+    const bar = e.currentTarget;
+    try { bar.setPointerCapture(e.pointerId); } catch (_) {}
+    this._scrubBarRect = bar.getBoundingClientRect();
+    this._scrubPointerId = e.pointerId;
+    this._applyVidScrub(e.clientX);
+
+    if (!this._onVidScrubMove) {
+      this._onVidScrubMove = (ev) => {
+        if (ev.pointerId !== this._scrubPointerId) return;
+        this._applyVidScrub(ev.clientX);
+      };
+      this._onVidScrubUp = (ev) => {
+        if (ev.pointerId !== this._scrubPointerId) return;
+        try { bar.releasePointerCapture(ev.pointerId); } catch (_) {}
+        bar.removeEventListener("pointermove", this._onVidScrubMove);
+        bar.removeEventListener("pointerup", this._onVidScrubUp);
+        bar.removeEventListener("pointercancel", this._onVidScrubUp);
+        this._scrubBarRect = null;
+        this._scrubPointerId = null;
+      };
+    }
+    bar.addEventListener("pointermove", this._onVidScrubMove);
+    bar.addEventListener("pointerup", this._onVidScrubUp);
+    bar.addEventListener("pointercancel", this._onVidScrubUp);
+  }
+
+  _applyVidScrub(clientX) {
+    const video = this._previewVideoEl;
+    const rect = this._scrubBarRect;
+    if (!video || !rect || !this._galleryDuration) return;
+    const pct = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+    video.currentTime = pct * this._galleryDuration;
+  }
+
+  _toggleAutoplayAll() {
+    this._galleryAutoplayAll = !this._galleryAutoplayAll;
+    this.requestUpdate();
+  }
+
+  // Advance to the next clip in the current filtered list when the
+  // active video ends. Stops auto-play silently when we hit the last
+  // clip (no loop yet — feature gated until user asks for it).
+  _autoplayAdvance() {
+    const { items } = this._currentFilteredItems();
+    if (!items || items.length === 0) return;
+    const cur = this._selectedIndex ?? 0;
+    if (cur >= items.length - 1) {
+      this._galleryAutoplayAll = false;
+      this.requestUpdate();
+      return;
+    }
+    this._navNext(items.length);
+  }
+
+  _cyclePlaybackSpeed() {
+    const order = [1, 2, 0.5];
+    const idx = order.indexOf(this._galleryPlaybackSpeed || 1);
+    this._galleryPlaybackSpeed = order[(idx + 1) % order.length];
+    if (this._previewVideoEl) this._previewVideoEl.playbackRate = this._galleryPlaybackSpeed;
+    this.requestUpdate();
+  }
+
+  _toggleGalleryPlayPause() {
+    const video = this._previewVideoEl;
+    if (!video) return;
+    if (video.paused || video.ended) {
+      video.play().catch(() => { /* autoplay policy or aborted load */ });
+    } else {
+      video.pause();
+    }
+  }
+
+  async _toggleGalleryPip() {
+    const video = this._previewVideoEl;
+    if (!video) return;
+    try {
+      if (document.pictureInPictureElement === video) {
+        await document.exitPictureInPicture();
+        this._galleryPipActive = false;
+      } else {
+        if (video.disablePictureInPicture) return;
+        if (!this._onGalleryPipChange) {
+          this._onGalleryPipChange = (e) => {
+            if (e.type === "enterpictureinpicture") this._galleryPipActive = true;
+            else if (e.type === "leavepictureinpicture") this._galleryPipActive = false;
+            this.requestUpdate();
+          };
+        }
+        video.addEventListener("enterpictureinpicture", this._onGalleryPipChange);
+        video.addEventListener("leavepictureinpicture", this._onGalleryPipChange);
+        await video.requestPictureInPicture();
+        this._galleryPipActive = true;
+      }
+      this.requestUpdate();
+    } catch (_) {
+      // user dismissed prompt or PiP unsupported
+    }
+  }
+
+  // Force-rebuild the live card so the underlying stream reconnects.
+  // Works for both webrtc + ha-camera-stream paths because the next
+  // render's _ensureLiveCard* call recreates the player from scratch.
+  _refreshLiveStream() {
+    try { this._liveCard?.remove?.(); } catch (_) {}
+    this._liveCard = null;
+    this._liveCardConfigKey = "";
     this.requestUpdate();
   }
 
@@ -2176,8 +2587,9 @@ class CameraGalleryCard extends LitElement {
         @pointerleave=${this._onMicPointerUp}
       >
         <span class="mic-talkback-tint" aria-hidden="true" style="position:absolute;inset:0;border-radius:inherit;background:var(--cgc-talkback-bg, var(--cgc-pill-bg, #000));opacity:calc(var(--cgc-talkback-opacity, var(--cgc-bar-opacity, 30)) / 100);pointer-events:none;"></span>
-        <ha-icon icon=${icon} style="--mdc-icon-size:18px;width:18px;height:18px;display:inline-flex;align-items:center;justify-content:center;line-height:1;position:relative;z-index:1;"></ha-icon>
-        <span style="position:relative;z-index:1;">${label}</span>
+        ${this.config?.live_mic_waveform_enabled === false ? html`` : html`<canvas class="mic-wave" aria-hidden="true" style="position:absolute;inset:0;width:100%;height:100%;opacity:${state === "active" ? 1 : 0};transition:opacity 150ms ease-out;pointer-events:none;z-index:1;"></canvas>`}
+        <ha-icon icon=${icon} style="--mdc-icon-size:18px;width:18px;height:18px;display:inline-flex;align-items:center;justify-content:center;line-height:1;position:relative;z-index:2;"></ha-icon>
+        <span style="position:relative;z-index:2;">${label}</span>
       </div>
     `;
   }
@@ -2186,6 +2598,53 @@ class CameraGalleryCard extends LitElement {
   // it doesn't shift the rest of the page. role=status + aria-live=polite
   // lets screen readers announce the failure without interrupting other
   // focus.
+  _startMicWaveLoop() {
+    if (this._micWaveRaf) return;
+    // Feature gate — silently noop when the user has turned the visualiser off.
+    if (this.config?.live_mic_waveform_enabled === false) return;
+    // Reduced-motion users: skip the animating waveform — the existing
+    // typed visual states (idle/connecting/active/error) already convey
+    // mic state without continuous motion.
+    if (window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return;
+
+    const tick = () => {
+      const canvas = this.renderRoot?.querySelector("canvas.mic-wave");
+      if (!canvas || this._micState !== "active") {
+        this._stopMicWaveLoop();
+        return;
+      }
+      this._drawMicWaveFrame(canvas);
+      this._micWaveRaf = requestAnimationFrame(tick);
+    };
+    this._micWaveRaf = requestAnimationFrame(tick);
+  }
+
+  _stopMicWaveLoop() {
+    if (this._micWaveRaf) {
+      cancelAnimationFrame(this._micWaveRaf);
+      this._micWaveRaf = null;
+    }
+    const canvas = this.renderRoot?.querySelector("canvas.mic-wave");
+    if (canvas) {
+      const ctx = canvas.getContext("2d");
+      ctx?.clearRect(0, 0, canvas.width, canvas.height);
+    }
+  }
+
+  // ─── Talkback waveform rendering ─────────────────────────────────────────
+  //
+  // Hard-coded as frequency-bars; sensitivity is the only knob (low/medium/
+  // high → 2.0/3.5/5.5 gain through a tanh soft-clip). Opacity is fixed at
+  // 35% which reads well over the standard talkback-bar tint.
+
+  _drawMicWaveFrame(canvas) {
+    wfDrawFrame(canvas, {
+      sensitivity: this.config?.live_mic_waveform_sensitivity ?? "medium",
+      freqBuf: this._micFreqBuf,
+      getFreq: (buf) => this._micClient.getFrequencyData(buf),
+    });
+  }
+
   _renderMicErrorToast() {
     if (!hasAnyMicStream(this.config)) return html``;
     const label = this._micErrorLabel();
@@ -2236,6 +2695,572 @@ class CameraGalleryCard extends LitElement {
 
   _micErrorLabel() {
     return this._micErrorLabelForCode(this._micErrorCode, this._micClient.error()?.detail);
+  }
+
+  _renderPtzOverlay() {
+    if (!this._ptzActive) return html``;
+    const cameraId = this._getEffectiveLiveCamera();
+    const ptz = getPtzConfig(this.config, cameraId);
+    if (!ptz) return html``;
+    const caps = ptzCapabilities(ptz);
+    const baseSize = PTZ_JOY_BASE_SIZE;
+    const thumbSize = PTZ_JOY_THUMB_SIZE;
+    // Resolved corner with auto-flip for bar-position conflicts. The DOM
+    // order is always joystick → zoom → home; we flip horizontally via
+    // `flex-direction: row-reverse` for right-corners so the joystick
+    // visually sits closest to the camera edge.
+    const pos = resolvePtzPosition(this.config);
+    const [vAnchor, hAnchor] = pos.split("-"); // [bottom|top, left|right]
+    const flexDir = hAnchor === "right" ? "row-reverse" : "row";
+    const containerStyle = `position:absolute;${vAnchor}:12px;${hAnchor}:12px;display:flex;flex-direction:${flexDir};align-items:${vAnchor === "top" ? "flex-start" : "flex-end"};gap:6px;z-index:6;`;
+    const maxThumbOffset = (baseSize - thumbSize) / 2;
+    const thumb = this._ptzJoystickThumb || { x: 0, y: 0 };
+    // `active` = user is currently driving the joystick (drag in progress
+    // or a keyboard direction held). Drives the visual pulse on the
+    // thumb so it's clear the command is registering.
+    const joystickActive = this._ptzJoystickPointerId !== null || !!this._ptzHoldDirection;
+    return html`
+      <!-- PTZ container — joystick + zoom-capsule + home, anchored in
+           the configured corner. Flex-direction flips for right-corners
+           so the joystick (first child) stays closest to the edge. -->
+      <div class="ptz-block" style=${containerStyle}>
+      <!-- Virtual joystick. Outer ring is the base; the inner disc is the
+           thumb the user drags. Cardinal pan resolves from the thumb
+           angle; magnitude is forwarded to dispatchers that honour speed
+           (ONVIF). Snaps back on release. -->
+      <div
+        class="ptz-joystick"
+        style="position:relative;width:${baseSize}px;height:${baseSize}px;border-radius:50%;touch-action:none;user-select:none;-webkit-user-select:none;cursor:grab;"
+        @pointerdown=${(e) => { e.stopPropagation(); this._onPtzJoystickStart(e, maxThumbOffset); }}
+        @pointermove=${(e) => { e.stopPropagation(); this._onPtzJoystickMove(e, maxThumbOffset); }}
+        @pointerup=${(e) => { e.stopPropagation(); this._onPtzJoystickEnd(e); }}
+        @pointercancel=${(e) => { e.stopPropagation(); this._onPtzJoystickEnd(e); }}
+        @pointerleave=${(e) => { e.stopPropagation(); this._onPtzJoystickEnd(e); }}
+        @contextmenu=${(e) => e.preventDefault()}
+      >
+        <!-- glass-uniform base ring -->
+        <span aria-hidden="true" style="position:absolute;inset:0;border-radius:inherit;background:var(--cgc-pill-bg, #000);opacity:calc(var(--cgc-bar-opacity, 30) / 100);box-shadow:inset 0 1px 0 rgba(255,255,255,0.14);backdrop-filter:blur(16px) saturate(160%);-webkit-backdrop-filter:blur(16px) saturate(160%);pointer-events:none;"></span>
+        <!-- thumb disc: position lives in inline transform so the render
+             layer can smooth-snap it back on release via a CSS transition. -->
+        <div
+          class="ptz-joystick-thumb"
+          style="position:absolute;left:50%;top:50%;width:${thumbSize}px;height:${thumbSize}px;margin:-${thumbSize / 2}px 0 0 -${thumbSize / 2}px;border-radius:50%;background:${joystickActive ? "var(--primary-color, #03a9f4)" : "rgba(255,255,255,0.92)"};box-shadow:${joystickActive ? "0 0 0 4px rgba(3,169,244,0.28), 0 2px 8px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.5)" : "0 2px 6px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.6)"};transform:translate(${thumb.x}px, ${thumb.y}px);transition:${this._ptzJoystickPointerId === null ? "transform 0.18s ease-out, background 0.12s ease, box-shadow 0.12s ease" : "background 0.12s ease, box-shadow 0.12s ease"};pointer-events:none;"
+        ></div>
+      </div>
+
+      ${caps.zoomable
+        ? html`
+            <!-- Zoom capsule: single glass pill split by a thin divider
+                 (ACC-inspired, not a copy — single background and rounded
+                 corners shared between in/out so the pair reads as one
+                 control instead of two stacked pills). -->
+            <div
+              class="ptz-zoom-capsule"
+              style="position:relative;width:34px;height:${baseSize}px;border-radius:14px;overflow:hidden;display:flex;flex-direction:column;box-shadow:inset 0 1px 0 rgba(255,255,255,0.14);backdrop-filter:blur(16px) saturate(160%);-webkit-backdrop-filter:blur(16px) saturate(160%);"
+            >
+              <span aria-hidden="true" style="position:absolute;inset:0;border-radius:inherit;background:var(--cgc-pill-bg, #000);opacity:calc(var(--cgc-bar-opacity, 30) / 100);pointer-events:none;"></span>
+              <button
+                class="ptz-zoom-btn"
+                type="button"
+                aria-label="Zoom in"
+                title="Zoom in"
+                @pointerdown=${(e) => { e.stopPropagation(); this._onPtzActionPress("zoom_in", e); }}
+                @pointerup=${(e) => { e.stopPropagation(); this._onPtzActionRelease("zoom_in", e); }}
+                @pointerleave=${(e) => { e.stopPropagation(); this._onPtzActionRelease("zoom_in", e); }}
+                @pointercancel=${(e) => { e.stopPropagation(); this._onPtzActionRelease("zoom_in", e); }}
+                style="position:relative;flex:1;width:100%;display:flex;align-items:center;justify-content:center;border:0;color:#fff;background:${this._ptzHoldAction === "zoom_in" ? "rgba(3,169,244,0.35)" : "transparent"};cursor:pointer;touch-action:none;user-select:none;-webkit-user-select:none;transition:background 0.12s ease;"
+              >
+                <ha-icon icon="mdi:magnify-plus-outline" style="--mdc-icon-size:18px;width:18px;height:18px;position:relative;z-index:1;text-shadow:0 1px 2px rgba(0,0,0,0.5);"></ha-icon>
+              </button>
+              <!-- divider — picks up the icon-shadow vibe but as a hairline -->
+              <span aria-hidden="true" style="position:relative;z-index:1;height:1px;background:rgba(255,255,255,0.18);pointer-events:none;"></span>
+              <button
+                class="ptz-zoom-btn"
+                type="button"
+                aria-label="Zoom out"
+                title="Zoom out"
+                @pointerdown=${(e) => { e.stopPropagation(); this._onPtzActionPress("zoom_out", e); }}
+                @pointerup=${(e) => { e.stopPropagation(); this._onPtzActionRelease("zoom_out", e); }}
+                @pointerleave=${(e) => { e.stopPropagation(); this._onPtzActionRelease("zoom_out", e); }}
+                @pointercancel=${(e) => { e.stopPropagation(); this._onPtzActionRelease("zoom_out", e); }}
+                style="position:relative;flex:1;width:100%;display:flex;align-items:center;justify-content:center;border:0;color:#fff;background:${this._ptzHoldAction === "zoom_out" ? "rgba(3,169,244,0.35)" : "transparent"};cursor:pointer;touch-action:none;user-select:none;-webkit-user-select:none;transition:background 0.12s ease;"
+              >
+                <ha-icon icon="mdi:magnify-minus-outline" style="--mdc-icon-size:18px;width:18px;height:18px;position:relative;z-index:1;text-shadow:0 1px 2px rgba(0,0,0,0.5);"></ha-icon>
+              </button>
+            </div>
+          `
+        : html``}
+
+      ${caps.homeable
+        ? html`
+            <!-- Home: own rounded-square button next to the zoom capsule,
+                 same glass treatment, slightly smaller so it doesn't
+                 compete with the joystick as the dominant element. -->
+            <button
+              class="ptz-home"
+              type="button"
+              aria-label="Home"
+              title="Home"
+              @pointerdown=${(e) => e.stopPropagation()}
+              @click=${(e) => { e.stopPropagation(); this._onPtzHome(); }}
+              style="position:relative;width:34px;height:${baseSize}px;border-radius:14px;border:0;color:#fff;background:transparent;display:flex;align-items:center;justify-content:center;box-shadow:inset 0 1px 0 rgba(255,255,255,0.14);backdrop-filter:blur(16px) saturate(160%);-webkit-backdrop-filter:blur(16px) saturate(160%);cursor:pointer;overflow:hidden;"
+            >
+              <span aria-hidden="true" style="position:absolute;inset:0;border-radius:inherit;background:${this._ptzHomePressed ? "rgba(3,169,244,0.45)" : "var(--cgc-pill-bg, #000)"};opacity:${this._ptzHomePressed ? "1" : "calc(var(--cgc-bar-opacity, 30) / 100)"};transition:background 0.12s ease, opacity 0.12s ease;pointer-events:none;"></span>
+              <ha-icon icon="mdi:home-outline" style="--mdc-icon-size:18px;width:18px;height:18px;position:relative;z-index:1;text-shadow:0 1px 2px rgba(0,0,0,0.5);"></ha-icon>
+            </button>
+          `
+        : html``}
+      </div>
+    `;
+  }
+
+  _togglePtz() {
+    this._ptzActive = !this._ptzActive;
+    // Always tear down a running hold-repeat when leaving PTZ mode —
+    // a pointer that's still down (or an arrow key) would otherwise keep
+    // the camera moving forever, and for continuous-types would leave a
+    // service in motion indefinitely.
+    if (!this._ptzActive) {
+      this._stopPtzHold();
+    }
+  }
+
+  // Visibility / focus failsafe: if the user backgrounds the tab while a
+  // PTZ button is still pressed, the pointerup never lands on the card.
+  // For continuous-types that would leave the camera spinning until the
+  // tab returns. Always halt.
+  _onPtzVisibilityChange = () => {
+    if (document.visibilityState !== "visible" && this._ptzHoldDirection) {
+      this._stopPtzHold();
+    }
+  };
+
+  // Effective speed for a pan/zoom call: per-camera override from
+  // `live_ptz_cameras.*.speed`, falling back to the global
+  // `live_ptz_speed`, falling back to 5. Pulse-type dispatchers ignore
+  // the value entirely; continuous-types (ONVIF) scale it to their own
+  // range.
+  _currentPtzSpeed(ptz) {
+    if (ptz && Number.isFinite(ptz.speed)) return ptz.speed;
+    const g = this.config?.live_ptz_speed;
+    return Number.isFinite(g) ? g : 5;
+  }
+
+  // One pan call in a given direction + phase. Pulse-types ignore the
+  // `stop` phase at the service layer (no integration support); the card
+  // still calls `stop` for symmetry so future continuous-types can hook in
+  // without an index.js change.
+  //
+  // When `_ptzJoystickMagnitude` is non-zero (a joystick drag is driving
+  // the press, not a discrete button tap), scale `globalSpeed` by it. That
+  // gives ONVIF a true analog speed dial — closer to centre = slower pan.
+  // Pulse-types ignore the value, so the override is harmless for EZVIZ.
+  _ptzPanCall(direction, phase, resolvedPtz) {
+    const cameraId = this._getEffectiveLiveCamera();
+    const ptz = resolvedPtz ?? getPtzConfig(this.config, cameraId);
+    if (!ptz || !this._hass || !cameraId) return;
+    let effectiveSpeed = this._currentPtzSpeed(ptz);
+    if (Number.isFinite(this._ptzJoystickMagnitude) && this._ptzJoystickMagnitude > 0) {
+      // Floor at 1 so a near-centre but past-deadzone drag still moves.
+      effectiveSpeed = Math.max(1, Math.round(this._ptzJoystickMagnitude * PTZ_SPEED_MAX));
+    }
+    // Secondary axis is the joystick's "other" component when both are
+    // pulled past their dead-zone. ONVIF picks this up for diagonal pan;
+    // other dispatchers ignore it. Only relevant on phase:"start" — stop
+    // is a single call regardless.
+    let secondary = null;
+    if (phase === "start" && this._ptzJoystickAxes) {
+      const { horizontal, vertical } = this._ptzJoystickAxes;
+      if (direction === "left" || direction === "right") {
+        if (vertical) secondary = vertical;
+      } else if (horizontal) {
+        secondary = horizontal;
+      }
+    }
+    ptzDispatchPan(
+      this._hass,
+      cameraId,
+      ptz,
+      direction,
+      phase,
+      effectiveSpeed,
+      secondary
+    ).catch((err) => {
+      try { console.warn("CGC PTZ pan failed:", err); } catch (_) {}
+    });
+  }
+
+  // Press handler for a pan direction. Driven by the joystick wrapper —
+  // shaped as a reusable entry point so direction-button UIs could plug
+  // in unchanged. Lifecycle:
+  //   1. Capture the pointer so dragging off the source still routes
+  //      pointerup back to it — otherwise the repeat loop leaks.
+  //   2. If a *different* direction was already held (slide-from-◀-to-▶
+  //      without releasing), issue a clean stop on the old direction
+  //      first, then start the new one. Continuous-types would race two
+  //      motions otherwise; pulse-types just want the latest direction.
+  //   3. Fire `phase: "start"` once.
+  //   4. For pulse-types only (EZVIZ today), set up a 250 ms repeat
+  //      timer. Continuous-types skip this — the integration keeps the
+  //      motor going until `phase: "stop"`.
+  //
+  // 250 ms is picked from earlier tuning: EZVIZ's `button.press` triggers
+  // a ~1 s cloud-side pulse; re-firing well before that finishes keeps
+  // the motor going without obvious stop-and-start jitter.
+  _onPtzPress(direction, ev) {
+    if (this._ptzHoldDirection && this._ptzHoldDirection !== direction) {
+      this._stopPtzHold();
+    }
+    this._ptzHaptic(ev);
+    try { ev?.currentTarget?.setPointerCapture?.(ev.pointerId); } catch (_) {}
+    this._ptzHoldDirection = direction;
+    this._ptzHoldPointerId = ev?.pointerId ?? null;
+    const cameraId = this._getEffectiveLiveCamera();
+    const ptz = getPtzConfig(this.config, cameraId);
+    this._ptzPanCall(direction, "start", ptz);
+    const continuous = ptz ? ptzCapabilities(ptz).continuous : false;
+    if (this._ptzHoldTimer) clearInterval(this._ptzHoldTimer);
+    if (!continuous) {
+      this._ptzHoldTimer = setInterval(() => {
+        if (!this._ptzHoldDirection) return;
+        this._ptzPanCall(this._ptzHoldDirection, "start");
+      }, 250);
+    }
+  }
+
+  // Named-action (zoom_in / zoom_out) press handler. Same press-and-hold
+  // semantics as direction buttons. For zoom: continuous types treat stop
+  // as the same `move_mode: Stop` / `frigate.ptz action:stop` call shared
+  // with pan, so we route via `_stopPtzHold` regardless of which action
+  // was held.
+  _onPtzActionPress(action, ev) {
+    const cameraId = this._getEffectiveLiveCamera();
+    const ptz = getPtzConfig(this.config, cameraId);
+    if (!ptz || !this._hass || !cameraId) return;
+    if (this._ptzHoldDirection || this._ptzHoldAction) this._stopPtzHold();
+    this._ptzHaptic(ev);
+    try { ev?.currentTarget?.setPointerCapture?.(ev.pointerId); } catch (_) {}
+    this._ptzHoldAction = action;
+    this._ptzHoldPointerId = ev?.pointerId ?? null;
+    const speed = this._currentPtzSpeed(ptz);
+    ptzDispatchAction(this._hass, cameraId, ptz, action, "start", speed).catch((err) => {
+      try { console.warn("CGC PTZ zoom failed:", err); } catch (_) {}
+    });
+    const continuous = ptzCapabilities(ptz).continuous;
+    if (this._ptzHoldTimer) clearInterval(this._ptzHoldTimer);
+    if (!continuous) {
+      this._ptzHoldTimer = setInterval(() => {
+        if (!this._ptzHoldAction) return;
+        ptzDispatchAction(this._hass, cameraId, ptz, this._ptzHoldAction, "start", speed).catch(
+          () => {}
+        );
+      }, 250);
+    }
+  }
+
+  _onPtzActionRelease(_action, ev) {
+    if (
+      ev?.pointerId !== undefined &&
+      this._ptzHoldPointerId !== null &&
+      ev.pointerId !== this._ptzHoldPointerId
+    ) {
+      return;
+    }
+    try { ev?.currentTarget?.releasePointerCapture?.(ev.pointerId); } catch (_) {}
+    this._stopPtzHold();
+  }
+
+  // Virtual joystick: pointerdown on the base, drag the thumb, release
+  // to snap back. Each pointer frame:
+  //   1. Compute direction + magnitude via `joystickResolve`.
+  //   2. If direction changed (or moved out of dead-zone), route through
+  //      `_onPtzPress` — that handler already does the stop-then-start
+  //      dance for continuous-types and tracks the polling interval for
+  //      pulse-types. No new dispatch path required.
+  //   3. If direction is null (thumb back in dead-zone mid-drag), tear
+  //      down the current hold so the camera stops moving.
+  //   4. Update `_ptzJoystickThumb` (clamped to the base circle) so the
+  //      thumb-disc visually follows the finger.
+  // Geometry is captured once at pointerdown — the joystick element doesn't
+  // move during a drag, and `getBoundingClientRect()` forces a layout flush
+  // that we'd otherwise pay on every pointermove frame.
+  _ptzJoystickGeometryFrom(target) {
+    if (!target?.getBoundingClientRect) return null;
+    const rect = target.getBoundingClientRect();
+    return {
+      cx: rect.left + rect.width / 2,
+      cy: rect.top + rect.height / 2,
+      r: Math.min(rect.width, rect.height) / 2,
+    };
+  }
+
+  _onPtzJoystickStart(ev, maxOffset) {
+    const g = this._ptzJoystickGeometryFrom(ev?.currentTarget);
+    if (!g) return;
+    this._ptzJoystickPointerId = ev?.pointerId ?? null;
+    this._ptzJoystickGeom = g;
+    try { ev.currentTarget?.setPointerCapture?.(ev.pointerId); } catch (_) {}
+    this._onPtzJoystickUpdate(ev, g, maxOffset);
+  }
+
+  _onPtzJoystickMove(ev, maxOffset) {
+    if (this._ptzJoystickPointerId === null) return;
+    if (ev.pointerId !== this._ptzJoystickPointerId) return;
+    const g = this._ptzJoystickGeom;
+    if (!g) return;
+    this._onPtzJoystickUpdate(ev, g, maxOffset);
+  }
+
+  _onPtzJoystickEnd(ev) {
+    if (this._ptzJoystickPointerId === null) return;
+    if (ev?.pointerId !== undefined && ev.pointerId !== this._ptzJoystickPointerId) return;
+    try { ev?.currentTarget?.releasePointerCapture?.(ev.pointerId); } catch (_) {}
+    this._ptzJoystickPointerId = null;
+    this._ptzJoystickGeom = null;
+    this._ptzJoystickThumb = { x: 0, y: 0 };
+    this._ptzJoystickMagnitude = null;
+    this._ptzJoystickAxes = null;
+    this._stopPtzHold();
+    this.requestUpdate();
+  }
+
+  // Recompute direction + thumb position from a pointer event. Shared by
+  // start and move so the lifecycle stays consistent (initial press is
+  // treated identically to mid-drag).
+  _onPtzJoystickUpdate(ev, g, maxOffset) {
+    const { direction, horizontal, vertical, magnitude } = joystickResolve(
+      g.cx,
+      g.cy,
+      g.r,
+      ev.clientX ?? g.cx,
+      ev.clientY ?? g.cy
+    );
+    // Track magnitude + per-axis components before any dispatch so
+    // `_ptzPanCall` reads the up-to-date values — both for the initial
+    // press and for mid-drag moves that don't switch direction but do
+    // change how hard or which way the user is pulling.
+    this._ptzJoystickMagnitude = direction ? magnitude : null;
+    this._ptzJoystickAxes = direction ? { horizontal, vertical } : null;
+    if (!direction) {
+      // Thumb back inside dead-zone — halt any active hold but stay in
+      // joystick capture mode so subsequent moves resume cleanly.
+      if (this._ptzHoldDirection || this._ptzHoldAction) this._stopPtzHold();
+    } else if (direction !== this._ptzHoldDirection) {
+      this._onPtzPress(direction, ev);
+    }
+    // Clamp thumb to the base circle minus half the thumb radius so the
+    // disc never leaves the ring. Round to integer pixels — sub-pixel
+    // jitter from the touch driver would otherwise force a re-render on
+    // every frame even when the user's finger is parked.
+    const dx = (ev.clientX ?? g.cx) - g.cx;
+    const dy = (ev.clientY ?? g.cy) - g.cy;
+    const dist = Math.hypot(dx, dy);
+    let nx, ny;
+    if (dist <= maxOffset || dist === 0) {
+      nx = Math.round(dx);
+      ny = Math.round(dy);
+    } else {
+      const k = maxOffset / dist;
+      nx = Math.round(dx * k);
+      ny = Math.round(dy * k);
+    }
+    const prev = this._ptzJoystickThumb;
+    if (!prev || prev.x !== nx || prev.y !== ny) {
+      this._ptzJoystickThumb = { x: nx, y: ny };
+      this.requestUpdate();
+    }
+  }
+
+  // Home is a one-shot (no press-and-hold). The dispatcher ignores
+  // phase:"stop" for home, so we only emit start.
+  _onPtzHome() {
+    const cameraId = this._getEffectiveLiveCamera();
+    const ptz = getPtzConfig(this.config, cameraId);
+    if (!ptz || !this._hass || !cameraId) return;
+    this._ptzHaptic(null);
+    // Brief "just pressed" highlight — Home is one-shot so we can't key
+    // the visual off a held-state. 220 ms matches the eye's perception
+    // threshold for a confirmed tap.
+    this._ptzHomePressed = true;
+    if (this._ptzHomePressedTimer) clearTimeout(this._ptzHomePressedTimer);
+    this._ptzHomePressedTimer = setTimeout(() => {
+      this._ptzHomePressed = false;
+      this._ptzHomePressedTimer = null;
+      this.requestUpdate();
+    }, 220);
+    this.requestUpdate();
+    const speed = this._currentPtzSpeed(ptz);
+    ptzDispatchAction(this._hass, cameraId, ptz, "home", "start", speed).catch((err) => {
+      try { console.warn("CGC PTZ home failed:", err); } catch (_) {}
+    });
+  }
+
+  // Tear-down shared between pointerup, direction-switch, togglePtz-off,
+  // visibilitychange and disconnectedCallback. Always fires a `stop` phase
+  // call so continuous-types halt cleanly — for both pan and zoom.
+  _stopPtzHold() {
+    if (this._ptzHoldTimer) {
+      clearInterval(this._ptzHoldTimer);
+      this._ptzHoldTimer = null;
+    }
+    const heldDir = this._ptzHoldDirection;
+    const heldAction = this._ptzHoldAction;
+    this._ptzHoldDirection = null;
+    this._ptzHoldAction = null;
+    this._ptzHoldPointerId = null;
+    if (heldDir) this._ptzPanCall(heldDir, "stop");
+    if (heldAction) {
+      const cameraId = this._getEffectiveLiveCamera();
+      const ptz = getPtzConfig(this.config, cameraId);
+      if (ptz && this._hass && cameraId) {
+        const speed = this._currentPtzSpeed(ptz);
+        ptzDispatchAction(this._hass, cameraId, ptz, heldAction, "stop", speed).catch(() => {});
+      }
+    }
+  }
+
+  _renderGalleryPillById(id, ctx) {
+    switch (id) {
+      case "object_indicator": {
+        const obj = this._objectForSrc(ctx.selected);
+        const icon = obj ? objectIcon(obj, this._customIcons, "mdi:magnify") : null;
+        if (!icon) return null;
+        return html`<div class="gallery-pill live-pill-btn gallery-pill--info">
+          <ha-icon icon="${icon}"></ha-icon>
+        </div>`;
+      }
+
+      case "index_counter":
+        return html`<div class="gallery-pill live-pill-btn gallery-pill--wide gallery-pill--info">
+          <span>${ctx.idx + 1}/${ctx.filtered.length}</span>
+        </div>`;
+
+      case "autoplay_all": {
+        const active = !!this._galleryAutoplayAll;
+        return html`
+          <button
+            class="gallery-pill live-pill-btn ${active ? "active" : ""}"
+            title=${active ? "Stop auto-play" : "Auto-play all clips"}
+            aria-pressed=${active ? "true" : "false"}
+            @pointerdown=${(e) => e.stopPropagation()}
+            @click=${(e) => { e.stopPropagation(); this._toggleAutoplayAll(); this._showPills(); }}
+          >
+            <ha-icon icon="mdi:playlist-play"></ha-icon>
+          </button>
+        `;
+      }
+
+      case "playback_speed": {
+        if (!ctx.selectedIsVideo) return null;
+        const sp = this._galleryPlaybackSpeed || 1;
+        const label = sp === 0.5 ? ".5×" : sp === 2 ? "2×" : "1×";
+        return html`
+          <button
+            class="gallery-pill live-pill-btn ${sp !== 1 ? "active" : ""}"
+            title="Playback speed (tap to cycle)"
+            @pointerdown=${(e) => e.stopPropagation()}
+            @click=${(e) => { e.stopPropagation(); this._cyclePlaybackSpeed(); this._showPills(); }}
+          >
+            <span class="vid-speed-label">${label}</span>
+          </button>
+        `;
+      }
+
+      case "mute":
+        if (!ctx.selectedIsVideo) return null;
+        return html`
+          <button
+            class="gallery-pill live-pill-btn"
+            @pointerdown=${(e) => e.stopPropagation()}
+            @click=${(e) => {
+              e.stopPropagation();
+              this._toggleGalleryMute();
+            }}
+          >
+            <ha-icon icon=${this._galleryMuted ? "mdi:volume-off" : "mdi:volume-high"}></ha-icon>
+          </button>
+        `;
+
+      case "pip": {
+        if (!ctx.selectedIsVideo) return null;
+        if (!document.pictureInPictureEnabled) return null;
+        const active = !!this._galleryPipActive;
+        return html`
+          <button
+            class="gallery-pill live-pill-btn ${active ? "active" : ""}"
+            title="Picture-in-Picture"
+            aria-pressed=${active ? "true" : "false"}
+            @pointerdown=${(e) => e.stopPropagation()}
+            @click=${(e) => {
+              e.stopPropagation();
+              this._toggleGalleryPip();
+            }}
+          >
+            <ha-icon icon="mdi:picture-in-picture-bottom-right"></ha-icon>
+          </button>
+        `;
+      }
+
+      case "fullscreen":
+        if (!(ctx.selectedHasUrl && !ctx.noResultsForFilter)) return null;
+        return html`
+          <button
+            class="gallery-pill live-pill-btn"
+            @pointerdown=${(e) => e.stopPropagation()}
+            @click=${(e) => {
+              e.stopPropagation();
+              this._openImageFullscreen();
+            }}
+          >
+            <ha-icon icon="mdi:fullscreen"></ha-icon>
+          </button>
+        `;
+
+      case "video_time":
+        // Rendered as a floating bottom-right overlay, not inside the
+        // pill row — see the video-controls block in the preview
+        // template. Listed in the catalog purely for the on/off toggle.
+        return null;
+
+      default:
+        return null;
+    }
+  }
+
+  _renderLivePillById(id) {
+    switch (id) {
+      case "mute":
+        return html`<button class="gallery-pill live-pill-btn" @pointerdown=${(e) => e.stopPropagation()} @click=${(e) => { e.stopPropagation(); this._toggleLiveMute(); }}>
+          <ha-icon icon=${this._liveMuted ? "mdi:volume-off" : "mdi:volume-high"}></ha-icon>
+        </button>`;
+
+      case "picker":
+        if (this._getLiveCameraOptions().length <= 1) return null;
+        return html`<button class="gallery-pill live-pill-btn" title="Switch camera" @pointerdown=${(e) => e.stopPropagation()} @click=${(e) => { e.stopPropagation(); this._openLivePicker(); }}>
+          <ha-icon icon="mdi:cctv"></ha-icon>
+        </button>`;
+
+      case "pip": {
+        if (!document.pictureInPictureEnabled) return null;
+        const active = !!this._livePipActive;
+        return html`<button class="gallery-pill live-pill-btn ${active ? "active" : ""}" title="Picture-in-Picture" aria-pressed=${active ? "true" : "false"} @pointerdown=${(e) => e.stopPropagation()} @click=${(e) => { e.stopPropagation(); this._toggleLivePip(); }}>
+          <ha-icon icon="mdi:picture-in-picture-bottom-right"></ha-icon>
+        </button>`;
+      }
+
+      case "fullscreen":
+        return html`<button class="gallery-pill live-pill-btn" @pointerdown=${(e) => e.stopPropagation()} @click=${(e) => { e.stopPropagation(); this._toggleLiveFullscreen(); }}>
+          <ha-icon icon=${document.fullscreenElement || document.webkitFullscreenElement || this._liveFullscreen ? "mdi:fullscreen-exit" : "mdi:fullscreen"}></ha-icon>
+        </button>`;
+
+      case "refresh":
+        return html`<button class="gallery-pill live-pill-btn" title="Refresh stream" @pointerdown=${(e) => e.stopPropagation()} @click=${(e) => { e.stopPropagation(); this._refreshLiveStream(); }}>
+          <ha-icon icon="mdi:refresh"></ha-icon>
+        </button>`;
+
+      default:
+        return null;
+    }
   }
 
   _renderLiveInner() {
@@ -2427,7 +3452,6 @@ class CameraGalleryCard extends LitElement {
 
     const wasLive = this._viewMode === "live";
     this._viewMode = mode;
-    this._showNav = false;
 
     if (mode === "live" && navigator.maxTouchPoints > 0) {
       this._showPills(5000);
@@ -3239,6 +4263,7 @@ class CameraGalleryCard extends LitElement {
   }
 
 
+
   _setObjectFilter(next) {
     const clicked = String(next || "").toLowerCase().trim();
     if (!clicked) return;
@@ -3444,7 +4469,6 @@ class CameraGalleryCard extends LitElement {
     this._selectedIndex = next;
     this._pendingScrollToI = this._selectedIndex;
     this.requestUpdate();
-    this._showNavChevrons();
     this._showPills();
   }
 
@@ -3456,7 +4480,6 @@ class CameraGalleryCard extends LitElement {
     this._selectedIndex = prev;
     this._pendingScrollToI = this._selectedIndex;
     this.requestUpdate();
-    this._showNavChevrons();
     this._showPills();
   }
 
@@ -3510,8 +4533,25 @@ class CameraGalleryCard extends LitElement {
     if (!this._swiping) {
       if (this.config?.clean_mode && !this._previewOpen) return;
       if (this._selectMode) return;
-      this._showNavChevrons();
-      this._showPills();
+      // Don't toggle when the tap landed on an actual control — its own
+      // click handler should fire and the pills should stay visible so
+      // the user can keep interacting. _showPills() resets the timer.
+      const path = e.composedPath?.() || [];
+      const onControl =
+        this._pathHasClass(path, "gallery-pill") ||
+        this._pathHasClass(path, "pnavbtn") ||
+        this._pathHasClass(path, "pnav") ||
+        this._pathHasClass(path, "vid-bigplay") ||
+        this._pathHasClass(path, "vid-progress");
+      if (onControl) {
+        this._showPills();
+        return;
+      }
+      if (this._previewVideoEl && this._pillsVisible) {
+        this._hidePillsNow();
+      } else {
+        this._showPills();
+      }
       return;
     }
 
@@ -3525,8 +4565,22 @@ class CameraGalleryCard extends LitElement {
     const dy = endY - this._swipeStartY;
 
     if (Math.abs(dx) < 10 && Math.abs(dy) < 10) {
-      this._showNavChevrons();
-      this._showPills();
+      const path = e.composedPath?.() || [];
+      const onControl =
+        this._pathHasClass(path, "gallery-pill") ||
+        this._pathHasClass(path, "pnavbtn") ||
+        this._pathHasClass(path, "pnav") ||
+        this._pathHasClass(path, "vid-bigplay") ||
+        this._pathHasClass(path, "vid-progress");
+      if (onControl) {
+        this._showPills();
+        return;
+      }
+      if (this._previewVideoEl && this._pillsVisible) {
+        this._hidePillsNow();
+      } else {
+        this._showPills();
+      }
       return;
     }
 
@@ -3544,7 +4598,6 @@ class CameraGalleryCard extends LitElement {
 
     this._pendingScrollToI = this._selectedIndex ?? 0;
     this.requestUpdate();
-    this._showNavChevrons();
     this._showPills();
   }
 
@@ -3691,20 +4744,15 @@ class CameraGalleryCard extends LitElement {
 
     const liveEntityChanged =
       !prevConfig ||
-      prevConfig.live_camera_entity !== nextConfig.live_camera_entity ||
-      prevConfig.live_stream_url !== nextConfig.live_stream_url ||
-      JSON.stringify(prevConfig.live_stream_urls) !==
-        JSON.stringify(nextConfig.live_stream_urls);
+      JSON.stringify(prevConfig.live_cameras) !==
+        JSON.stringify(nextConfig.live_cameras);
     if (liveEntityChanged) {
       const liveOptions = this._getLiveCameraOptions();
       const validSelected =
         this._liveSelectedCamera &&
         liveOptions.some((x) => x === this._liveSelectedCamera);
       if (!validSelected && liveOptions.length > 0) {
-        this._liveSelectedCamera =
-          (nextConfig.live_camera_entity
-            ? nextConfig.live_camera_entity
-            : liveOptions[0]) || "";
+        this._liveSelectedCamera = liveOptions[0] || "";
       }
       if (prevConfig) {
         this._aspectRatio = this._parseAspectRatio(nextConfig.aspect_ratio);
@@ -3718,13 +4766,14 @@ class CameraGalleryCard extends LitElement {
       this._aspectRatio = this._parseAspectRatio(nextConfig.aspect_ratio);
       const hasMedia = nextConfig.entities.length > 0 || nextConfig.media_sources.length > 0;
       const startMode = nextConfig.start_mode;
-      if (startMode === "live" && nextConfig.live_enabled && nextConfig.live_camera_entity) {
+      const hasLiveCam = Array.isArray(nextConfig.live_cameras) && nextConfig.live_cameras.length > 0;
+      if (startMode === "live" && nextConfig.live_enabled && hasLiveCam) {
         this._viewMode = "live";
       } else if (startMode === "gallery") {
         this._viewMode = "media";
       } else {
         this._viewMode =
-          nextConfig.live_enabled && nextConfig.live_camera_entity && !hasMedia
+          nextConfig.live_enabled && hasLiveCam && !hasMedia
             ? "live"
             : "media";
       }
@@ -3753,7 +4802,7 @@ class CameraGalleryCard extends LitElement {
     }
 
     const liveCameraConfigChanged = changedKeys.some((k) =>
-      ["live_camera_entity", "live_enabled"].includes(k)
+      ["live_cameras", "live_enabled"].includes(k)
     );
 
     if (liveCameraConfigChanged) {
@@ -3788,6 +4837,12 @@ class CameraGalleryCard extends LitElement {
   updated(changedProps) {
     const dayChanged = changedProps.has("_selectedDay");
     const filterChanged = changedProps.has("_objectFilters");
+
+    // Start/stop the talkback-bar waveform loop based on mic state.
+    if (changedProps.has("_micState")) {
+      if (this._micState === "active") this._startMicWaveLoop();
+      else this._stopMicWaveLoop();
+    }
 
     if (this._forceThumbReset || dayChanged || filterChanged) {
       this._forceThumbReset = false;
@@ -4101,39 +5156,54 @@ class CameraGalleryCard extends LitElement {
 
     const fixedMode = this.config.controls_mode === "fixed";
 
-    const galleryPillsLeft = html`
-      <div class="gallery-pills-left">
-        ${previewGated ? html`
-          <button class="gallery-pill live-pill-btn" @pointerdown=${(e) => e.stopPropagation()} @click=${(e) => { e.stopPropagation(); this._setViewMode("media"); this._previewOpen = false; this.requestUpdate(); }}>
-            <ha-icon icon="mdi:arrow-left"></ha-icon>
-          </button>
-        ` : html``}
-      </div>
-    `;
-    const galleryPillsCenter = html`
-      <div class="gallery-pills-center">
-        ${(() => {
-          const obj = this._objectForSrc(selected);
-          const icon = obj ? objectIcon(obj, this._customIcons, "mdi:magnify") : null;
-          if (!icon) return html``;
-          return html`<div class="gallery-pill live-pill-btn" style="flex-shrink:0;width:calc(var(--cgc-pill-size,14px)*1.6 + 2px);height:calc(var(--cgc-pill-size,14px)*1.6 + 2px);padding:0"><ha-icon icon="${icon}"></ha-icon></div>`;
-        })()}
-        <div class="gallery-pill live-pill-btn" style="flex-shrink:0;min-width:calc(var(--cgc-pill-size,14px)*1.6 + 2px);height:calc(var(--cgc-pill-size,14px)*1.6 + 2px);padding:0 8px;overflow:hidden"><span style="font-size:calc(var(--cgc-pill-size,14px) - 6px)">${idx + 1}/${filtered.length}</span></div>
-        ${selectedIsVideo ? html`
-          <button class="gallery-pill live-pill-btn" @pointerdown=${(e) => e.stopPropagation()} @click=${(e) => { e.stopPropagation(); this._toggleGalleryMute(); }}>
-            <ha-icon icon=${this._galleryMuted ? "mdi:volume-off" : "mdi:volume-high"}></ha-icon>
-          </button>
-        ` : html``}
-      </div>
-    `;
-    const galleryPillsRight = html`
-      <div class="gallery-pills-right">
-        ${selectedHasUrl && !noResultsForFilter ? html`
-          <button class="gallery-pill live-pill-btn" style="flex-shrink:0;width:calc(var(--cgc-pill-size,14px)*1.6 + 2px);height:calc(var(--cgc-pill-size,14px)*1.6 + 2px);padding:0" @pointerdown=${(e) => e.stopPropagation()} @click=${(e) => { e.stopPropagation(); this._openImageFullscreen(); }}>
-            <ha-icon icon="mdi:fullscreen"></ha-icon>
-          </button>
-        ` : html``}
-      </div>
+    // Resolve which pills go in the overlay for this render — single
+    // ordered list, sorted by the user's effective `order` (catalog
+    // defaults applied where the user hasn't overridden). See
+    // `src/data/pill-catalog.ts`.
+    const galleryPillCtx = {
+      selected,
+      idx,
+      filtered,
+      previewGated,
+      selectedIsVideo,
+      selectedHasUrl,
+      noResultsForFilter,
+    };
+    const galleryPillSettings = resolvePillSettings(
+      GALLERY_PILL_CATALOG,
+      this.config?.gallery_pills,
+    );
+    const galleryPillIds = sortPillsByOrder(GALLERY_PILL_CATALOG, galleryPillSettings);
+    // Back/close-preview is rendered unconditionally — without it the
+    // user can get stranded in preview mode. Not in the catalog so the
+    // editor can't disable it, and it always sits leftmost in the row.
+    //
+    // No wrapper div here: in overlay mode the outer `.gallery-pills`
+    // div in the render below owns positioning + visibility, and in
+    // fixed mode the pills go straight into `.controls-bar-fixed`. A
+    // wrapper here would nest two `.gallery-pills` elements and the
+    // inner would inherit opacity:0 (no `.visible` class), hiding the
+    // pills completely.
+    const galleryPillsRow = html`
+      ${previewGated
+        ? html`
+            <button
+              class="gallery-pill live-pill-btn"
+              @pointerdown=${(e) => e.stopPropagation()}
+              @click=${(e) => {
+                e.stopPropagation();
+                this._setViewMode("media");
+                this._previewOpen = false;
+                this.requestUpdate();
+              }}
+            >
+              <ha-icon icon="mdi:arrow-left"></ha-icon>
+            </button>
+          `
+        : html``}
+      ${galleryPillIds
+        .map((id) => this._renderGalleryPillById(id, galleryPillCtx))
+        .filter((tpl) => tpl != null)}
     `;
     const livePillsLeft = html`
       <div class="live-pills-left">
@@ -4142,9 +5212,11 @@ class CameraGalleryCard extends LitElement {
             <ha-icon icon="mdi:arrow-left"></ha-icon>
           </button>
         ` : html``}
-        ${this.config.show_camera_title !== false && this.config.controls_mode !== "fixed" ? html`<div class="gallery-pill"><span>${this._friendlyCameraName(this._getEffectiveLiveCamera())}</span></div>` : html``}
+        ${this.config.show_camera_title !== false && this.config.controls_mode !== "fixed" ? html`<div class="gallery-pill gallery-pill--wide gallery-pill--info"><span>${this._friendlyCameraName(this._getEffectiveLiveCamera())}</span></div>` : html``}
       </div>
     `;
+    const livePillSettings = resolvePillSettings(LIVE_PILL_CATALOG, this.config?.live_pills);
+    const livePillIds = sortPillsByOrder(LIVE_PILL_CATALOG, livePillSettings);
     const livePillsRight = html`
       <div class="live-pills-right">
         ${this.config?.live_layout === "grid" && this._liveLayoutOverride === "single" ? html`
@@ -4157,17 +5229,18 @@ class CameraGalleryCard extends LitElement {
             <ha-icon icon="mdi:bug-outline"></ha-icon>
           </button>
         ` : html``}
-        <button class="gallery-pill live-pill-btn" @pointerdown=${(e) => e.stopPropagation()} @click=${(e) => { e.stopPropagation(); this._toggleLiveMute(); }}>
-          <ha-icon icon=${this._liveMuted ? "mdi:volume-off" : "mdi:volume-high"}></ha-icon>
-        </button>
-        ${this._getLiveCameraOptions().length > 1 ? html`
-          <button class="gallery-pill live-pill-btn" @pointerdown=${(e) => e.stopPropagation()} @click=${(e) => { e.stopPropagation(); this._openLivePicker(); }}>
-            <ha-icon icon="mdi:cctv"></ha-icon>
+        ${getPtzConfig(this.config, this._getEffectiveLiveCamera()) ? html`
+          <button
+            class="gallery-pill live-pill-btn ${this._ptzActive ? "active" : ""}"
+            title=${this._ptzActive ? "Exit PTZ" : "PTZ controls"}
+            aria-pressed=${this._ptzActive ? "true" : "false"}
+            @pointerdown=${(e) => e.stopPropagation()}
+            @click=${(e) => { e.stopPropagation(); this._togglePtz(); }}
+          >
+            <ha-icon icon="mdi:arrow-all"></ha-icon>
           </button>
         ` : html``}
-        <button class="gallery-pill live-pill-btn" @pointerdown=${(e) => e.stopPropagation()} @click=${(e) => { e.stopPropagation(); this._toggleLiveFullscreen(); }}>
-          <ha-icon icon=${document.fullscreenElement || document.webkitFullscreenElement || this._liveFullscreen ? "mdi:fullscreen-exit" : "mdi:fullscreen"}></ha-icon>
-        </button>
+        ${livePillIds.map((id) => this._renderLivePillById(id)).filter((tpl) => tpl != null)}
         ${(this.config.menu_buttons ?? []).length ? html`
           <div class="live-hamburger-wrap" @pointerdown=${(e) => e.stopPropagation()}>
             <button class="gallery-pill live-pill-btn ${this._hamburgerOpen ? 'active' : ''}" @click=${(e) => { e.stopPropagation(); this._hamburgerOpen = !this._hamburgerOpen; if (!this._hamburgerOpen) this._showPills(2500); }}>
@@ -4235,10 +5308,10 @@ class CameraGalleryCard extends LitElement {
               }
               this._onPreviewPointerDown(e);
             }}
-            @pointermove=${(e) => { if (e.pointerType === "mouse" && !this._swiping) { this._showNavChevrons(); } if (this._swiping && e.isPrimary !== false) { this._swipeCurX = e.clientX; this._swipeCurY = e.clientY; } }}
+            @pointermove=${(e) => { if (this._swiping && e.isPrimary !== false) { this._swipeCurX = e.clientX; this._swipeCurY = e.clientY; } }}
             @pointerup=${(e) => this._onPreviewPointerUp(e, filtered.length)}
             @pointercancel=${(e) => this._onPreviewPointerUp(e, filtered.length)}
-            @pointerenter=${(e) => { if (e.pointerType === "mouse") { this._showPillsHover(); this._showNavChevrons(); } }}
+            @pointerenter=${(e) => { if (e.pointerType === "mouse") this._showPillsHover(); }}
             @pointerleave=${(e) => { if (e.pointerType === "mouse") this._hidePillsHover(); }}
             @click=${(e) => this._onPreviewClick(e)}
           >
@@ -4253,7 +5326,7 @@ class CameraGalleryCard extends LitElement {
                     : html`<img class="pimg" src=${selectedUrl} alt="" />`}
             ${this._hasLiveConfig() ? html`<div id="live-card-host" class="live-card-host${isLive ? '' : ' live-host-hidden'}"></div>` : html``}
 
-            ${!noResultsForFilter && !isLive && filtered.length > 1 && this._showNav ? html`
+            ${!noResultsForFilter && !isLive && filtered.length > 1 && (this._pillsVisible || this.config?.persistent_controls) ? html`
               <div class="pnav">
                 <button class="pnavbtn left" ?disabled=${idx <= 0} @click=${(e) => { e.stopPropagation(); this._navPrev(); }}>
                   <ha-icon icon="mdi:chevron-left"></ha-icon>
@@ -4276,10 +5349,42 @@ class CameraGalleryCard extends LitElement {
             ` : html``}
 
             ${!isLive && !fixedMode && tsPosClass !== "hidden" ? html`
-              <div class="gallery-pills ${tsPosClass} ${this._pillsVisible || this.config?.persistent_controls ? "visible" : ""}">
-                ${galleryPillsLeft}${galleryPillsCenter}${galleryPillsRight}
+              <div class="gallery-pills align-${this.config?.gallery_pills_align || "center"} ${tsPosClass} ${this._pillsVisible || this.config?.persistent_controls ? "visible" : ""}">
+                ${galleryPillsRow}
               </div>
             ` : html``}
+            ${!isLive && selectedIsVideo && selectedHasUrl && !noResultsForFilter ? (() => {
+              const dur = this._galleryDuration || 0;
+              const pct = dur > 0 ? Math.max(0, Math.min(100, (this._galleryCurrentTime / dur) * 100)) : 0;
+              const visible = this._pillsVisible || this.config?.persistent_controls;
+              const cur = formatVideoTime(this._galleryCurrentTime || 0);
+              const durStr = dur > 0 ? formatVideoTime(dur) : "—:—";
+              // Time read-out is in the pill catalog purely so it can be
+              // toggled on/off — it renders here (bottom-right) regardless
+              // of catalog order. Reordering it in the editor has no visual
+              // effect by design.
+              const timeEnabled = galleryPillSettings.get("video_time")?.enabled !== false;
+              return html`
+                <button
+                  class="vid-bigplay ${visible ? "visible" : ""}"
+                  title=${this._galleryPlaying ? "Pause" : "Play"}
+                  aria-pressed=${this._galleryPlaying ? "true" : "false"}
+                  @pointerdown=${(e) => e.stopPropagation()}
+                  @pointerup=${(e) => e.stopPropagation()}
+                  @click=${(e) => { e.stopPropagation(); this._toggleGalleryPlayPause(); this._showPills(); }}
+                >
+                  <ha-icon icon=${this._galleryPlaying ? "mdi:pause" : "mdi:play"}></ha-icon>
+                </button>
+                ${timeEnabled ? html`
+                  <div class="vid-time ${visible ? "visible" : ""}">
+                    <span>${cur} / ${durStr}</span>
+                  </div>
+                ` : html``}
+                <div class="vid-progress ${visible ? "visible" : ""}" @pointerdown=${(e) => this._onVidProgressDown(e)} @pointerup=${(e) => e.stopPropagation()}>
+                  <div class="vid-progress-fill" style="width:${pct}%"></div>
+                </div>
+              `;
+            })() : html``}
             ${isLive && !isGridLayout(this.config, this._liveLayoutOverride) && !fixedMode ? html`
               <div class="live-controls-bar ${tsPosClass} ${this._pillsVisible || this._showLivePicker || this.config?.persistent_controls ? "visible" : ""}">
                 <div class="live-controls-main">
@@ -4290,6 +5395,7 @@ class CameraGalleryCard extends LitElement {
             ` : html``}
             ${isLive && !isGridLayout(this.config, this._liveLayoutOverride) ? hamburgerPanel : html``}
             ${isLive && !isGridLayout(this.config, this._liveLayoutOverride) ? this._renderMicTalkbackBar() : html``}
+            ${isLive && !isGridLayout(this.config, this._liveLayoutOverride) ? this._renderPtzOverlay() : html``}
           </div>
         `
       : html``;
@@ -4301,7 +5407,7 @@ class CameraGalleryCard extends LitElement {
             ${livePillsLeft}${livePillsRight}
           </div>
         ` : tsPosClass !== "hidden" && !isLive ? html`
-          ${galleryPillsLeft}${galleryPillsCenter}${galleryPillsRight}
+          ${galleryPillsRow}
         ` : html``}
       </div>
     ` : html``;
@@ -4625,72 +5731,84 @@ class CameraGalleryCard extends LitElement {
             ? html`${previewBlock}${controlsFixedBlock}${showGalleryControls && !fixedMode ? html`<div class="divider"></div>` : html``}`
             : html``}
 
-          ${showGalleryControls ? html`
-            <div class="topbar">
-              ${this.config?.show_today !== false ? html`
-                <div class="seg" role="tablist" aria-label="Filter">
-                  <button
-                    class="segbtn ${isToday ? "on" : ""}"
-                    @click=${() => {
-                      this._selectedDay = newestDay;
-                      this._selectedIndex = 0;
-                      this._pendingScrollToI = null;
-                      this._forceThumbReset = true;
-                      this._exitSelectMode();
-                      if (this.config?.clean_mode) this._previewOpen = false;
-                      if (this._isLiveActive()) this._setViewMode("media");
-                      this.requestUpdate();
-                    }}
-                    title="Today"
-                    role="tab"
-                    aria-selected=${isToday}
-                  >
-                    <span>Today</span>
-                  </button>
+          ${showGalleryControls ? (() => {
+            // Order from `toolbar_order` config; default to catalog order.
+            // Enabled state stays in the existing `show_*` keys.
+            const orderMap = (this.config?.toolbar_order && typeof this.config.toolbar_order === "object")
+              ? this.config.toolbar_order : {};
+            const toolbarIds = [...TOOLBAR_CATALOG]
+              .map((e) => ({ id: e.id, order: typeof orderMap[e.id] === "number" ? orderMap[e.id] : e.defaultOrder }))
+              .sort((a, b) => a.order - b.order || TOOLBAR_CATALOG.findIndex(c => c.id === a.id) - TOOLBAR_CATALOG.findIndex(c => c.id === b.id))
+              .map((x) => x.id);
+            const datepillBlock = useDatePicker ? html`
+              <div class="datepill has-filters" role="group" aria-label="Day navigation">
+                <div class="dateinfo datepick" @click=${() => this._openDatePicker(days)} title="Select date">
+                  <span class="txt">${currentForNav ? formatDay(currentForNav, this._hass?.locale) : "—"}</span>
                 </div>
-              ` : html``}
-
-              ${useDatePicker ? html`
-                <div class="datepill has-filters" role="group" aria-label="Day navigation">
-                  <div class="dateinfo datepick" @click=${() => this._openDatePicker(days)} title="Select date">
-                    <span class="txt">${currentForNav ? formatDay(currentForNav, this._hass?.locale) : "—"}</span>
-                  </div>
+              </div>
+            ` : html`
+              <div class="datepill" role="group" aria-label="Day navigation">
+                <button class="iconbtn" ?disabled=${!canPrev} @click=${() => this._stepDay(+1, days, currentForNav)} aria-label="Previous day" title="Previous day">
+                  <ha-icon icon="mdi:chevron-left"></ha-icon>
+                </button>
+                <div class="dateinfo" title="Selected day">
+                  <span class="txt">${currentForNav ? formatDay(currentForNav, this._hass?.locale) : "—"}</span>
                 </div>
-              ` : html`
-                <div class="datepill" role="group" aria-label="Day navigation">
-                  <button class="iconbtn" ?disabled=${!canPrev} @click=${() => this._stepDay(+1, days, currentForNav)} aria-label="Previous day" title="Previous day">
-                    <ha-icon icon="mdi:chevron-left"></ha-icon>
-                  </button>
-                  <div class="dateinfo" title="Selected day">
-                    <span class="txt">${currentForNav ? formatDay(currentForNav, this._hass?.locale) : "—"}</span>
-                  </div>
-                  <button class="iconbtn" ?disabled=${!canNext} @click=${() => this._stepDay(-1, days, currentForNav)} aria-label="Next day" title="Next day">
-                    <ha-icon icon="mdi:chevron-right"></ha-icon>
-                  </button>
-                </div>
-              `}
-
-              ${showTypeFilter && this.config?.show_media_filter !== false ? html`
-                <div class="seg" style="${isLive ? "opacity:0.35;pointer-events:none" : ""}">
-                  <button class="segbtn ${this._filterVideo ? "on" : ""}" @click=${() => this._toggleFilterVideo()} title="Videos" style="border-radius:10px 0 0 10px">
-                    <ha-icon icon="mdi:video" style="--mdc-icon-size:16px"></ha-icon>
-                  </button>
-                  <button class="segbtn ${this._filterImage ? "on" : ""}" @click=${() => this._toggleFilterImage()} title="Photos" style="border-radius:0 10px 10px 0">
-                    <ha-icon icon="mdi:image" style="--mdc-icon-size:16px"></ha-icon>
-                  </button>
-                </div>
-              ` : html``}
-
-              ${this.config?.show_favorite !== false ? html`
-                <div class="seg">
-                  <button class="segbtn ${this._filterFavorites ? "on" : ""}" @click=${() => this._toggleFilterFavorites()} title="Favorites" style="border-radius:10px">
-                    <ha-icon icon="mdi:star" style="--mdc-icon-size:16px"></ha-icon>
-                  </button>
-                </div>
-              ` : html``}
-
-              ${showLiveToggle && this.config?.show_live !== false
-                ? html`
+                <button class="iconbtn" ?disabled=${!canNext} @click=${() => this._stepDay(-1, days, currentForNav)} aria-label="Next day" title="Next day">
+                  <ha-icon icon="mdi:chevron-right"></ha-icon>
+                </button>
+              </div>
+            `;
+            const renderToolbarBtn = (id) => {
+              switch (id) {
+                case "today":
+                  if (this.config?.show_today === false) return null;
+                  return html`
+                    <div class="seg" role="tablist" aria-label="Filter">
+                      <button
+                        class="segbtn ${isToday ? "on" : ""}"
+                        @click=${() => {
+                          this._selectedDay = newestDay;
+                          this._selectedIndex = 0;
+                          this._pendingScrollToI = null;
+                          this._forceThumbReset = true;
+                          this._exitSelectMode();
+                          if (this.config?.clean_mode) this._previewOpen = false;
+                          if (this._isLiveActive()) this._setViewMode("media");
+                          this.requestUpdate();
+                        }}
+                        title="Today"
+                        role="tab"
+                        aria-selected=${isToday}
+                      >
+                        <span>Today</span>
+                      </button>
+                    </div>
+                  `;
+                case "media_filter":
+                  if (!(showTypeFilter && this.config?.show_media_filter !== false)) return null;
+                  return html`
+                    <div class="seg" style="${isLive ? "opacity:0.35;pointer-events:none" : ""}">
+                      <button class="segbtn ${this._filterVideo ? "on" : ""}" @click=${() => this._toggleFilterVideo()} title="Videos" style="border-radius:10px 0 0 10px">
+                        <ha-icon icon="mdi:video" style="--mdc-icon-size:16px"></ha-icon>
+                      </button>
+                      <button class="segbtn ${this._filterImage ? "on" : ""}" @click=${() => this._toggleFilterImage()} title="Photos" style="border-radius:0 10px 10px 0">
+                        <ha-icon icon="mdi:image" style="--mdc-icon-size:16px"></ha-icon>
+                      </button>
+                    </div>
+                  `;
+                case "favorite":
+                  if (this.config?.show_favorite === false) return null;
+                  return html`
+                    <div class="seg">
+                      <button class="segbtn ${this._filterFavorites ? "on" : ""}" @click=${() => this._toggleFilterFavorites()} title="Favorites" style="border-radius:10px">
+                        <ha-icon icon="mdi:star" style="--mdc-icon-size:16px"></ha-icon>
+                      </button>
+                    </div>
+                  `;
+                case "live":
+                  if (!(showLiveToggle && this.config?.show_live !== false)) return null;
+                  return html`
                     <div class="seg">
                       <button
                         class="segbtn livebtn ${isLive ? "on" : ""}"
@@ -4704,10 +5822,25 @@ class CameraGalleryCard extends LitElement {
                         <span>LIVE</span>
                       </button>
                     </div>
-                  `
-                : html``}
-            </div>
-
+                  `;
+                default:
+                  return null;
+              }
+            };
+            // Datepill anchored after the first enabled toolbar button if
+            // any, otherwise renders first. Preserves the original layout
+            // (Today + Datepill at the left) when defaults are in play.
+            const rendered = toolbarIds.map((id) => ({ id, tpl: renderToolbarBtn(id) })).filter((x) => x.tpl != null);
+            const firstIdx = rendered.length > 0 ? 0 : -1;
+            return html`
+              <div class="topbar">
+                ${firstIdx >= 0 ? rendered[firstIdx].tpl : html``}
+                ${datepillBlock}
+                ${rendered.slice(firstIdx + 1).map((x) => x.tpl)}
+              </div>
+            `;
+          })() : html``}
+          ${showGalleryControls ? html`
             ${visibleObjectFilters.length
               ? html`
                   <div class="divider"></div>
@@ -4843,6 +5976,8 @@ const CGC_ICONS = {
   'mdi:link-variant': 'M10.59,13.41C11,13.8 11,14.44 10.59,14.83C10.2,15.22 9.56,15.22 9.17,14.83C7.22,12.88 7.22,9.71 9.17,7.76V7.76L12.71,4.22C14.66,2.27 17.83,2.27 19.78,4.22C21.73,6.17 21.73,9.34 19.78,11.29L18.29,12.78C18.3,11.96 18.17,11.14 17.89,10.36L18.36,9.88C19.54,8.71 19.54,6.81 18.36,5.64C17.19,4.46 15.29,4.46 14.12,5.64L10.59,9.17C9.41,10.34 9.41,12.24 10.59,13.41M13.41,9.17C13.8,8.78 14.44,8.78 14.83,9.17C16.78,11.12 16.78,14.29 14.83,16.24V16.24L11.29,19.78C9.34,21.73 6.17,21.73 4.22,19.78C2.27,17.83 2.27,14.66 4.22,12.71L5.71,11.22C5.7,12.04 5.83,12.86 6.11,13.65L5.64,14.12C4.46,15.29 4.46,17.19 5.64,18.36C6.81,19.54 8.71,19.54 9.88,18.36L13.41,14.83C14.59,13.66 14.59,11.76 13.41,10.59C13,10.2 13,9.56 13.41,9.17Z',
   'mdi:play-circle-outline': 'M12,2C6.47,2 2,6.47 2,12C2,17.53 6.47,22 12,22C17.53,22 22,17.53 22,12C22,6.47 17.53,2 12,2M12,20C7.59,20 4,16.41 4,12C4,7.59 7.59,4 12,4C16.41,4 20,7.59 20,12C20,16.41 16.41,20 12,20M10,16.5L16,12L10,7.5V16.5Z',
   'mdi:dots-horizontal': 'M16,12A2,2 0 0,1 18,10A2,2 0 0,1 20,12A2,2 0 0,1 18,14A2,2 0 0,1 16,12M10,12A2,2 0 0,1 12,10A2,2 0 0,1 14,12A2,2 0 0,1 12,14A2,2 0 0,1 10,12M4,12A2,2 0 0,1 6,10A2,2 0 0,1 8,12A2,2 0 0,1 6,14A2,2 0 0,1 4,12Z',
+  'mdi:content-copy': 'M19,21H8V7H19M19,5H8A2,2 0 0,0 6,7V21A2,2 0 0,0 8,23H19A2,2 0 0,0 21,21V7A2,2 0 0,0 19,5M16,1H4A2,2 0 0,0 2,3V17H4V3H16V1Z',
+  'mdi:arrow-all': 'M13,11H18L16.5,9.5L17.92,8.08L21.84,12L17.92,15.92L16.5,14.5L18,13H13V18L14.5,16.5L15.92,17.92L12,21.84L8.08,17.92L9.5,16.5L11,18V13H6L7.5,14.5L6.08,15.92L2.16,12L6.08,8.08L7.5,9.5L6,11H11V6L9.5,7.5L8.08,6.08L12,2.16L15.92,6.08L14.5,7.5L13,6V11Z',
 };
 
 function svgIcon(icon, size = 18) {
@@ -4850,6 +5985,57 @@ function svgIcon(icon, size = 18) {
   return `<svg class="cgc-svg-icon" viewBox="0 0 24 24" width="${size}" height="${size}" aria-hidden="true" style="fill:currentColor;flex-shrink:0;display:block"><path d="${path}"/></svg>`;
 }
 
+// Canonical order in which the editor writes config keys back to HA. Every
+// save dispatches a config-changed event with keys reordered to this list;
+// keys not listed land at the end (forward-compat with future fields the
+// list hasn't been updated for). Pure cosmetics — runtime ignores ordering.
+const CGC_CONFIG_KEY_ORDER = [
+  // ─── Card type ───
+  "type",
+  // ─── Source ───
+  "source_mode", "entities", "media_sources", "frigate_url",
+  "path_datetime_format", "max_media",
+  // ─── Gallery ───
+  "start_mode", "preview_position", "preview_height", "object_fit",
+  "controls_mode", "clean_mode", "show_camera_title", "persistent_controls",
+  "autoplay", "auto_muted",
+  "show_today", "show_media_filter", "show_favorite", "show_live",
+  // ─── Live ───
+  "live_enabled", "live_auto_muted", "live_cameras", "live_layout",
+  "live_grid_labels", "live_stream_urls", "live_go2rtc_url",
+  "live_mic_mode", "live_mic_audio_processing",
+  "live_mic_waveform_enabled", "live_mic_waveform_sensitivity",
+  "live_mic_ice_servers", "live_mic_force_relay",
+  "live_ptz_enabled", "live_ptz_position", "live_ptz_speed", "live_ptz_cameras",
+  "menu_buttons", "menu_button_style",
+  // ─── Thumbnails ───
+  "thumb_layout", "thumb_bar_position", "thumb_size", "thumb_sort_order",
+  "thumbnail_frame_pct", "capture_video_thumbnails",
+  // ─── Styling ───
+  "aspect_ratio", "bar_position", "bar_opacity", "talkback_opacity",
+  "chevron_opacity", "pill_size", "pill_gap", "row_gap", "card_height",
+  "style_variables",
+  // ─── Filters / objects ───
+  "object_filters", "object_colors", "entity_filter_map",
+  // ─── Sync / favorites ───
+  "sync_entity",
+  // ─── Delete ───
+  "allow_bulk_delete", "delete_confirm", "delete_service", "frigate_delete_service",
+  // ─── Advanced ───
+  "debug_enabled",
+];
+
+function sortConfigKeysForOutput(config) {
+  const out = {};
+  for (const k of CGC_CONFIG_KEY_ORDER) {
+    if (Object.prototype.hasOwnProperty.call(config, k)) out[k] = config[k];
+  }
+  // Unknown / forward-compat keys keep their existing order, appended.
+  for (const k of Object.keys(config)) {
+    if (!Object.prototype.hasOwnProperty.call(out, k)) out[k] = config[k];
+  }
+  return out;
+}
 
 class CameraGalleryCardEditor extends HTMLElement {
   constructor() {
@@ -4873,6 +6059,10 @@ class CameraGalleryCardEditor extends HTMLElement {
       } catch (_) { /* ignore */ }
       return new Map();
     })();
+    // UI-only override that bypasses the PTZ auto-detect filter in the
+    // Live tab. Lives on the editor instance, not in config — flipping it
+    // shouldn't dirty the saved YAML.
+    this._ptzShowAll = false;
     this._focusState = null;
     this._lastSuggestFingerprint = {
       entities: "",
@@ -4911,6 +6101,7 @@ class CameraGalleryCardEditor extends HTMLElement {
     this._wizardFolder = "";
     this._wizardName = "";
     this._wizardStatus = null;
+
 
     this._editorRendered = false;
   }
@@ -5258,7 +6449,7 @@ class CameraGalleryCardEditor extends HTMLElement {
   _fire() {
     this.dispatchEvent(
       new CustomEvent("config-changed", {
-        detail: { config: { ...this._config } },
+        detail: { config: sortConfigKeysForOutput(this._config) },
         bubbles: true,
         composed: true,
       })
@@ -5500,6 +6691,23 @@ class CameraGalleryCardEditor extends HTMLElement {
     this._mediaBrowserItems = [];
     this._mediaBrowserHistory = [];
     this._scheduleRender();
+  }
+
+  async _exportYamlConfig() {
+    const btn = this.shadowRoot.getElementById("yaml-export-btn");
+    const flash = (msg, isError = false) => {
+      if (!btn) return;
+      const orig = btn.innerHTML;
+      btn.innerHTML = `<span style="color:${isError ? "var(--error-color,#d32f2f)" : "var(--success-color,#2e7d32)"};">${msg}</span>`;
+      setTimeout(() => { if (btn.isConnected) btn.innerHTML = orig; }, 1600);
+    };
+    try {
+      const yaml = jsYaml.dump(this._config || {}, { lineWidth: 100, noRefs: true });
+      await navigator.clipboard.writeText(yaml);
+      flash("Copied to clipboard");
+    } catch (err) {
+      flash(`Copy failed: ${err?.message || err}`, true);
+    }
   }
 
   async _mediaBrowserGoBack() {
@@ -6073,11 +7281,8 @@ class CameraGalleryCardEditor extends HTMLElement {
     const persistentControls = c.persistent_controls === true;
 
     const liveEnabled = c.live_enabled === true;
-    const liveCameraEntity = String(c.live_camera_entity || "").trim();
-    const liveCameraEntities = Array.isArray(c.live_camera_entities) ? c.live_camera_entities : [];
+    const liveCameraEntities = getLiveCameraEntityIds(c);
     const liveLayout = c.live_layout === "grid" ? "grid" : "single";
-    const liveGridLabels = c.live_grid_labels !== false;
-    const liveControlsDisabled = false;
 
 
     const cameraEntities = Object.keys(this._hass?.states || {})
@@ -6544,16 +7749,19 @@ class CameraGalleryCardEditor extends HTMLElement {
     // Open-state lookup order:
     //   1. `_v2OpenSections` map keyed `${tab}.${id}` — set by user toggles
     //   2. fallback to `openByDefault` for first render
-    const v2Collapsible = (id, title, openByDefault, bodyHtml, icon) => {
+    const v2Collapsible = (id, title, openByDefault, bodyHtml, icon, opts) => {
       const key = `${this._activeTab}.${id}`;
       const isOpen = this._v2OpenSections.has(key)
         ? this._v2OpenSections.get(key)
         : openByDefault;
+      const muted = opts?.muted === true;
+      const mutedHint = opts?.mutedHint || "";
       return `
-        <details class="style-section" ${isOpen ? "open" : ""} data-v2-section="${id}">
+        <details class="style-section ${muted ? "muted" : ""}" ${isOpen ? "open" : ""} data-v2-section="${id}">
           <summary class="style-section-head">
             ${icon ? svgIcon(icon, 18) : ``}
             <span>${title}</span>
+            ${muted && mutedHint ? `<em style="margin-left:8px;font-size:11px;opacity:0.6;font-style:italic;">${mutedHint}</em>` : ""}
             <span class="style-chevron">${svgIcon('mdi:chevron-down', 18)}</span>
           </summary>
           <div class="style-section-body">
@@ -6593,49 +7801,51 @@ class CameraGalleryCardEditor extends HTMLElement {
             <button class="seg ${mediaModeOn ? "on" : ""}" data-src="media">Media folders</button>
             <button class="seg ${combinedModeOn ? "on" : ""}" data-src="combined">Combined</button>
           </div>
-
-          ${sensorModeOn ? `
-          <div style="margin-top:10px;">
-            <div class="field" id="entities-field">
-              <textarea id="entities" rows="4" placeholder="Enter one sensor per line"></textarea>
-              <div class="suggestions" id="entities-suggestions" hidden></div>
-            </div>
-            ${invalidEntities.length ? `<div class="desc">⚠️ Invalid / missing sensor(s): <code>${invalidEntities.join("</code>, <code>")}</code></div>` : ``}
-            ${this._renderFilesWizard()}
-          </div>
-          ` : mediaModeOn ? `
-          <div style="margin-top:10px;">
-            <div class="field" id="mediasources-field">
-              <textarea id="mediasources" rows="4" placeholder="Enter one folder per line, or browse and select folders"></textarea>
-              <div class="suggestions" id="mediasources-suggestions" hidden></div>
-            </div>
-            <div class="row-actions">
-              <button type="button" class="actionbtn" id="browse-media-folders">${svgIcon('mdi:folder-search-outline', 18)}<span>Browse</span></button>
-              <button type="button" class="actionbtn" id="clear-media-folders">${svgIcon('mdi:delete-outline', 18)}<span>Clear</span></button>
-            </div>
-            ${mediaHasFile ? `<div class="desc">⚠️ One of your entries looks like a file (extension). This field expects folders.</div>` : ``}
-          </div>
-          ` : `
-          <div style="margin-top:10px;">
-            <div class="lbl" style="margin-bottom:6px;">File sensors</div>
-            <div class="field" id="entities-field">
-              <textarea id="entities" rows="3" placeholder="Enter one sensor per line"></textarea>
-              <div class="suggestions" id="entities-suggestions" hidden></div>
-            </div>
-            ${invalidEntities.length ? `<div class="desc">⚠️ Invalid / missing sensor(s): <code>${invalidEntities.join("</code>, <code>")}</code></div>` : ``}
-            <div class="lbl" style="margin-top:12px;margin-bottom:6px;">Media folders</div>
-            <div class="field" id="mediasources-field">
-              <textarea id="mediasources" rows="3" placeholder="Enter one folder per line, or browse and select folders"></textarea>
-              <div class="suggestions" id="mediasources-suggestions" hidden></div>
-            </div>
-            <div class="row-actions">
-              <button type="button" class="actionbtn" id="browse-media-folders">${svgIcon('mdi:folder-search-outline', 18)}<span>Browse</span></button>
-              <button type="button" class="actionbtn" id="clear-media-folders">${svgIcon('mdi:delete-outline', 18)}<span>Clear</span></button>
-            </div>
-            ${mediaHasFile ? `<div class="desc">⚠️ One of your entries looks like a file (extension). This field expects folders.</div>` : ``}
-          </div>
-          `}
         </div>
+
+        ${sensorModeOn ? `
+        <div class="row">
+          <div class="field" id="entities-field">
+            <textarea id="entities" rows="4" placeholder="Enter one sensor per line"></textarea>
+            <div class="suggestions" id="entities-suggestions" hidden></div>
+          </div>
+          ${invalidEntities.length ? `<div class="desc">⚠️ Invalid / missing sensor(s): <code>${invalidEntities.join("</code>, <code>")}</code></div>` : ``}
+          ${this._renderFilesWizard()}
+        </div>
+        ` : mediaModeOn ? `
+        <div class="row">
+          <div class="field" id="mediasources-field">
+            <textarea id="mediasources" rows="4" placeholder="Enter one folder per line, or browse and select folders"></textarea>
+            <div class="suggestions" id="mediasources-suggestions" hidden></div>
+          </div>
+          <div class="row-actions">
+            <button type="button" class="actionbtn" id="browse-media-folders">${svgIcon('mdi:folder-search-outline', 18)}<span>Browse</span></button>
+            <button type="button" class="actionbtn" id="clear-media-folders">${svgIcon('mdi:delete-outline', 18)}<span>Clear</span></button>
+          </div>
+          ${mediaHasFile ? `<div class="desc">⚠️ One of your entries looks like a file (extension). This field expects folders.</div>` : ``}
+        </div>
+        ` : `
+        <div class="row">
+          <div class="lbl">File sensors</div>
+          <div class="field" id="entities-field">
+            <textarea id="entities" rows="3" placeholder="Enter one sensor per line"></textarea>
+            <div class="suggestions" id="entities-suggestions" hidden></div>
+          </div>
+          ${invalidEntities.length ? `<div class="desc">⚠️ Invalid / missing sensor(s): <code>${invalidEntities.join("</code>, <code>")}</code></div>` : ``}
+        </div>
+        <div class="row">
+          <div class="lbl">Media folders</div>
+          <div class="field" id="mediasources-field">
+            <textarea id="mediasources" rows="3" placeholder="Enter one folder per line, or browse and select folders"></textarea>
+            <div class="suggestions" id="mediasources-suggestions" hidden></div>
+          </div>
+          <div class="row-actions">
+            <button type="button" class="actionbtn" id="browse-media-folders">${svgIcon('mdi:folder-search-outline', 18)}<span>Browse</span></button>
+            <button type="button" class="actionbtn" id="clear-media-folders">${svgIcon('mdi:delete-outline', 18)}<span>Clear</span></button>
+          </div>
+          ${mediaHasFile ? `<div class="desc">⚠️ One of your entries looks like a file (extension). This field expects folders.</div>` : ``}
+        </div>
+        `}
       `;
 
       const frigateBody = `
@@ -6662,7 +7872,6 @@ class CameraGalleryCardEditor extends HTMLElement {
     };
 
     const buildGalleryTabV2 = () => {
-      const hasFilters = Array.isArray(c.object_filters) && c.object_filters.length > 0;
       const displayBody = `
         <div class="row">
           <div class="lbl">Image fit</div>
@@ -6685,44 +7894,11 @@ class CameraGalleryCardEditor extends HTMLElement {
         <div class="row">
           <div class="row-head">
             <div>
-              <div class="lbl">Clean mode</div>
-              <div class="desc">Only shows the preview window.</div>
+              <div class="lbl">Preview-only mode</div>
+              <div class="desc">Only shows the preview window — toolbar, thumbnails and filters are hidden until the user taps back into the gallery.</div>
             </div>
             <div class="togrow">
               <label class="cgc-switch"><input type="checkbox" id="cleanmode" ${cleanMode ? "checked" : ""}><span class="cgc-track"></span></label>
-            </div>
-          </div>
-        </div>
-
-        <div class="row">
-          <div class="lbl">Controls position</div>
-          <div class="desc"><code>Overlay</code> floats the playback controls over the preview; <code>Fixed</code> reserves a strip below it.</div>
-          <div class="segwrap">
-            <button class="seg ${(c.controls_mode ?? "overlay") === "overlay" ? "on" : ""}" data-ctrlmode="overlay">Overlay</button>
-            <button class="seg ${c.controls_mode === "fixed" ? "on" : ""}" data-ctrlmode="fixed">Fixed</button>
-          </div>
-        </div>
-
-        <div class="row">
-          <div class="row-head">
-            <div>
-              <div class="lbl">Show camera name</div>
-              <div class="desc">Overlay the camera's friendly name on the preview.</div>
-            </div>
-            <div class="togrow">
-              <label class="cgc-switch"><input type="checkbox" id="showcameratitle" ${c.show_camera_title !== false ? "checked" : ""} ${c.controls_mode === "fixed" ? "disabled" : ""}><span class="cgc-track"></span></label>
-            </div>
-          </div>
-        </div>
-
-        <div class="row">
-          <div class="row-head">
-            <div>
-              <div class="lbl">Persistent controls</div>
-              <div class="desc">Keep playback controls on screen all the time instead of auto-hiding them after a few seconds.</div>
-            </div>
-            <div class="togrow">
-              <label class="cgc-switch"><input type="checkbox" id="persistentcontrols" ${persistentControls ? "checked" : ""}><span class="cgc-track"></span></label>
             </div>
           </div>
         </div>
@@ -6754,128 +7930,104 @@ class CameraGalleryCardEditor extends HTMLElement {
         </div>
       `;
 
-      // Toolbar visibility — per-button toggles. IDs match v1 editor's
-      // "Gallery toolbar" row so the existing event-wiring picks them up.
-      const toolbarBody = `
+
+      // Pills — per-pill on/off + reorder via up/down arrows. Sparse
+      // overrides only in `gallery_pills`: pills not mentioned use catalog
+      // defaults (see `src/data/pill-catalog.ts`). The editor lists pills
+      // in their current render order so the arrows match the visual
+      // outcome.
+      const cfgGalleryPills =
+        c.gallery_pills && typeof c.gallery_pills === "object" ? c.gallery_pills : {};
+      const hasPillOverrides = Object.keys(cfgGalleryPills).length > 0;
+      const pillSettingsMap = resolvePillSettings(GALLERY_PILL_CATALOG, cfgGalleryPills);
+      // Show pills in effective render order. Disabled pills stay in the
+      // list (at their current order slot) so the user can re-enable
+      // them with a single click — without them disappearing into an
+      // "off" pool.
+      const pillRowsOrdered = [...GALLERY_PILL_CATALOG]
+        .map((entry) => ({ entry, s: pillSettingsMap.get(entry.id) }))
+        .sort((a, b) => {
+          // Disabled pills sink to the bottom so they're out of the way;
+          // within each group sort by effective order, then catalog order.
+          if (a.s.enabled !== b.s.enabled) return a.s.enabled ? -1 : 1;
+          return (
+            a.s.order - b.s.order ||
+            GALLERY_PILL_CATALOG.indexOf(a.entry) - GALLERY_PILL_CATALOG.indexOf(b.entry)
+          );
+        });
+
+      const pillsModeVal = c.controls_mode ?? "overlay";
+      const pillsBarPosVal = c.bar_position ?? "top";
+      const pillsAlignVal = c.gallery_pills_align || "center";
+      const pillsAlignDisabled = pillsModeVal === "fixed" || pillsBarPosVal === "hidden";
+      const pillsAlignDisabledReason =
+        pillsBarPosVal === "hidden"
+          ? " <em>No effect</em> — the pill row is hidden."
+          : pillsModeVal === "fixed"
+            ? " <em>Ignored in fixed mode</em> — pills always fill the bar."
+            : "";
+      const pillsBody = `
         <div class="row">
-          <div class="desc">Show or hide individual buttons in the gallery's top toolbar.</div>
+          <div class="lbl">Mode</div>
+          <div class="desc"><code>Overlay</code> floats pills over the preview; <code>Fixed</code> reserves a strip and stretches them across.</div>
+          <div class="segwrap" style="margin-top:6px;">
+            <button class="seg ${pillsModeVal === "overlay" ? "on" : ""}" data-ctrlmode="overlay">Overlay</button>
+            <button class="seg ${pillsModeVal === "fixed" ? "on" : ""}" data-ctrlmode="fixed">Fixed</button>
+          </div>
         </div>
         <div class="row">
+          <div class="lbl">Position</div>
+          <div class="desc">Where the pill row sits relative to the preview. Pick <code>Hidden</code> to drop it entirely.</div>
+          <div class="segwrap" style="margin-top:6px;">
+            <button class="seg ${pillsBarPosVal === "top" ? "on" : ""}" data-pillsbarpos="top">Top</button>
+            <button class="seg ${pillsBarPosVal === "bottom" ? "on" : ""}" data-pillsbarpos="bottom">Bottom</button>
+            <button class="seg ${pillsBarPosVal === "hidden" ? "on" : ""}" data-pillsbarpos="hidden">Hidden</button>
+          </div>
+        </div>
+        <div class="row ${pillsAlignDisabled ? "muted" : ""}">
+          <div class="lbl">Alignment</div>
+          <div class="desc">Where the row of pills sits within the bar.${pillsAlignDisabledReason}</div>
+          <div class="segwrap" style="margin-top:6px;">
+            <button class="seg ${pillsAlignVal === "left" ? "on" : ""}" data-pillsalign="left" ${pillsAlignDisabled ? "disabled" : ""}>Left</button>
+            <button class="seg ${pillsAlignVal === "center" ? "on" : ""}" data-pillsalign="center" ${pillsAlignDisabled ? "disabled" : ""}>Center</button>
+            <button class="seg ${pillsAlignVal === "right" ? "on" : ""}" data-pillsalign="right" ${pillsAlignDisabled ? "disabled" : ""}>Right</button>
+          </div>
+        </div>
+        <div class="row ${c.controls_mode === "fixed" ? "muted" : ""}">
           <div class="row-head">
             <div>
-              <div class="lbl">Today</div>
-              <div class="desc">Quick-jump to the newest day's clips.</div>
+              <div class="lbl">Persistent controls</div>
+              <div class="desc">Keep the pill row on screen all the time instead of auto-hiding after a few seconds.${c.controls_mode === "fixed" ? " <em>Ignored in fixed mode</em> — the bar is always visible." : ""}</div>
             </div>
             <div class="togrow">
-              <label class="cgc-switch"><input type="checkbox" id="show_today" ${c.show_today !== false ? "checked" : ""}><span class="cgc-track"></span></label>
+              <label class="cgc-switch"><input type="checkbox" id="persistentcontrols" ${persistentControls ? "checked" : ""} ${c.controls_mode === "fixed" ? "disabled" : ""}><span class="cgc-track"></span></label>
             </div>
           </div>
         </div>
-        <div class="row">
-          <div class="row-head">
-            <div>
-              <div class="lbl">Type filter (video / image)</div>
-              <div class="desc">Filter the gallery by clip type. Auto-hides when only one type is present.</div>
-            </div>
-            <div class="togrow">
-              <label class="cgc-switch"><input type="checkbox" id="show_media_filter" ${c.show_media_filter !== false ? "checked" : ""}><span class="cgc-track"></span></label>
-            </div>
-          </div>
-        </div>
-        <div class="row">
-          <div class="row-head">
-            <div>
-              <div class="lbl">Favorites</div>
-              <div class="desc">Filter to clips marked with a star.</div>
-            </div>
-            <div class="togrow">
-              <label class="cgc-switch"><input type="checkbox" id="show_favorite" ${c.show_favorite !== false ? "checked" : ""}><span class="cgc-track"></span></label>
-            </div>
-          </div>
-        </div>
-        <div class="row">
-          <div class="row-head">
-            <div>
-              <div class="lbl">Live</div>
-              <div class="desc">Switch-to-live button — flips the card from gallery into live-view mode.</div>
-            </div>
-            <div class="togrow">
-              <label class="cgc-switch"><input type="checkbox" id="show_live" ${c.show_live !== false ? "checked" : ""}><span class="cgc-track"></span></label>
-            </div>
-          </div>
-        </div>
-      `;
-
-      const filtersBody = `
-        <div class="row">
-          <div class="lbl">Object filters</div>
-          <div class="desc">Filter clips by what was detected in them. Tap a chip to enable; click the color box to set its colour.</div>
-          <div class="objmeta">
-            <div class="countpill">Selected ${selectedCount}/${MAX_VISIBLE_OBJECT_FILTERS}</div>
-          </div>
-
-          <div class="chip-grid">
-            ${AVAILABLE_OBJECT_FILTERS
-              .map((obj) => {
-                const isOn = objectFiltersArr.includes(obj);
-                const currentColor = objectColors[obj] || "";
-                const colorVal = currentColor && /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(currentColor) ? currentColor : "#ffffff";
-                return `
-                <button
-                  type="button"
-                  class="objchip ${isOn ? "on" : ""}"
-                  data-objchip="${obj}"
-                  title="${this._objectLabel(obj)}"
-                >
-                  <span class="objchip-icon" ${currentColor ? `style="color:${currentColor}"` : ""}>
-                    ${svgIcon(objectIcon(obj), 18)}
-                  </span>
-                  <span class="objchip-color">
-                    <input type="color" class="cgc-color" value="${colorVal}" style="${!currentColor ? "opacity:0.35" : ""}" data-filtercolor="${obj}">
-                  </span>
-                  <input type="checkbox" class="objchip-native-check" ${isOn ? "checked" : ""} tabindex="-1" aria-hidden="true" style="pointer-events:none;">
-                </button>
-              `;
-              })
-              .join("")}
-          </div>
-        </div>
-
-        <div class="row">
-          <div class="lbl">Custom filters</div>
-          <div class="desc">Add your own filter buttons (e.g. <code>parcel</code>, <code>mail-truck</code>). They match against detection labels found in clip filenames or sensor text.</div>
-
-          <div class="custom-filter-add">
-            <input type="text" class="ed-input" id="new-filter-name" placeholder="e.g. parcel" />
-            <input type="text" class="ed-input" id="new-filter-icon" placeholder="mdi:shape" />
-            <button class="actionbtn" id="add-filter-btn">
-              ${svgIcon('mdi:plus', 18)}
-              Add filter
-            </button>
-          </div>
-
-          <div class="custom-filter-list">
-            ${objectFiltersArr.filter(f => typeof f === 'object').map((f) => {
-              const name = Object.keys(f)[0];
-              const icon = f[name];
-              const currentColor = objectColors[name] || "";
-              const colorVal = currentColor && /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(currentColor) ? currentColor : "#ffffff";
+        <div class="pills-dnd-list" id="pills-dnd-list">
+          ${pillRowsOrdered
+            .map((row) => {
+              const entry = row.entry;
+              const enabled = row.s.enabled;
+              const idAttr = String(entry.id).replace(/"/g, "&quot;");
+              const labelEsc = String(entry.label).replace(/</g, "&lt;");
+              const previewMarkup = entry.previewText
+                ? `<span class="pill-dnd-preview-text">${String(entry.previewText).replace(/</g, "&lt;")}</span>`
+                : entry.icon
+                  ? `<ha-icon icon="${entry.icon}" style="--mdc-icon-size:18px;width:18px;height:18px;display:inline-flex;align-items:center;justify-content:center;"></ha-icon>`
+                  : "";
               return `
-                <div class="custom-item">
-                  <div class="custom-item-info">
-                    <ha-icon icon="${icon}" style="${currentColor ? "color:" + currentColor : ""}"></ha-icon>
-                    <span class="lbl">${this._objectLabel(name)}</span>
-                  </div>
-                  <div class="color-controls">
-                    <input type="color" class="cgc-color" value="${colorVal}" style="${!currentColor ? "opacity:0.35" : ""}" data-filtercolor="${name}">
-                    <button class="remove-btn" data-remove-index="${name}">
-                      ${svgIcon('mdi:delete-outline', 18)}
-                    </button>
+                <div class="row pill-dnd-row ${enabled ? "" : "pill-dnd-disabled"}" data-pill-row="${idAttr}" draggable="true">
+                  <div class="pill-dnd-line">
+                    <span class="pill-drag-grip" title="Drag to reorder" aria-label="Drag to reorder">⠿</span>
+                    <span class="pill-dnd-icon" aria-hidden="true">${previewMarkup}</span>
+                    <div class="lbl pill-dnd-label">${labelEsc}</div>
+                    <label class="cgc-switch"><input type="checkbox" id="pill-enable-${idAttr}" ${enabled ? "checked" : ""}><span class="cgc-track"></span></label>
                   </div>
                 </div>
               `;
-            }).join('')}
-          </div>
+            })
+            .join("")}
         </div>
       `;
 
@@ -6884,8 +8036,7 @@ class CameraGalleryCardEditor extends HTMLElement {
           ${v2ExpandToggle}
           ${v2Collapsible("display",  "Display",  true,  displayBody,  "mdi:image-outline")}
           ${v2Collapsible("playback", "Playback", false, playbackBody, "mdi:play-circle-outline")}
-          ${v2Collapsible("toolbar",  "Toolbar",  false, toolbarBody,  "mdi:tune")}
-          ${v2Collapsible("filters",  "Filters",  hasFilters, filtersBody, "mdi:filter-outline")}
+          ${v2Collapsible("controls", "Controls", hasPillOverrides, pillsBody, "mdi:tune-vertical")}
         </div>
       `;
     };
@@ -6894,29 +8045,33 @@ class CameraGalleryCardEditor extends HTMLElement {
       // Auto-open helpers — collapsibles default open if the user has already
       // configured something inside them, so they don't have to hunt for it
       // after the v1 → v2 switch.
-      const hasStreamUrls = (Array.isArray(this._config.live_stream_urls) && this._config.live_stream_urls.length > 0) || !!this._config.live_stream_url;
-      const hasMic = (this._config.live_mic_streams && Object.keys(this._config.live_mic_streams).length > 0) || !!this._config.live_go2rtc_stream;
+      // Use the canonical readers so unified-shape configs (#137) don't
+      // close their collapsibles on first render. Legacy callers stay
+      // covered via the same helpers' fallback paths.
+      const liveCamsArr = Array.isArray(this._config.live_cameras) ? this._config.live_cameras : [];
+      const hasStreamUrls =
+        (Array.isArray(this._config.live_stream_urls) && this._config.live_stream_urls.length > 0) ||
+        !!this._config.live_stream_url ||
+        liveCamsArr.some((lc) => lc && typeof lc.url === "string" && lc.url.trim());
+      const hasMic = hasAnyMicStream(this._config);
       const hasMenuButtons = Array.isArray(this._config.menu_buttons) && this._config.menu_buttons.length > 0;
+      const hasPtz =
+        !!this._config.live_ptz_enabled ||
+        (this._config.live_ptz_cameras &&
+          typeof this._config.live_ptz_cameras === "object" &&
+          Object.keys(this._config.live_ptz_cameras).length > 0);
 
-      // ── Basics: Live preview toggle + (when enabled) picker, layout, default, auto-muted
+      // ── Basics: live picker, layout, default cam, auto-muted, camera-name.
+      // The master "Enable live view" toggle has been promoted out of this
+      // body — it now lives on the tab header next to the Expand-all
+      // button so it stays visible no matter which collapsible is open.
       const basicsBody = `
-        <div class="row ${liveControlsDisabled ? "muted" : ""}">
-          <div class="row-head">
-            <div>
-              <div class="lbl">Enable live view</div>
-              <div class="desc">Add a live-camera tab to the card. When off, the card only shows recorded clips.</div>
-            </div>
-            <div class="togrow">
-              <label class="cgc-switch"><input type="checkbox" id="liveenabled" ${liveEnabled ? "checked" : ""} ${liveControlsDisabled ? "disabled" : ""}><span class="cgc-track"></span></label>
-            </div>
-          </div>
-        </div>
 
         ${liveEnabled ? `
           ${cameraEntities.length > 1 ? `
           <div class="row">
             <div class="lbl">Cameras in picker</div>
-            <div class="desc">Cameras that appear in the live-view picker. Drag to reorder; the first one is selected by default unless you set a different default below.</div>
+            <div class="desc">Cameras in the live-view picker. Drag the <code>⠿</code> handle to reorder, tap a row to expand. Setting a <strong>mic stream</strong> for a camera enables the talk button on that camera's live view (toggle / push-to-talk mode + audio settings live under <strong>Two-way audio</strong> below). The first camera is selected by default unless you set another one below.</div>
             ${(() => {
               const se = Array.isArray(this._config.live_stream_urls) && this._config.live_stream_urls.length > 0
                 ? this._config.live_stream_urls.filter(e => e?.url)
@@ -6927,10 +8082,28 @@ class CameraGalleryCardEditor extends HTMLElement {
                 </div>` : ``;
             })()}
             ${liveCameraEntities.length > 0 ? `
-            <div class="livecam-tags" id="livecam-tags-dnd">
-              ${liveCameraEntities.map((id, i) => {
+            <div class="livecam-rows" id="livecam-tags-dnd">
+              ${liveCameraEntities.map((id) => {
                 const name = String(this._hass?.states?.[id]?.attributes?.friendly_name || id).trim();
-                return `<div class="livecam-tag" draggable="true" data-dragcam="${id}"><span class="livecam-tag-grip">⠿</span><span class="livecam-tag-num">${i + 1}</span><span>${name}</span><span class="livecam-tag-entity">${id}</span><button type="button" class="livecam-tag-del" data-delcam="${id}">×</button></div>`;
+                const mic = String(micStreamForCamera(id, this._config) || "");
+                const isOpen = this._livecamRowOpen?.has(id) ? "open" : "";
+                return `
+                  <div class="livecam-row ${isOpen}" data-dragcam="${id}" draggable="true">
+                    <div class="livecam-rowhead" data-livecam-toggle="${id}">
+                      <span class="livecam-rowgrip">⠿</span>
+                      <span class="livecam-rowname">${name}<span class="livecam-rowent">${id}</span></span>
+                      <span class="livecam-rowmic ${mic ? "" : "none"}">${mic ? mic : "no mic"}</span>
+                      <span class="livecam-chevron">›</span>
+                    </div>
+                    <div class="livecam-rowbody">
+                      <div class="livecam-fieldrow">
+                        <label>Mic stream</label>
+                        <input type="text" class="ed-input livecam-mic-input" data-mic-cam="${id}" value="${mic.replace(/"/g, "&quot;")}" placeholder="go2rtc stream (empty = no mic)" autocomplete="off" />
+                      </div>
+                      <button type="button" class="livecam-row-del" data-delcam="${id}">${svgIcon('mdi:delete-outline', 14)}<span>Remove camera</span></button>
+                    </div>
+                  </div>
+                `;
               }).join("")}
             </div>
             ` : ``}
@@ -6949,33 +8122,8 @@ class CameraGalleryCardEditor extends HTMLElement {
               <button class="seg ${liveLayout === "single" ? "on" : ""}" data-livelayout="single">Single</button>
               <button class="seg ${liveLayout === "grid" ? "on" : ""}" data-livelayout="grid">Grid</button>
             </div>
-            ${liveLayout === "grid" ? `
-            <div class="row-inline live-grid-suboption">
-              <span>Show camera labels</span>
-              <label class="cgc-switch"><input type="checkbox" id="live-grid-labels" ${liveGridLabels ? "checked" : ""}><span class="cgc-track"></span></label>
-            </div>
-            ` : ``}
           </div>
           ` : ``}
-
-          <div class="row ${liveControlsDisabled ? "muted" : ""}">
-            <div class="lbl">Default live camera</div>
-            <div class="desc">Which camera shows first when the live tab opens. Leave empty to use the first one in the picker.</div>
-            ${liveCameraEntity ? `
-            <div class="livecam-tags">
-              <div class="livecam-tag"><span>${liveCameraEntity.startsWith("__cgc_stream") ? (this._getStreamEntryById(liveCameraEntity)?.name || "Stream") : String(this._hass?.states?.[liveCameraEntity]?.attributes?.friendly_name || liveCameraEntity).trim()}</span><span class="livecam-tag-entity">${liveCameraEntity.startsWith("__cgc_stream") ? "stream url" : liveCameraEntity}</span><button type="button" class="livecam-tag-del" data-deldefcam="${liveCameraEntity}">×</button></div>
-            </div>
-            ${liveCameraEntity !== "__cgc_stream__" && liveCameraEntities.length > 0 && !liveCameraEntities.includes(liveCameraEntity) ? `
-            <div class="cgc-inline-warn">${svgIcon('mdi:alert-outline', 14)}<span>This camera is not in the visible cameras list. It will not appear in the picker.</span></div>
-            ` : ``}
-            ` : ``}
-            ${!liveControlsDisabled ? `
-            <div class="field" style="margin-top:6px;">
-              <input type="text" class="ed-input" id="livedefault-input" placeholder="Search cameras..." autocomplete="off" ${liveCameraEntity ? `style="display:none;"` : ``} />
-              <div class="suggestions" id="livedefault-suggestions" hidden></div>
-            </div>
-            ` : ``}
-          </div>
 
           <div class="row">
             <div class="row-head">
@@ -6985,6 +8133,15 @@ class CameraGalleryCardEditor extends HTMLElement {
               </div>
               <div class="togrow">
                 <label class="cgc-switch"><input type="checkbox" id="live_auto_muted"><span class="cgc-track"></span></label>
+              </div>
+            </div>
+            <div class="row-head">
+              <div>
+                <div class="lbl">Show camera name</div>
+                <div class="desc">Show the camera's name on the live preview — as a pill in single view, and as a label on each tile in grid view.</div>
+              </div>
+              <div class="togrow">
+                <label class="cgc-switch"><input type="checkbox" id="showcameratitle" ${c.show_camera_title !== false && c.live_grid_labels !== false ? "checked" : ""}><span class="cgc-track"></span></label>
               </div>
             </div>
           </div>
@@ -7022,7 +8179,7 @@ class CameraGalleryCardEditor extends HTMLElement {
       // ── Two-way audio collapsible
       const twoWayBody = `
         <div class="row">
-          <div class="desc">Talk back to a camera's speaker from live view. For each camera below, enter its go2rtc stream name — the key under <code>streams:</code> in your <code>go2rtc.yaml</code>. Leave blank to hide the mic for that camera.</div>
+          <div class="desc">Global settings for talkback. Per-camera mic streams are configured in the <strong>Cameras</strong> section above — expand a camera and fill in its <em>Mic stream</em> (the go2rtc stream name under <code>streams:</code> in <code>go2rtc.yaml</code>) to enable the talk button on that camera.</div>
           <div class="desc" style="margin-top:4px;font-size:0.78em;opacity:0.7;">Needs: <a href="https://github.com/AlexxIT/WebRTC" target="_blank" rel="noopener">WebRTC Camera</a> HACS integration · camera with audio backchannel · HTTPS or localhost.</div>
           ${(() => {
             const comps = this._hass?.config?.components;
@@ -7031,60 +8188,24 @@ class CameraGalleryCardEditor extends HTMLElement {
             return `<div class="cgc-inline-warn">${svgIcon('mdi:alert-outline', 14)}<span>WebRTC Camera integration not detected — install it via HACS for the mic to work.</span></div>`;
           })()}
           ${(() => {
-            const micMap = (this._config.live_mic_streams && typeof this._config.live_mic_streams === "object")
-              ? this._config.live_mic_streams
-              : {};
-            const streamEntries = getStreamEntries(this._config);
-            const rows = [];
-            streamEntries.forEach((se) => {
-              rows.push({
-                id: se.id,
-                kind: "stream",
-                label: se.name || "Stream",
-                sub: "stream url",
-                value: String(micMap[se.id] ?? "").trim(),
-              });
-            });
-            liveCameraEntities.forEach((entId) => {
-              const friendly = String(this._hass?.states?.[entId]?.attributes?.friendly_name || entId).trim();
-              rows.push({
-                id: entId,
-                kind: "entity",
-                label: friendly,
-                sub: entId,
-                value: String(micMap[entId] ?? "").trim(),
-              });
-            });
-            if (rows.length === 0) {
-              return `<div class="desc" style="font-style:italic;opacity:0.7;">Add at least one camera (entity or stream URL) above to configure mic backchannels.</div>`;
-            }
-            return `<div class="mic-stream-list" style="display:flex;flex-direction:column;gap:6px;margin-top:6px;">
-              ${rows.map((r) => `
-                <div class="mic-stream-row" style="display:flex;flex-direction:column;gap:6px;padding:6px 8px;border:1px solid var(--ed-input-border);border-radius:var(--ed-radius-input,8px);">
-                  <div style="min-width:0;">
-                    <div style="font-weight:500;">${r.label.replace(/</g,"&lt;")}</div>
-                    <div style="font-size:0.72em;opacity:0.6;">${r.sub.replace(/</g,"&lt;")}</div>
-                  </div>
-                  <input type="text" class="ed-input mic-stream-input" data-mic-cam="${r.id.replace(/"/g,"&quot;")}" value="${r.value.replace(/"/g,"&quot;")}" placeholder="go2rtc stream name (empty = no mic)" autocomplete="off" style="width:100%;box-sizing:border-box;" />
-                </div>
-              `).join("")}
-            </div>`;
-          })()}
-          ${(() => {
             const legacy = String(this._config.live_go2rtc_stream ?? "").trim();
             if (!legacy) return ``;
             return `<div class="desc" style="margin-top:8px;">
-              <strong>Legacy single-stream config detected:</strong> <code>live_go2rtc_stream: ${legacy.replace(/</g,"&lt;")}</code> is set in your YAML. It still works (applies to whichever camera is active) and you don't need to change anything. Filling in any row above will switch to the per-camera map — once you do, the legacy key is ignored.
+              <strong>Legacy single-stream config detected:</strong> <code>live_go2rtc_stream: ${legacy.replace(/</g,"&lt;")}</code> is set in your YAML. It still works (applies to whichever camera is active) and you don't need to change anything. Setting a per-camera mic stream in the Cameras section above switches to the per-camera map — once you do, the legacy key is ignored.
             </div>`;
           })()}
-          ${hasAnyMicStream(this._config) ? `
-          <div class="lbl" style="margin-top:8px;">Interaction</div>
+        </div>
+        ${hasAnyMicStream(this._config) ? `
+        <div class="row">
+          <div class="lbl">Interaction</div>
           <div class="desc"><code>Toggle</code> latches the mic on/off with one tap. <code>Push-to-talk</code> holds the mic open only while pressed.</div>
           <div class="segwrap">
             <button class="seg ${(this._config.live_mic_mode || "toggle") === "toggle" ? "on" : ""}" data-livemicmode="toggle">Toggle</button>
             <button class="seg ${this._config.live_mic_mode === "ptt" ? "on" : ""}" data-livemicmode="ptt">Push-to-talk</button>
           </div>
-          <div class="lbl" style="margin-top:8px;">Audio processing</div>
+        </div>
+        <div class="row">
+          <div class="lbl">Audio processing</div>
           <div class="desc">Browser-level mic processing applied before the audio reaches your camera.</div>
           ${(() => {
             const ap = this._config.live_mic_audio_processing || {};
@@ -7098,8 +8219,35 @@ class CameraGalleryCardEditor extends HTMLElement {
               <div class="row-inline"><span>Auto gain control</span><label class="cgc-switch"><input type="checkbox" id="live-mic-agc" ${agc ? "checked" : ""}><span class="cgc-track"></span></label></div>
             </div>`;
           })()}
-          ` : ``}
         </div>
+        <div class="row">
+          ${(() => {
+            const enabled = this._config.live_mic_waveform_enabled !== false;
+            const sens = this._config.live_mic_waveform_sensitivity || "medium";
+            const seg = (val, label) =>
+              `<button class="seg ${sens === val ? "on" : ""}" data-wfsens="${val}">${label}</button>`;
+            return `
+            <div class="lbl">Waveform visualizer</div>
+            <div class="desc">Frequency-bars overlay on the talkback bar while the mic is live.</div>
+            <div style="display:flex;flex-direction:column;gap:10px;margin-top:6px;">
+              <div class="row-inline">
+                <span>Enabled</span>
+                <label class="cgc-switch"><input type="checkbox" id="live-mic-wf-enabled" ${enabled ? "checked" : ""}><span class="cgc-track"></span></label>
+              </div>
+              ${enabled ? `
+              <div style="display:flex;flex-direction:column;gap:6px;">
+                <span>Sensitivity</span>
+                <div class="segwrap">
+                  ${seg("low",    "Low")}
+                  ${seg("medium", "Medium")}
+                  ${seg("high",   "High")}
+                </div>
+              </div>
+              ` : ``}
+            </div>`;
+          })()}
+        </div>
+        ` : ``}
       `;
 
       // ── Menu buttons collapsible
@@ -7180,30 +8328,304 @@ class CameraGalleryCardEditor extends HTMLElement {
         </div>
       `;
 
-      // If live preview is disabled, only show the Basics collapsible
-      // (which contains the toggle to turn it on). Other collapsibles are
-      // hidden until the user enables live mode.
+      // ── PTZ: global toggle + position + per-camera enable/type cards.
+      // Body mirrors the v1 layout — same IDs/classes so the existing
+      // event wiring (live_ptz_enabled / live_ptz_position / .ptz-cam-*)
+      // applies without duplication.
+      const ptzBody = `
+        <div class="row-inline" style="margin-top:6px;">
+          <span>Enable PTZ overlay</span>
+          <label class="cgc-switch"><input type="checkbox" id="live_ptz_enabled" ${this._config.live_ptz_enabled ? "checked" : ""}><span class="cgc-track"></span></label>
+        </div>
+        <div class="desc" style="margin-top:6px;">Virtual joystick + zoom controls. Integration type is auto-detected per camera.</div>
+        ${this._config.live_ptz_enabled ? `
+        <div style="margin-top:10px;">
+          <div style="font-size:0.78em;opacity:0.75;margin-bottom:6px;">Position</div>
+          ${(() => {
+            const overlay = (this._config.controls_mode || "overlay") === "overlay";
+            const bp = String(this._config.bar_position || "top");
+            const blockedHalf = !overlay ? null : bp === "top" ? "top" : bp === "bottom" ? "bottom" : null;
+            const all = [
+              { val: "top-left", label: "Top-left" },
+              { val: "top-right", label: "Top-right" },
+              { val: "bottom-left", label: "Bottom-left" },
+              { val: "bottom-right", label: "Bottom-right" },
+            ];
+            const current = this._config.live_ptz_position || "bottom-left";
+            return `<select class="ed-input" id="live_ptz_position" style="width:100%;box-sizing:border-box;height:36px;min-height:36px;flex:none;">
+              ${all.map((o) => {
+                const disabled = !!(blockedHalf && o.val.startsWith(blockedHalf));
+                return `<option value="${o.val}" ${disabled ? "disabled" : ""} ${o.val === current ? "selected" : ""}>${o.label}${disabled ? " (blocked by pill bar)" : ""}</option>`;
+              }).join("")}
+            </select>`;
+          })()}
+        </div>
+
+        ${(() => {
+          const ptzMap = (this._config.live_ptz_cameras && typeof this._config.live_ptz_cameras === "object")
+            ? this._config.live_ptz_cameras
+            : {};
+          if (liveCameraEntities.length === 0) {
+            return `<div class="desc" style="margin-top:10px;font-style:italic;opacity:0.7;">Add at least one camera entity in Basics to configure PTZ.</div>`;
+          }
+          const hassForDetect = this._hass
+            ? { states: this._hass.states, services: this._hass.services }
+            : null;
+          const ptzCapable = liveCameraEntities.filter((entId) =>
+            ptzMap[entId] || (hassForDetect && detectPtzType(entId, hassForDetect))
+          );
+          const visibleCams = this._ptzShowAll ? liveCameraEntities : ptzCapable;
+          const showAllToggle = `
+            <div style="display:flex;align-items:center;gap:8px;margin-top:10px;font-size:0.78em;opacity:0.75;">
+              <label class="cgc-switch" style="transform:scale(0.85);transform-origin:left center;"><input type="checkbox" id="ptz-show-all" ${this._ptzShowAll ? "checked" : ""}><span class="cgc-track"></span></label>
+              <span>Show all cameras (manual selection for ONVIF / non-detected setups)</span>
+            </div>
+          `;
+          if (visibleCams.length === 0) {
+            return `<div class="desc" style="margin-top:10px;font-style:italic;opacity:0.7;">No PTZ-capable cameras detected. Add a camera that exposes PTZ button entities (EZVIZ, Reolink) or that supports frigate.ptz, and it'll show up here. Or flip the toggle below to pick a type manually.</div>${showAllToggle}`;
+          }
+          return `<div style="display:flex;flex-direction:column;gap:10px;margin-top:10px;">
+            ${visibleCams.map((entId) => {
+              const friendly = String(this._hass?.states?.[entId]?.attributes?.friendly_name || entId).trim();
+              const cfgEntry = ptzMap[entId];
+              const enabled = !!cfgEntry;
+              return `
+                <div style="border:1px solid var(--ed-input-border);border-radius:var(--ed-radius-input,8px);padding:8px 10px;">
+                  <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+                    <div style="min-width:0;flex:1;">
+                      <div style="font-weight:500;">${friendly.replace(/</g,"&lt;")}</div>
+                      <div style="font-size:0.72em;opacity:0.6;">${entId.replace(/</g,"&lt;")}</div>
+                    </div>
+                    <label class="cgc-switch"><input type="checkbox" class="ptz-cam-enable" data-ptz-cam="${entId.replace(/"/g,"&quot;")}" ${enabled ? "checked" : ""}><span class="cgc-track"></span></label>
+                  </div>
+                  ${enabled ? `
+                  <div style="display:flex;flex-direction:column;gap:6px;margin-top:8px;">
+                    <select class="ed-input ptz-cam-type" data-ptz-cam="${entId.replace(/"/g,"&quot;")}" style="width:100%;box-sizing:border-box;height:36px;min-height:36px;flex:none;">
+                      <option value="ezviz" ${(cfgEntry.type || "ezviz") === "ezviz" ? "selected" : ""}>EZVIZ — pulse</option>
+                      <option value="reolink" ${cfgEntry.type === "reolink" ? "selected" : ""}>Reolink — continuous</option>
+                      <option value="frigate" ${cfgEntry.type === "frigate" ? "selected" : ""}>Frigate — continuous</option>
+                      <option value="onvif" ${cfgEntry.type === "onvif" ? "selected" : ""}>ONVIF — continuous</option>
+                    </select>
+                  </div>
+                  ` : ""}
+                </div>
+              `;
+            }).join("")}
+          </div>${showAllToggle}`;
+        })()}
+        ` : ``}
+      `;
+
+      // Live-tab header row: master "Enable live view" toggle on the
+      // left + the standard Expand-all link on the right. Keeps the
+      // master switch visible regardless of which collapsible the user
+      // has open.
+      const liveTabHeader = `
+        <div class="v2-tab-header">
+          <div class="v2-tab-header-toggle">
+            <span class="v2-tab-header-label">Enable live view</span>
+            <label class="cgc-switch"><input type="checkbox" id="liveenabled" ${liveEnabled ? "checked" : ""}><span class="cgc-track"></span></label>
+          </div>
+          <button type="button" class="v2-expand-all" data-v2-expand>Expand all</button>
+        </div>
+      `;
+
+      // If live preview is disabled, hide all collapsibles — the master
+      // toggle in the header is enough to re-enable them. No body to
+      // render below the header in that state.
       if (!liveEnabled) {
         return `
           <div class="tabpanel" data-panel="live">
-            ${v2ExpandToggle}
-            ${v2Collapsible("basics", "Basics", true, basicsBody, "mdi:tune")}
+            ${liveTabHeader}
           </div>
         `;
       }
 
+      // Live-pill controls: per-pill on/off + reorder. Same sparse-overrides
+      // model as gallery_pills (catalog defaults live in LIVE_PILL_CATALOG).
+      const cfgLivePills =
+        this._config.live_pills && typeof this._config.live_pills === "object"
+          ? this._config.live_pills : {};
+      const hasLivePillOverrides = Object.keys(cfgLivePills).length > 0;
+      const livePillSettingsMap = resolvePillSettings(LIVE_PILL_CATALOG, cfgLivePills);
+      const livePillRowsOrdered = [...LIVE_PILL_CATALOG]
+        .map((entry) => ({ entry, s: livePillSettingsMap.get(entry.id) }))
+        .sort((a, b) => {
+          if (a.s.enabled !== b.s.enabled) return a.s.enabled ? -1 : 1;
+          return (
+            a.s.order - b.s.order ||
+            LIVE_PILL_CATALOG.indexOf(a.entry) - LIVE_PILL_CATALOG.indexOf(b.entry)
+          );
+        });
+      const liveControlsBody = `
+        <div class="row">
+          <div class="desc">Camera name sits on the left, action pills on the right — layout is fixed. Drag <code>⠿</code> to reorder the action pills, switch one off to hide it.</div>
+        </div>
+        <div class="pills-dnd-list" id="live-pills-dnd-list">
+          ${livePillRowsOrdered
+            .map((row) => {
+              const entry = row.entry;
+              const enabled = row.s.enabled;
+              const idAttr = String(entry.id).replace(/"/g, "&quot;");
+              const labelEsc = String(entry.label).replace(/</g, "&lt;");
+              const previewMarkup = entry.previewText
+                ? `<span class="pill-dnd-preview-text">${String(entry.previewText).replace(/</g, "&lt;")}</span>`
+                : entry.icon
+                  ? `<ha-icon icon="${entry.icon}" style="--mdc-icon-size:18px;width:18px;height:18px;display:inline-flex;align-items:center;justify-content:center;"></ha-icon>`
+                  : "";
+              return `
+                <div class="row pill-dnd-row ${enabled ? "" : "pill-dnd-disabled"}" data-live-pill-row="${idAttr}" draggable="true">
+                  <div class="pill-dnd-line">
+                    <span class="pill-drag-grip" title="Drag to reorder" aria-label="Drag to reorder">⠿</span>
+                    <span class="pill-dnd-icon" aria-hidden="true">${previewMarkup}</span>
+                    <div class="lbl pill-dnd-label">${labelEsc}</div>
+                    <label class="cgc-switch"><input type="checkbox" id="live-pill-enable-${idAttr}" ${enabled ? "checked" : ""}><span class="cgc-track"></span></label>
+                  </div>
+                </div>
+              `;
+            })
+            .join("")}
+        </div>
+      `;
+
       return `
         <div class="tabpanel" data-panel="live">
-          ${v2ExpandToggle}
-          ${v2Collapsible("basics",  "Basics",        true,          basicsBody,       "mdi:tune")}
-          ${v2Collapsible("streams", "Streams",       hasStreamUrls, streamsBody,      "mdi:link-variant")}
-          ${v2Collapsible("twoway",  "Two-way audio", hasMic,        twoWayBody,       "mdi:microphone-outline")}
-          ${v2Collapsible("menu",    "Menu buttons",  hasMenuButtons,menuButtonsBody,  "mdi:dots-horizontal")}
+          ${liveTabHeader}
+          ${v2Collapsible("basics",   "Basics",        true,                 basicsBody,        "mdi:tune")}
+          ${v2Collapsible("streams",  "Streams",       hasStreamUrls,        streamsBody,       "mdi:link-variant")}
+          ${v2Collapsible("twoway",   "Two-way audio", hasMic,               twoWayBody,        "mdi:microphone-outline")}
+          ${v2Collapsible("ptz",      "PTZ",           hasPtz,               ptzBody,           "mdi:arrow-all")}
+          ${v2Collapsible("menu",     "Menu buttons",  hasMenuButtons,       menuButtonsBody,   "mdi:dots-horizontal")}
+          ${v2Collapsible("controls", "Controls",     hasLivePillOverrides, liveControlsBody,  "mdi:tune-vertical")}
         </div>
       `;
     };
 
     const buildThumbsTabV2 = () => {
+      const hasFilters = Array.isArray(c.object_filters) && c.object_filters.length > 0;
+      // In preview-only mode the entire thumb strip + its filters/toolbar
+      // are hidden — show them muted with a hint so users don't tweak
+      // settings that have no effect until preview-only is turned off.
+      const previewOnly = !!cleanMode;
+      const previewOnlyHint = previewOnly ? "Hidden while preview-only mode is on." : "";
+
+      // Toolbar visibility — per-button toggles. IDs match v1 editor's
+      // "Gallery toolbar" row so the existing event-wiring picks them up.
+      // Toolbar buttons — drag-en-drop reorder + on/off, same UX as the
+      // pill catalogs. Enabled state still lives in the existing show_*
+      // keys; order lives in toolbar_order (sparse, defaults from catalog).
+      const orderMap = (c.toolbar_order && typeof c.toolbar_order === "object") ? c.toolbar_order : {};
+      const toolbarRowsOrdered = [...TOOLBAR_CATALOG]
+        .map((entry) => ({
+          entry,
+          enabled: c[entry.showKey] !== false,
+          order: typeof orderMap[entry.id] === "number" ? orderMap[entry.id] : entry.defaultOrder,
+        }))
+        .sort((a, b) => {
+          if (a.enabled !== b.enabled) return a.enabled ? -1 : 1;
+          return (
+            a.order - b.order ||
+            TOOLBAR_CATALOG.findIndex((e) => e.id === a.entry.id) - TOOLBAR_CATALOG.findIndex((e) => e.id === b.entry.id)
+          );
+        });
+      const toolbarBody = `
+        <div class="row">
+          <div class="desc">Show or hide individual buttons in the gallery's top toolbar. Drag <code>⠿</code> to reorder. The date picker is always visible and sits at the start.</div>
+        </div>
+        <div class="pills-dnd-list" id="toolbar-dnd-list">
+          ${toolbarRowsOrdered
+            .map((row) => {
+              const entry = row.entry;
+              const enabled = row.enabled;
+              const idAttr = String(entry.id).replace(/"/g, "&quot;");
+              const labelEsc = String(entry.label).replace(/</g, "&lt;");
+              return `
+                <div class="row pill-dnd-row ${enabled ? "" : "pill-dnd-disabled"}" data-toolbar-row="${idAttr}" draggable="true">
+                  <div class="pill-dnd-line">
+                    <span class="pill-drag-grip" title="Drag to reorder" aria-label="Drag to reorder">⠿</span>
+                    <div class="lbl pill-dnd-label">${labelEsc}</div>
+                    <label class="cgc-switch"><input type="checkbox" id="toolbar-enable-${idAttr}" ${enabled ? "checked" : ""}><span class="cgc-track"></span></label>
+                  </div>
+                </div>
+              `;
+            })
+            .join("")}
+        </div>
+      `;
+
+      const filtersBody = `
+        <div class="row">
+          <div class="lbl">Object filters</div>
+          <div class="desc">Filter clips by what was detected in them. Tap a chip to enable; click the color box to set its colour.</div>
+          <div class="objmeta">
+            <div class="countpill">Selected ${selectedCount}/${MAX_VISIBLE_OBJECT_FILTERS}</div>
+          </div>
+
+          <div class="chip-grid">
+            ${AVAILABLE_OBJECT_FILTERS
+              .map((obj) => {
+                const isOn = objectFiltersArr.includes(obj);
+                const currentColor = objectColors[obj] || "";
+                const colorVal = currentColor && /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(currentColor) ? currentColor : "#ffffff";
+                return `
+                <button
+                  type="button"
+                  class="objchip ${isOn ? "on" : ""}"
+                  data-objchip="${obj}"
+                  title="${this._objectLabel(obj)}"
+                >
+                  <span class="objchip-icon" ${currentColor ? `style="color:${currentColor}"` : ""}>
+                    ${svgIcon(objectIcon(obj), 18)}
+                  </span>
+                  <span class="objchip-color">
+                    <input type="color" class="cgc-color" value="${colorVal}" style="${!currentColor ? "opacity:0.35" : ""}" data-filtercolor="${obj}">
+                  </span>
+                  <input type="checkbox" class="objchip-native-check" ${isOn ? "checked" : ""} tabindex="-1" aria-hidden="true" style="pointer-events:none;">
+                </button>
+              `;
+              })
+              .join("")}
+          </div>
+        </div>
+
+        <div class="row">
+          <div class="lbl">Custom filters</div>
+          <div class="desc">Add your own filter buttons (e.g. <code>parcel</code>, <code>mail-truck</code>). They match against detection labels found in clip filenames or sensor text.</div>
+
+          <div class="custom-filter-add">
+            <input type="text" class="ed-input" id="new-filter-name" placeholder="e.g. parcel" />
+            <input type="text" class="ed-input" id="new-filter-icon" placeholder="mdi:shape" />
+            <button class="actionbtn" id="add-filter-btn">
+              ${svgIcon('mdi:plus', 18)}
+              Add filter
+            </button>
+          </div>
+
+          <div class="custom-filter-list">
+            ${objectFiltersArr.filter(f => typeof f === 'object').map((f) => {
+              const name = Object.keys(f)[0];
+              const icon = f[name];
+              const currentColor = objectColors[name] || "";
+              const colorVal = currentColor && /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(currentColor) ? currentColor : "#ffffff";
+              return `
+                <div class="custom-item">
+                  <div class="custom-item-info">
+                    <ha-icon icon="${icon}" style="${currentColor ? "color:" + currentColor : ""}"></ha-icon>
+                    <span class="lbl">${this._objectLabel(name)}</span>
+                  </div>
+                  <div class="color-controls">
+                    <input type="color" class="cgc-color" value="${colorVal}" style="${!currentColor ? "opacity:0.35" : ""}" data-filtercolor="${name}">
+                    <button class="remove-btn" data-remove-index="${name}">
+                      ${svgIcon('mdi:delete-outline', 18)}
+                    </button>
+                  </div>
+                </div>
+              `;
+            }).join('')}
+          </div>
+        </div>
+      `;
+
       const layoutBody = `
         <div class="row">
           <div class="lbl">Layout</div>
@@ -7274,6 +8696,8 @@ class CameraGalleryCardEditor extends HTMLElement {
         <div class="tabpanel" data-panel="thumbs">
           ${v2ExpandToggle}
           ${v2Collapsible("thumb-layout", "Layout",      true,  layoutBody,     "mdi:view-grid-outline")}
+          ${v2Collapsible("toolbar",      "Toolbar",     false, toolbarBody,    "mdi:tune", { muted: previewOnly, mutedHint: previewOnlyHint })}
+          ${v2Collapsible("filters",      "Filters",     hasFilters && !previewOnly, filtersBody, "mdi:filter-outline", { muted: previewOnly, mutedHint: previewOnlyHint })}
           ${v2Collapsible("video-frame",  "Video frame", false, videoFrameBody, "mdi:play-circle-outline")}
         </div>
       `;
@@ -7308,53 +8732,51 @@ class CameraGalleryCardEditor extends HTMLElement {
       const deleteBody = `
         <div class="row">
           <div class="desc">Home Assistant service calls invoked when a clip is deleted. Required if you want the trash button to actually remove files.</div>
-          <div style="padding-top:4px;display:flex;flex-direction:column;gap:14px;">
-            <div class="${mediaModeOn ? "row-disabled" : ""}">
-              <div class="lbl">File sensor <span style="font-weight:400;color:var(--ed-text2);font-size:0.85em;">— used in file-sensor / combined mode</span></div>
-              <div class="selectwrap" style="margin-top:4px;">
-                <select class="select ${deleteOk ? "" : "invalid"}" id="delservice" ${mediaModeOn ? "disabled" : ""}>
-                  ${
-                    deleteChoices.length
-                      ? `<option value=""></option>` +
-                        deleteChoices
-                          .map(
-                            (id) =>
-                              `<option value="${id}" ${
-                                id === deleteService ? "selected" : ""
-                              }>${id}</option>`
-                          )
-                          .join("")
-                      : `<option value="" selected>(no shell_command services found)</option>`
-                  }
-                </select>
-                <span class="selarrow"></span>
-              </div>
-            </div>
-            ${hasFrigateConfig(c) ? `
-            <div>
-              <div class="lbl">Frigate <span style="font-weight:400;color:var(--ed-text2);font-size:0.85em;">— used for Frigate clips</span></div>
-              <div class="selectwrap" style="margin-top:4px;">
-                <select class="select ${frigateDeleteOk ? "" : "invalid"}" id="frigate-delservice">
-                  ${
-                    frigateDeleteChoices.length
-                      ? `<option value="">(none — Frigate delete disabled)</option>` +
-                        frigateDeleteChoices
-                          .map(
-                            (id) =>
-                              `<option value="${id}" ${
-                                id === frigateDeleteService ? "selected" : ""
-                              }>${id}</option>`
-                          )
-                          .join("")
-                      : `<option value="" selected>(no rest_command services found — add one to configuration.yaml)</option>`
-                  }
-                </select>
-                <span class="selarrow"></span>
-              </div>
-            </div>
-            ` : ``}
+        </div>
+        <div class="row ${mediaModeOn ? "row-disabled" : ""}">
+          <div class="lbl">File sensor <span style="font-weight:400;color:var(--ed-text2);font-size:0.85em;">— used in file-sensor / combined mode</span></div>
+          <div class="selectwrap" style="margin-top:4px;">
+            <select class="select ${deleteOk ? "" : "invalid"}" id="delservice" ${mediaModeOn ? "disabled" : ""}>
+              ${
+                deleteChoices.length
+                  ? `<option value=""></option>` +
+                    deleteChoices
+                      .map(
+                        (id) =>
+                          `<option value="${id}" ${
+                            id === deleteService ? "selected" : ""
+                          }>${id}</option>`
+                      )
+                      .join("")
+                  : `<option value="" selected>(no shell_command services found)</option>`
+              }
+            </select>
+            <span class="selarrow"></span>
           </div>
         </div>
+        ${hasFrigateConfig(c) ? `
+        <div class="row">
+          <div class="lbl">Frigate <span style="font-weight:400;color:var(--ed-text2);font-size:0.85em;">— used for Frigate clips</span></div>
+          <div class="selectwrap" style="margin-top:4px;">
+            <select class="select ${frigateDeleteOk ? "" : "invalid"}" id="frigate-delservice">
+              ${
+                frigateDeleteChoices.length
+                  ? `<option value="">(none — Frigate delete disabled)</option>` +
+                    frigateDeleteChoices
+                      .map(
+                        (id) =>
+                          `<option value="${id}" ${
+                            id === frigateDeleteService ? "selected" : ""
+                          }>${id}</option>`
+                      )
+                      .join("")
+                  : `<option value="" selected>(no rest_command services found — add one to configuration.yaml)</option>`
+              }
+            </select>
+            <span class="selarrow"></span>
+          </div>
+        </div>
+        ` : ``}
       `;
 
       const diagnosticsBody = `
@@ -7371,14 +8793,27 @@ class CameraGalleryCardEditor extends HTMLElement {
         </div>
       `;
 
+      const exportBody = `
+        <div class="row">
+          <div class="lbl">Copy YAML</div>
+          <div class="desc">Copy the card's current YAML config to the clipboard. Useful for sharing your setup, backing up, or moving the card between dashboards.</div>
+          <div class="row-actions">
+            <button type="button" class="actionbtn" id="yaml-export-btn">
+              ${svgIcon('mdi:content-copy', 18)}<span>Copy YAML</span>
+            </button>
+          </div>
+        </div>
+      `;
+
       const hasPathFmt = !!(this._config && this._config.path_datetime_format);
 
       return `
         <div class="tabpanel" data-panel="advanced">
           ${v2ExpandToggle}
-          ${v2Collapsible("parsing",     "Path parsing",   hasPathFmt, parsingBody,     "mdi:calendar-outline")}
-          ${v2Collapsible("delete",      "Delete services", false,     deleteBody,      "mdi:delete-outline")}
-          ${v2Collapsible("diagnostics", "Diagnostics",    false,      diagnosticsBody, "mdi:information-outline")}
+          ${v2Collapsible("parsing",     "Path parsing",     hasPathFmt, parsingBody,      "mdi:calendar-outline")}
+          ${v2Collapsible("delete",      "Delete services",  false,      deleteBody,       "mdi:delete-outline")}
+          ${v2Collapsible("diagnostics", "Diagnostics",      false,      diagnosticsBody,  "mdi:information-outline")}
+          ${v2Collapsible("export",      "Export YAML",      false,      exportBody,       "mdi:content-copy")}
         </div>
       `;
     };
@@ -7590,6 +9025,25 @@ class CameraGalleryCardEditor extends HTMLElement {
           justify-content: flex-end;
           margin-bottom: 6px;
         }
+        /* Live-tab variant: master toggle on the left, expand link on the
+           right. Same vertical rhythm as .v2-expand-row. */
+        .wrap.v2 .v2-tab-header {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 12px;
+          margin-bottom: 6px;
+        }
+        .wrap.v2 .v2-tab-header-toggle {
+          display: inline-flex;
+          align-items: center;
+          gap: 10px;
+        }
+        .wrap.v2 .v2-tab-header-label {
+          font-size: 13px;
+          font-weight: 600;
+          color: var(--ed-text, #e6e6e8);
+        }
         .wrap.v2 .v2-expand-all {
           background: transparent;
           border: none;
@@ -7617,65 +9071,6 @@ class CameraGalleryCardEditor extends HTMLElement {
           border-top: 1px solid var(--ed-row-border);
           padding-top: 10px;
           margin-top: 8px;
-        }
-
-        /* Editor-version toggle (beta) */
-        .editor-version {
-          display: flex;
-          align-items: center;
-          justify-content: flex-end;
-          gap: 8px;
-          padding: 6px 10px 0 10px;
-          font-size: 11px;
-          color: var(--ed-tab-txt);
-        }
-        .editor-version-label {
-          opacity: 0.65;
-          font-weight: 600;
-          text-transform: uppercase;
-          letter-spacing: 0.04em;
-        }
-        .editor-version-toggle {
-          display: inline-flex;
-          background: var(--ed-tab-bg);
-          border: 1px solid var(--ed-tab-border);
-          border-radius: 999px;
-          padding: 2px;
-          gap: 2px;
-        }
-        .editor-version-btn {
-          appearance: none;
-          -webkit-appearance: none;
-          background: transparent;
-          border: none;
-          color: var(--ed-tab-txt);
-          padding: 4px 12px;
-          font-size: 11px;
-          font-weight: 700;
-          border-radius: 999px;
-          cursor: pointer;
-          display: inline-flex;
-          align-items: center;
-          gap: 4px;
-          transition: background 0.15s, color 0.15s;
-        }
-        .editor-version-btn:hover {
-          color: var(--ed-tab-on-txt);
-        }
-        .editor-version-btn.on {
-          background: var(--ed-tab-on-bg);
-          color: var(--ed-tab-on-txt);
-          box-shadow: var(--ed-shadow-press);
-        }
-        .editor-version-beta {
-          font-size: 9px;
-          font-weight: 800;
-          letter-spacing: 0.06em;
-          padding: 1px 5px;
-          border-radius: 3px;
-          background: rgba(63,185,80,0.18);
-          color: #3fb950;
-          text-transform: uppercase;
         }
 
         .tabpanel {
@@ -7785,13 +9180,6 @@ class CameraGalleryCardEditor extends HTMLElement {
           align-items: center;
           justify-content: space-between;
           gap: 16px;
-        }
-
-        .live-grid-suboption {
-          margin-top: 12px;
-          padding-top: 12px;
-          border-top: 1px solid var(--ed-divider, rgba(255, 255, 255, 0.08));
-          font-size: 13px;
         }
 
         .row-inline .lbl {
@@ -8305,6 +9693,167 @@ class CameraGalleryCardEditor extends HTMLElement {
           gap: 6px;
           margin-top: 6px;
         }
+        .livecam-rows {
+          display: flex;
+          flex-direction: column;
+          gap: 6px;
+          margin-top: 6px;
+          width: 100%;
+          box-sizing: border-box;
+          min-width: 0;
+        }
+        .livecam-row {
+          background: var(--ed-input-bg);
+          border: 1px solid var(--ed-input-border);
+          border-radius: 10px;
+          overflow: hidden;
+          width: 100%;
+          box-sizing: border-box;
+          min-width: 0;
+          transition: opacity 0.15s, box-shadow 0.15s;
+        }
+        .livecam-row.dnd-dragging { opacity: 0.35; }
+        .livecam-row.dnd-over { box-shadow: -3px 0 0 0 var(--primary-color, #03a9f4); }
+
+        /* Pill row DnD (Pills collapsible). Single-line layout: grip,
+         * label, switch — all centred on one row. */
+        .pills-dnd-list { display: flex; flex-direction: column; gap: 6px; }
+        .pill-dnd-row { cursor: default; transition: opacity 0.15s, box-shadow 0.15s; }
+        .pill-dnd-row.pill-dnd-dragging { opacity: 0.4; }
+        .pill-dnd-row.pill-dnd-over { box-shadow: 0 -2px 0 0 var(--primary-color, #03a9f4); }
+        /* Disabled pills sit at the bottom (sort) and are dimmed so the
+         * eye lands on the active set first. The switch itself stays at
+         * full opacity so users can still see + click it cleanly. */
+        .pill-dnd-row.pill-dnd-disabled .pill-drag-grip,
+        .pill-dnd-row.pill-dnd-disabled .pill-dnd-icon,
+        .pill-dnd-row.pill-dnd-disabled .pill-dnd-label { opacity: 0.45; }
+        /* Icon between grip + label — fixed-width slot so labels line
+         * up vertically across rows even when an entry has no icon. */
+        .pill-dnd-icon {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          width: 22px;
+          height: 18px;
+          opacity: 0.85;
+        }
+        /* Text preview (for counter / speed / time pills which render
+         * text at runtime, not an icon). Tabular-nums so widths align. */
+        .pill-dnd-preview-text {
+          font-size: 11px;
+          font-weight: 700;
+          font-variant-numeric: tabular-nums;
+          line-height: 1;
+          letter-spacing: 0.02em;
+        }
+        .pill-dnd-line {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          min-width: 0;
+        }
+        .pill-dnd-label {
+          flex: 1;
+          min-width: 0;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
+        .pill-drag-grip {
+          display: inline-flex; align-items: center; justify-content: center;
+          width: 24px; height: 24px;
+          font-size: 18px; line-height: 1;
+          color: var(--ed-text2, #8b8b91);
+          cursor: grab;
+          user-select: none;
+          touch-action: none;
+          flex-shrink: 0;
+        }
+        .pill-drag-grip:active { cursor: grabbing; }
+        .livecam-rowhead {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          padding: 9px 10px;
+          cursor: pointer;
+          transition: background 0.12s ease;
+        }
+        .livecam-rowhead:hover { background: rgba(255,255,255,0.03); }
+        .livecam-rowgrip {
+          color: var(--ed-text2);
+          font-size: 14px;
+          line-height: 1;
+          cursor: grab;
+          user-select: none;
+          opacity: 0.5;
+          padding: 0 2px;
+        }
+        .livecam-rowname {
+          flex: 1;
+          font-size: 13px;
+          font-weight: 500;
+          min-width: 0;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
+        .livecam-rowent {
+          opacity: 0.5;
+          font-size: 10px;
+          font-weight: 500;
+          margin-left: 6px;
+        }
+        .livecam-rowmic {
+          font-size: 11px;
+          color: var(--ed-text2);
+          font-family: ui-monospace, Menlo, monospace;
+          opacity: 0.85;
+        }
+        .livecam-rowmic.none { opacity: 0.5; font-style: italic; font-family: inherit; }
+        .livecam-chevron {
+          color: var(--ed-text2);
+          font-size: 14px;
+          line-height: 1;
+          transition: transform 0.18s ease;
+          opacity: 0.5;
+        }
+        .livecam-row.open .livecam-chevron { transform: rotate(90deg); }
+        .livecam-rowbody {
+          display: none;
+          padding: 8px 12px 12px;
+          border-top: 1px solid var(--ed-row-border);
+          background: rgba(0,0,0,0.18);
+        }
+        .livecam-row.open .livecam-rowbody { display: block; }
+        .livecam-fieldrow {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+        }
+        .livecam-fieldrow label {
+          font-size: 11px;
+          color: var(--ed-text2);
+          width: 80px;
+          flex-shrink: 0;
+        }
+        .livecam-row-del {
+          appearance: none;
+          background: transparent;
+          border: 1px solid var(--ed-input-border);
+          color: var(--ed-text2);
+          padding: 6px 10px;
+          border-radius: 6px;
+          font-size: 11px;
+          cursor: pointer;
+          margin-top: 8px;
+          display: inline-flex;
+          align-items: center;
+          gap: 5px;
+        }
+        .livecam-row-del:hover {
+          color: var(--error-color, #d32f2f);
+          border-color: var(--error-color, #d32f2f);
+        }
         .livecam-tag {
           display: flex;
           align-items: center;
@@ -8317,21 +9866,6 @@ class CameraGalleryCardEditor extends HTMLElement {
           color: var(--ed-text);
           cursor: grab;
           transition: opacity 0.15s, box-shadow 0.15s;
-        }
-        .livecam-tag.dnd-dragging { opacity: 0.35; }
-        .livecam-tag.dnd-over { box-shadow: -3px 0 0 0 var(--primary-color, #03a9f4); }
-        .livecam-tag-grip {
-          font-size: 18px; opacity: 0.4; line-height: 1;
-          cursor: grab; user-select: none;
-          padding: 4px 4px 4px 2px; margin: -4px 0;
-          touch-action: none;
-        }
-        .livecam-tag-num {
-          font-size: 10px; font-weight: 700; opacity: 0.5;
-          background: var(--ed-text2, #888); color: var(--ed-bg, #fff);
-          border-radius: 999px; min-width: 16px; height: 16px;
-          display: flex; align-items: center; justify-content: center;
-          padding: 0 4px; line-height: 1;
         }
         .livecam-tag-entity {
           opacity: 0.45;
@@ -9214,7 +10748,7 @@ details summary { user-select: none; }
           display: flex; align-items: flex-start; gap: 6px;
         }
         .cgc-inline-warn .cgc-svg-icon { flex-shrink: 0; margin-top: 1px; }
-      </style>
+
 
       <div class="wrap v2" style="${rootVars}">
 
@@ -9743,20 +11277,319 @@ details summary { user-select: none; }
     });
 
     $("showcameratitle")?.addEventListener("change", (e) => {
-      this._set("show_camera_title", !!e.target.checked);
+      // Unified camera-name toggle — drives both surfaces at once:
+      //   - show_camera_title  → name pill in single live view
+      //   - live_grid_labels   → label under each grid tile
+      // Both default to `true` at the struct level, so we drop the
+      // keys on "checked" and explicitly write `false` on "unchecked"
+      // to keep YAML output minimal.
+      const on = !!e.target.checked;
+      const next = { ...(this._config ?? {}) };
+      if (on) {
+        delete next.show_camera_title;
+        delete next.live_grid_labels;
+      } else {
+        next.show_camera_title = false;
+        next.live_grid_labels = false;
+      }
+      this._config = this._stripAlwaysTrueKeys(next);
+      this._fire();
+      this._scheduleRender();
     });
 
-    // Gallery toolbar visibility — default true, so we omit the key from
-    // YAML when the user ticks it back on (keeps configs clean).
-    for (const key of ["show_today", "show_media_filter", "show_favorite", "show_live"]) {
-      $(key)?.addEventListener("change", (e) => {
-        if (e.target.checked) {
-          const next = { ...(this._config ?? {}) };
-          delete next[key];
+    // Toolbar buttons — switches map to the underlying show_* keys (BC),
+    // ordering writes into toolbar_order (sparse). Drag-en-drop wiring
+    // lives further below alongside the gallery + live pill lists.
+    this.shadowRoot.querySelectorAll("[id^='toolbar-enable-']").forEach((el) => {
+      el.addEventListener("change", (e) => {
+        const id = el.id.replace("toolbar-enable-", "");
+        this._setToolbarButtonEnabled(id, !!e.target.checked);
+      });
+    });
+
+    // Gallery pills — switch + drag-handle reorder. Writes only sparse
+    // overrides into `gallery_pills`: a pill returns to "no entry"
+    // whenever both fields are at catalog default, so YAML stays minimal.
+    this.shadowRoot.querySelectorAll("[id^='pill-enable-']").forEach((el) => {
+      el.addEventListener("change", (e) => {
+        const id = el.id.replace("pill-enable-", "");
+        this._setGalleryPillEnabled(id, !!e.target.checked);
+      });
+    });
+
+    // Live pills — same mechanism, distinct config key (live_pills) and
+    // catalog (LIVE_PILL_CATALOG). IDs prefixed with `live-pill-enable-`.
+    this.shadowRoot.querySelectorAll("[id^='live-pill-enable-']").forEach((el) => {
+      el.addEventListener("change", (e) => {
+        const id = el.id.replace("live-pill-enable-", "");
+        this._setLivePillEnabled(id, !!e.target.checked);
+      });
+    });
+    this.shadowRoot.querySelectorAll("[data-pillsalign]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        if (btn.disabled) return;
+        const val = btn.dataset.pillsalign;
+        if (val === "center") {
+          // center is the default — drop the key so YAML stays clean
+          const next = { ...this._config };
+          delete next.gallery_pills_align;
           this._config = this._stripAlwaysTrueKeys(next);
           this._fire();
-        } else {
-          this._set(key, false);
+          this._scheduleRender();
+        } else if (val === "left" || val === "right") {
+          this._set("gallery_pills_align", val);
+        }
+      });
+    });
+    this.shadowRoot.querySelectorAll("[data-pillsbarpos]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const val = btn.dataset.pillsbarpos;
+        if (val === "top") {
+          // top is the default — drop the key so YAML stays clean
+          const next = { ...this._config };
+          delete next.bar_position;
+          this._config = this._stripAlwaysTrueKeys(next);
+          this._fire();
+          this._scheduleRender();
+        } else if (val === "bottom" || val === "hidden") {
+          this._set("bar_position", val);
+        }
+      });
+    });
+
+    // Drag-and-drop reorder for pill rows. Mirrors the camera-tag DnD
+    // pattern: mouse via native HTML5 drag events on the row, touch via
+    // pointer events on the grip handle (with elementFromPoint to find
+    // the row under the finger).
+    const pillsList = this.shadowRoot.getElementById("pills-dnd-list");
+    if (pillsList) {
+      let pillDragSrcId = null;
+      const clearOver = () =>
+        pillsList.querySelectorAll(".pill-dnd-over").forEach((el) => el.classList.remove("pill-dnd-over"));
+      const finishReorder = (targetId) => {
+        if (!pillDragSrcId || pillDragSrcId === targetId) return;
+        this._reorderGalleryPillTo(pillDragSrcId, targetId);
+      };
+
+      pillsList.querySelectorAll(".pill-dnd-row").forEach((row) => {
+        const srcId = row.dataset.pillRow;
+        // Mouse drag — fires on the whole row.
+        row.addEventListener("dragstart", (e) => {
+          pillDragSrcId = srcId;
+          row.classList.add("pill-dnd-dragging");
+          if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
+        });
+        row.addEventListener("dragend", () => {
+          row.classList.remove("pill-dnd-dragging");
+          clearOver();
+          pillDragSrcId = null;
+        });
+        row.addEventListener("dragover", (e) => {
+          e.preventDefault();
+          if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+          if (srcId !== pillDragSrcId) {
+            clearOver();
+            row.classList.add("pill-dnd-over");
+          }
+        });
+        row.addEventListener("dragleave", () => row.classList.remove("pill-dnd-over"));
+        row.addEventListener("drop", (e) => {
+          e.preventDefault();
+          clearOver();
+          finishReorder(srcId);
+        });
+
+        // Touch drag — only starts when the user grips the handle, so
+        // accidental swipes on the row don't trigger a reorder.
+        const grip = row.querySelector(".pill-drag-grip");
+        if (grip) {
+          grip.addEventListener(
+            "touchstart",
+            (e) => {
+              e.preventDefault();
+              pillDragSrcId = srcId;
+              row.classList.add("pill-dnd-dragging");
+            },
+            { passive: false }
+          );
+          grip.addEventListener(
+            "touchmove",
+            (e) => {
+              e.preventDefault();
+              const touch = e.touches[0];
+              const el = this.shadowRoot.elementFromPoint
+                ? this.shadowRoot.elementFromPoint(touch.clientX, touch.clientY)
+                : document.elementFromPoint(touch.clientX, touch.clientY);
+              const target = el?.closest?.(".pill-dnd-row");
+              clearOver();
+              if (target && target.dataset.pillRow !== pillDragSrcId) target.classList.add("pill-dnd-over");
+            },
+            { passive: false }
+          );
+          grip.addEventListener(
+            "touchend",
+            (e) => {
+              e.preventDefault();
+              row.classList.remove("pill-dnd-dragging");
+              const over = pillsList.querySelector(".pill-dnd-over");
+              const targetId = over?.dataset?.pillRow;
+              clearOver();
+              if (targetId) finishReorder(targetId);
+              pillDragSrcId = null;
+            },
+            { passive: false }
+          );
+        }
+      });
+    }
+
+    // Same DnD pattern for the toolbar buttons. List id + dataset key
+    // are distinct so the three reorder controllers (gallery / live /
+    // toolbar) don't cross-fire on shared event types.
+    const toolbarList = this.shadowRoot.getElementById("toolbar-dnd-list");
+    if (toolbarList) {
+      let toolbarDragSrcId = null;
+      const clearOver = () =>
+        toolbarList.querySelectorAll(".pill-dnd-over").forEach((el) => el.classList.remove("pill-dnd-over"));
+      const finishReorder = (targetId) => {
+        if (!toolbarDragSrcId || toolbarDragSrcId === targetId) return;
+        this._reorderToolbarButtonTo(toolbarDragSrcId, targetId);
+      };
+
+      toolbarList.querySelectorAll(".pill-dnd-row").forEach((row) => {
+        const srcId = row.dataset.toolbarRow;
+        row.addEventListener("dragstart", (e) => {
+          toolbarDragSrcId = srcId;
+          row.classList.add("pill-dnd-dragging");
+          if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
+        });
+        row.addEventListener("dragend", () => {
+          row.classList.remove("pill-dnd-dragging");
+          clearOver();
+          toolbarDragSrcId = null;
+        });
+        row.addEventListener("dragover", (e) => {
+          e.preventDefault();
+          if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+          if (srcId !== toolbarDragSrcId) {
+            clearOver();
+            row.classList.add("pill-dnd-over");
+          }
+        });
+        row.addEventListener("dragleave", () => row.classList.remove("pill-dnd-over"));
+        row.addEventListener("drop", (e) => {
+          e.preventDefault();
+          clearOver();
+          finishReorder(srcId);
+        });
+
+        const grip = row.querySelector(".pill-drag-grip");
+        if (grip) {
+          grip.addEventListener("touchstart", (e) => {
+            e.preventDefault();
+            toolbarDragSrcId = srcId;
+            row.classList.add("pill-dnd-dragging");
+          }, { passive: false });
+          grip.addEventListener("touchmove", (e) => {
+            e.preventDefault();
+            const touch = e.touches[0];
+            const el = this.shadowRoot.elementFromPoint
+              ? this.shadowRoot.elementFromPoint(touch.clientX, touch.clientY)
+              : document.elementFromPoint(touch.clientX, touch.clientY);
+            const target = el?.closest?.(".pill-dnd-row");
+            clearOver();
+            if (target && target.dataset.toolbarRow !== toolbarDragSrcId) target.classList.add("pill-dnd-over");
+          }, { passive: false });
+          grip.addEventListener("touchend", (e) => {
+            e.preventDefault();
+            row.classList.remove("pill-dnd-dragging");
+            const over = toolbarList.querySelector(".pill-dnd-over");
+            const targetId = over?.dataset?.toolbarRow;
+            clearOver();
+            if (targetId) finishReorder(targetId);
+            toolbarDragSrcId = null;
+          }, { passive: false });
+        }
+      });
+    }
+
+    // Same DnD pattern for live pills — distinct list id + dataset key so
+    // the two reorder controllers don't cross-fire.
+    const livePillsList = this.shadowRoot.getElementById("live-pills-dnd-list");
+    if (livePillsList) {
+      let liveDragSrcId = null;
+      const clearOver = () =>
+        livePillsList.querySelectorAll(".pill-dnd-over").forEach((el) => el.classList.remove("pill-dnd-over"));
+      const finishReorder = (targetId) => {
+        if (!liveDragSrcId || liveDragSrcId === targetId) return;
+        this._reorderLivePillTo(liveDragSrcId, targetId);
+      };
+
+      livePillsList.querySelectorAll(".pill-dnd-row").forEach((row) => {
+        const srcId = row.dataset.livePillRow;
+        row.addEventListener("dragstart", (e) => {
+          liveDragSrcId = srcId;
+          row.classList.add("pill-dnd-dragging");
+          if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
+        });
+        row.addEventListener("dragend", () => {
+          row.classList.remove("pill-dnd-dragging");
+          clearOver();
+          liveDragSrcId = null;
+        });
+        row.addEventListener("dragover", (e) => {
+          e.preventDefault();
+          if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+          if (srcId !== liveDragSrcId) {
+            clearOver();
+            row.classList.add("pill-dnd-over");
+          }
+        });
+        row.addEventListener("dragleave", () => row.classList.remove("pill-dnd-over"));
+        row.addEventListener("drop", (e) => {
+          e.preventDefault();
+          clearOver();
+          finishReorder(srcId);
+        });
+
+        const grip = row.querySelector(".pill-drag-grip");
+        if (grip) {
+          grip.addEventListener(
+            "touchstart",
+            (e) => {
+              e.preventDefault();
+              liveDragSrcId = srcId;
+              row.classList.add("pill-dnd-dragging");
+            },
+            { passive: false }
+          );
+          grip.addEventListener(
+            "touchmove",
+            (e) => {
+              e.preventDefault();
+              const touch = e.touches[0];
+              const el = this.shadowRoot.elementFromPoint
+                ? this.shadowRoot.elementFromPoint(touch.clientX, touch.clientY)
+                : document.elementFromPoint(touch.clientX, touch.clientY);
+              const target = el?.closest?.(".pill-dnd-row");
+              clearOver();
+              if (target && target.dataset.livePillRow !== liveDragSrcId) target.classList.add("pill-dnd-over");
+            },
+            { passive: false }
+          );
+          grip.addEventListener(
+            "touchend",
+            (e) => {
+              e.preventDefault();
+              row.classList.remove("pill-dnd-dragging");
+              const over = livePillsList.querySelector(".pill-dnd-over");
+              const targetId = over?.dataset?.livePillRow;
+              clearOver();
+              if (targetId) finishReorder(targetId);
+              liveDragSrcId = null;
+            },
+            { passive: false }
+          );
         }
       });
     }
@@ -9854,25 +11687,6 @@ details summary { user-select: none; }
       else { const n = { ...this._config }; delete n.live_go2rtc_url; this._config = this._stripAlwaysTrueKeys(n); this._fire(); }
     });
 
-    // Per-camera mic backchannel map: each row writes/clears one key in
-    // `live_mic_streams`. When the map becomes empty, drop the key
-    // entirely to keep YAML output minimal.
-    this.shadowRoot.querySelectorAll(".mic-stream-input").forEach((inp) => {
-      inp.addEventListener("change", (e) => {
-        const cam = String(inp.dataset.micCam || "").trim();
-        if (!cam) return;
-        const val = String(e.target.value || "").trim();
-        const n = { ...this._config };
-        const map = { ...(n.live_mic_streams && typeof n.live_mic_streams === "object" ? n.live_mic_streams : {}) };
-        if (val) map[cam] = val;
-        else delete map[cam];
-        if (Object.keys(map).length > 0) n.live_mic_streams = map;
-        else delete n.live_mic_streams;
-        this._config = this._stripAlwaysTrueKeys(n);
-        this._fire();
-      });
-    });
-
     // Mic interaction mode (toggle vs push-to-talk). Default "toggle"
     // is the only value not stored — keeps the YAML output minimal.
     this.shadowRoot.querySelectorAll("[data-livemicmode]").forEach((btn) => {
@@ -9912,6 +11726,93 @@ details summary { user-select: none; }
     $("live-mic-ns")?.addEventListener("change", (e) => _setMicAp("noise_suppression", !!e.target.checked));
     $("live-mic-agc")?.addEventListener("change", (e) => _setMicAp("auto_gain_control", !!e.target.checked));
 
+    $("live-mic-wf-enabled")?.addEventListener("change", (e) => {
+      this._set("live_mic_waveform_enabled", !!e.target.checked);
+    });
+    this.shadowRoot.querySelectorAll("[data-wfsens]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        this._set("live_mic_waveform_sensitivity", btn.dataset.wfsens);
+      });
+    });
+
+
+    // ─── PTZ editor wiring ─────────────────────────────────────────
+    //
+    // Mutations of the per-camera map go through a helper that strips
+    // empty entries before writing back — the struct accepts an empty
+    // map, but a blank entry left behind by a toggle off would dirty the
+    // YAML output unnecessarily.
+    const _setPtzCameraEntry = (camId, mutator) => {
+      const n = { ...this._config };
+      const map = (n.live_ptz_cameras && typeof n.live_ptz_cameras === "object")
+        ? { ...n.live_ptz_cameras }
+        : {};
+      const cur = map[camId] ? { ...map[camId] } : null;
+      const next = mutator(cur);
+      if (next === null || next === undefined) {
+        delete map[camId];
+      } else {
+        map[camId] = next;
+      }
+      if (Object.keys(map).length > 0) n.live_ptz_cameras = map;
+      else delete n.live_ptz_cameras;
+      this._config = this._stripAlwaysTrueKeys(n);
+      this._fire();
+      this._scheduleRender();
+    };
+
+    $("ptz-show-all")?.addEventListener("change", (e) => {
+      this._ptzShowAll = !!e.target.checked;
+      this._scheduleRender();
+    });
+
+    $("live_ptz_position")?.addEventListener("change", (e) => {
+      const val = String(e.target.value || "bottom-left");
+      this._set("live_ptz_position", val);
+    });
+
+    $("live_ptz_enabled")?.addEventListener("change", (e) => {
+      const on = !!e.target.checked;
+      if (on) {
+        this._set("live_ptz_enabled", true);
+      } else {
+        const next = { ...this._config };
+        delete next.live_ptz_enabled;
+        this._config = this._stripAlwaysTrueKeys(next);
+        this._fire();
+      }
+      this._scheduleRender();
+    });
+
+    this.shadowRoot.querySelectorAll(".ptz-cam-enable").forEach((el) => {
+      el.addEventListener("change", (e) => {
+        const camId = el.dataset.ptzCam;
+        if (!camId) return;
+        const on = !!e.target.checked;
+        // Auto-detect the right dispatcher type on enable. Falls back to
+        // ezviz so users on unrecognised setups still get something usable
+        // out of the box (and can switch the dropdown if it's wrong).
+        const detected = on && this._hass
+          ? detectPtzType(camId, { states: this._hass.states, services: this._hass.services })
+          : null;
+        _setPtzCameraEntry(camId, () =>
+          on ? { type: detected ?? "ezviz" } : null
+        );
+      });
+    });
+
+    this.shadowRoot.querySelectorAll(".ptz-cam-type").forEach((el) => {
+      el.addEventListener("change", (e) => {
+        const camId = el.dataset.ptzCam;
+        if (!camId) return;
+        const type = String(e.target.value || "ezviz");
+        _setPtzCameraEntry(camId, (cur) => ({
+          ...(cur || { presets: [] }),
+          type,
+        }));
+      });
+    });
+
     $("frigate_url")?.addEventListener("change", (e) => {
       const val = String(e.target.value || "").trim().replace(/\/+$/, "");
       if (val) this._set("frigate_url", val);
@@ -9930,6 +11831,8 @@ details summary { user-select: none; }
       }
     });
 
+    $("yaml-export-btn")?.addEventListener("click", () => this._exportYamlConfig());
+
     $("liveenabled")?.addEventListener("change", (e) => {
       const enabled = !!e.target.checked;
 
@@ -9940,7 +11843,6 @@ details summary { user-select: none; }
 
       const next = { ...this._config };
       delete next.live_default;
-      delete next.live_camera_entity;
       delete next.live_enabled;
       delete next.live_provider;
 
@@ -9965,86 +11867,6 @@ details summary { user-select: none; }
       });
     });
 
-    $("live-grid-labels")?.addEventListener("change", (e) => {
-      const on = !!e.target.checked;
-      if (on) {
-        // Default — drop the key from YAML.
-        const next = { ...this._config };
-        delete next.live_grid_labels;
-        this._config = this._stripAlwaysTrueKeys(next);
-        this._fire();
-      } else {
-        this._set("live_grid_labels", false);
-      }
-    });
-
-    // Default live camera tag input (single select)
-    const livedefaultInput = $("livedefault-input");
-    const livedefaultSugg = $("livedefault-suggestions");
-
-    if (livedefaultInput && livedefaultSugg) {
-      const renderDefSuggestions = (items) => {
-        if (!items.length) { livedefaultSugg.hidden = true; livedefaultSugg.innerHTML = ""; return; }
-        livedefaultSugg.hidden = false;
-        livedefaultSugg.innerHTML = `
-          <div class="sugg-label">Cameras</div>
-          ${items.map(({ id, label, sub }) => {
-            return `<button type="button" class="sugg-item" data-setdefcam="${id}">${label}<span style="opacity:0.45;font-weight:500;margin-left:6px;">${sub}</span></button>`;
-          }).join("")}
-        `;
-        livedefaultSugg.querySelectorAll("[data-setdefcam]").forEach((btn) => {
-          btn.addEventListener("mousedown", (e) => {
-            e.preventDefault();
-            setDefCam(btn.dataset.setdefcam);
-          });
-        });
-      };
-
-      const setDefCam = (id) => {
-        if (!id) return;
-        this._set("live_camera_entity", id);
-        livedefaultInput.value = "";
-        livedefaultSugg.hidden = true;
-        livedefaultSugg.innerHTML = "";
-        this._scheduleRender();
-      };
-
-      const getDefSuggestions = () => {
-        const q = livedefaultInput.value.trim().toLowerCase();
-        const rawStreams = (() => {
-          if (Array.isArray(this._config.live_stream_urls) && this._config.live_stream_urls.length > 0)
-            return this._config.live_stream_urls.filter(e => e?.url);
-          if (this._config.live_stream_url)
-            return [{ url: this._config.live_stream_url, name: this._config.live_stream_name || "Stream" }];
-          return [];
-        })();
-        const streamEntries = rawStreams.map((e, i) => ({ id: `__cgc_stream_${i}__`, label: e.name || `Stream ${i + 1}`, sub: "stream url" }));
-        const entityEntries = cameraEntities.map((id) => ({
-          id,
-          label: String(this._hass?.states?.[id]?.attributes?.friendly_name || id).trim(),
-          sub: id,
-        }));
-        return [...streamEntries, ...entityEntries].filter(({ label, sub }) => {
-          if (!q) return true;
-          return label.toLowerCase().includes(q) || sub.toLowerCase().includes(q);
-        });
-      };
-
-      livedefaultInput.addEventListener("focus", () => renderDefSuggestions(getDefSuggestions()), _sig);
-      livedefaultInput.addEventListener("input", () => renderDefSuggestions(getDefSuggestions()), _sig);
-      livedefaultInput.addEventListener("keydown", (e) => {
-        if (e.key === "Enter") {
-          e.preventDefault();
-          const first = livedefaultSugg.querySelector("[data-setdefcam]");
-          if (first) setDefCam(first.dataset.setdefcam);
-        } else if (e.key === "Escape") {
-          livedefaultSugg.hidden = true;
-        }
-      });
-      livedefaultInput.addEventListener("blur", () => {
-        setTimeout(() => { livedefaultSugg.hidden = true; }, 150);
-      });
-    }
 
     // Camera tag input voor live picker
     const livecamInput = $("livecam-input");
@@ -10071,11 +11893,26 @@ details summary { user-select: none; }
 
       const addCam = (id) => {
         if (!id) return;
-        const current = Array.isArray(this._config.live_camera_entities)
-          ? [...this._config.live_camera_entities] : [];
-        if (!current.includes(id)) {
-          current.push(id);
-          this._set("live_camera_entities", current);
+        const liveCams = Array.isArray(this._config.live_cameras) ? this._config.live_cameras : null;
+        if (liveCams && liveCams.length > 0) {
+          const already = liveCams.some(
+            (lc) => lc && typeof lc.entity === "string" && lc.entity.trim() === id
+          );
+          if (!already) {
+            const next = {
+              ...this._config,
+              live_cameras: [...liveCams, { entity: id, name: "" }],
+            };
+            this._config = this._stripAlwaysTrueKeys(next);
+            this._fire();
+          }
+        } else {
+          const current = Array.isArray(this._config.live_camera_entities)
+            ? [...this._config.live_camera_entities] : [];
+          if (!current.includes(id)) {
+            current.push(id);
+            this._set("live_camera_entities", current);
+          }
         }
         livecamInput.value = "";
         livecamSugg.hidden = true;
@@ -10085,7 +11922,15 @@ details summary { user-select: none; }
 
       const getCamSuggestions = () => {
         const q = livecamInput.value.trim().toLowerCase();
-        const selected = Array.isArray(this._config.live_camera_entities) ? this._config.live_camera_entities : [];
+        // Match whichever shape the config currently uses so suggestions
+        // don't propose entities the user has already added. See the
+        // addCam / delete / reorder handlers above for the same branch.
+        const liveCams = Array.isArray(this._config.live_cameras) ? this._config.live_cameras : null;
+        const selected = (liveCams && liveCams.length > 0)
+          ? liveCams
+              .map((lc) => (lc && typeof lc.entity === "string" ? lc.entity.trim() : ""))
+              .filter(Boolean)
+          : (Array.isArray(this._config.live_camera_entities) ? this._config.live_camera_entities : []);
         return cameraEntities.filter((id) => {
           if (selected.includes(id)) return false;
           if (!q) return true;
@@ -10110,21 +11955,71 @@ details summary { user-select: none; }
       });
     }
 
-    // Remove default live camera.
-    this.shadowRoot.querySelectorAll("[data-deldefcam]").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        const next = { ...this._config };
-        delete next.live_camera_entity;
-        this._config = this._stripAlwaysTrueKeys(next);
-        this._fire();
-        this._scheduleRender();
+    // Remove camera tag. Writes to whichever shape the config currently
+    // uses — `live_cameras` (unified, post-#137) takes precedence, otherwise
+    // we fall back to the legacy `live_camera_entities` array.
+    // Live-camera row: click on header toggles expanded body (mic config).
+    // Open state persists across re-renders via `_livecamRowOpen` Set so a
+    // mic-input edit doesn't collapse the row mid-typing.
+    this.shadowRoot.querySelectorAll("[data-livecam-toggle]").forEach((head) => {
+      head.addEventListener("click", (e) => {
+        // Don't toggle if user clicked an interactive child (input, button).
+        if (e.target.closest("input, button, .livecam-rowgrip")) return;
+        const id = head.dataset.livecamToggle;
+        if (!this._livecamRowOpen) this._livecamRowOpen = new Set();
+        if (this._livecamRowOpen.has(id)) this._livecamRowOpen.delete(id);
+        else this._livecamRowOpen.add(id);
+        head.parentElement?.classList.toggle("open");
       });
     });
 
-    // Remove camera tag.
+    // Mic-stream input per camera — writes the value back into the matching
+    // `live_cameras` entry. Uses `change` (not `input`) so we don't fire a
+    // config-changed event per keystroke and steal focus during typing.
+    // Empty/whitespace removes the `mic` field rather than storing "".
+    this.shadowRoot.querySelectorAll("[data-mic-cam]").forEach((inp) => {
+      inp.addEventListener("change", (e) => {
+        const id = e.target.dataset.micCam;
+        const value = String(e.target.value || "").trim();
+        const liveCams = Array.isArray(this._config.live_cameras) ? [...this._config.live_cameras] : [];
+        let idx = liveCams.findIndex((lc) => lc && lc.entity === id);
+        if (idx < 0) {
+          liveCams.push({ entity: id });
+          idx = liveCams.length - 1;
+        }
+        const entry = { ...liveCams[idx] };
+        if (value) entry.mic = value;
+        else delete entry.mic;
+        liveCams[idx] = entry;
+        const next = { ...this._config, live_cameras: liveCams };
+        this._config = this._stripAlwaysTrueKeys(next);
+        this._fire();
+        // Update the row's mic-summary label live without a full re-render.
+        const row = e.target.closest(".livecam-row");
+        const summary = row?.querySelector(".livecam-rowmic");
+        if (summary) {
+          summary.textContent = value || "no mic";
+          summary.classList.toggle("none", !value);
+        }
+      });
+    });
+
     this.shadowRoot.querySelectorAll("[data-delcam]").forEach((btn) => {
       btn.addEventListener("click", () => {
         const id = btn.dataset.delcam;
+        const liveCams = Array.isArray(this._config.live_cameras) ? this._config.live_cameras : null;
+        if (liveCams && liveCams.length > 0) {
+          const filtered = liveCams.filter(
+            (lc) => !(lc && typeof lc.entity === "string" && lc.entity.trim() === id)
+          );
+          const next = { ...this._config };
+          if (filtered.length === 0) delete next.live_cameras;
+          else next.live_cameras = filtered;
+          this._config = this._stripAlwaysTrueKeys(next);
+          this._fire();
+          this._scheduleRender();
+          return;
+        }
         const current = Array.isArray(this._config.live_camera_entities)
           ? [...this._config.live_camera_entities] : [];
         const idx = current.indexOf(id);
@@ -10311,6 +12206,25 @@ details summary { user-select: none; }
 
       const doReorder = (targetId) => {
         if (!dragSrcId || dragSrcId === targetId) return;
+        const liveCams = Array.isArray(this._config.live_cameras) ? this._config.live_cameras : null;
+        if (liveCams && liveCams.length > 0) {
+          // Unified shape — move the entity-typed entry within the array.
+          // Url-typed entries keep their slots; only entity entries shuffle
+          // relative to each other (the drag UI only lists entity chips).
+          const arr = [...liveCams];
+          const findEntityIdx = (id) =>
+            arr.findIndex((lc) => lc && typeof lc.entity === "string" && lc.entity.trim() === id);
+          const fromIdx = findEntityIdx(dragSrcId);
+          const toIdx = findEntityIdx(targetId);
+          if (fromIdx < 0 || toIdx < 0) return;
+          const [moved] = arr.splice(fromIdx, 1);
+          arr.splice(toIdx, 0, moved);
+          const next = { ...this._config, live_cameras: arr };
+          this._config = this._stripAlwaysTrueKeys(next);
+          this._fire();
+          this._scheduleRender();
+          return;
+        }
         const current = Array.isArray(this._config.live_camera_entities)
           ? [...this._config.live_camera_entities] : [];
         const fromIdx = current.indexOf(dragSrcId);
@@ -10347,7 +12261,7 @@ details summary { user-select: none; }
         });
 
         // Touch drag — alleen starten via grip
-        const grip = chip.querySelector(".livecam-tag-grip");
+        const grip = chip.querySelector(".livecam-rowgrip");
         if (grip) {
           grip.addEventListener("touchstart", (e) => {
             e.preventDefault();
@@ -10539,6 +12453,191 @@ details summary { user-select: none; }
     });
   }
 
+  // Toolbar button helpers — enabled lives in the existing show_* keys
+  // (BC), order in a sparse `toolbar_order` map. Catalog defaults are
+  // pruned from both so YAML stays minimal.
+  _setToolbarButtonEnabled(id, enabled) {
+    const entry = TOOLBAR_CATALOG.find((e) => e.id === id);
+    if (!entry) return;
+    if (enabled) {
+      // default true — drop the key so YAML stays clean.
+      const next = { ...(this._config ?? {}) };
+      delete next[entry.showKey];
+      this._config = this._stripAlwaysTrueKeys(next);
+      this._fire();
+      this._scheduleRender();
+    } else {
+      this._set(entry.showKey, false);
+    }
+  }
+
+  _reorderToolbarButtonTo(srcId, targetId) {
+    if (!srcId || !targetId || srcId === targetId) return;
+    const orderMap =
+      this._config?.toolbar_order && typeof this._config.toolbar_order === "object"
+        ? { ...this._config.toolbar_order }
+        : {};
+    const effOrder = (id) => {
+      const entry = TOOLBAR_CATALOG.find((e) => e.id === id);
+      if (typeof orderMap[id] === "number") return orderMap[id];
+      return entry ? entry.defaultOrder : 0;
+    };
+    const ordered = [...TOOLBAR_CATALOG]
+      .map((e) => e.id)
+      .sort((a, b) => effOrder(a) - effOrder(b) ||
+        TOOLBAR_CATALOG.findIndex((e) => e.id === a) - TOOLBAR_CATALOG.findIndex((e) => e.id === b)
+      );
+    const fromIdx = ordered.indexOf(srcId);
+    const toIdx = ordered.indexOf(targetId);
+    if (fromIdx < 0 || toIdx < 0) return;
+
+    const newOrder = [...ordered];
+    const [moved] = newOrder.splice(fromIdx, 1);
+    newOrder.splice(toIdx, 0, moved);
+
+    const nextMap = {};
+    newOrder.forEach((id, i) => {
+      const entry = TOOLBAR_CATALOG.find((e) => e.id === id);
+      const desired = (i + 1) * 10;
+      if (entry && desired !== entry.defaultOrder) nextMap[id] = desired;
+    });
+
+    const next = { ...this._config };
+    if (Object.keys(nextMap).length === 0) delete next.toolbar_order;
+    else next.toolbar_order = nextMap;
+    this._config = this._stripAlwaysTrueKeys(next);
+    this._fire();
+    this._scheduleRender();
+  }
+
+  // Live-pill overrides: same shape as gallery but writes to `live_pills`
+  // and reads from `LIVE_PILL_CATALOG`. Editor UI ids are prefixed with
+  // `live-pill-` so wiring stays unambiguous.
+  _setLivePillEnabled(id, enabled) {
+    const cur = (this._config?.live_pills && typeof this._config.live_pills === "object")
+      ? { ...this._config.live_pills } : {};
+    const entry = { ...(cur[id] || {}) };
+    if (enabled) delete entry.enabled;
+    else entry.enabled = false;
+    this._commitLivePillEntry(cur, id, entry);
+  }
+
+  _reorderLivePillTo(srcId, targetId) {
+    if (!srcId || !targetId || srcId === targetId) return;
+    const cfgMap =
+      this._config?.live_pills && typeof this._config.live_pills === "object"
+        ? { ...this._config.live_pills }
+        : {};
+    const settings = resolvePillSettings(LIVE_PILL_CATALOG, cfgMap);
+    const visualView = new Map([...settings].map(([k, v]) => [k, { ...v, enabled: true }]));
+    const ordered = sortPillsByOrder(LIVE_PILL_CATALOG, visualView);
+    const fromIdx = ordered.indexOf(srcId);
+    const toIdx = ordered.indexOf(targetId);
+    if (fromIdx < 0 || toIdx < 0) return;
+
+    const newOrder = [...ordered];
+    const [moved] = newOrder.splice(fromIdx, 1);
+    newOrder.splice(toIdx, 0, moved);
+
+    newOrder.forEach((pillId, i) => {
+      const catalogEntry = LIVE_PILL_CATALOG.find((p) => p.id === pillId);
+      const desired = (i + 1) * 10;
+      const entry = { ...(cfgMap[pillId] || {}) };
+      if (catalogEntry && desired === catalogEntry.defaultOrder) delete entry.order;
+      else entry.order = desired;
+      if (entry.enabled === undefined && entry.order === undefined) delete cfgMap[pillId];
+      else cfgMap[pillId] = entry;
+    });
+
+    const next = { ...this._config };
+    if (Object.keys(cfgMap).length === 0) delete next.live_pills;
+    else next.live_pills = cfgMap;
+    this._config = this._stripAlwaysTrueKeys(next);
+    this._fire();
+    this._scheduleRender();
+  }
+
+  _commitLivePillEntry(map, id, entry) {
+    if (entry.enabled === undefined && entry.order === undefined) {
+      delete map[id];
+    } else {
+      map[id] = entry;
+    }
+    const next = { ...this._config };
+    if (Object.keys(map).length === 0) delete next.live_pills;
+    else next.live_pills = map;
+    this._config = this._stripAlwaysTrueKeys(next);
+    this._fire();
+    this._scheduleRender();
+  }
+
+  // Gallery-pill overrides: write enabled+position into config, drop the
+  // entry entirely when both fields are back at catalog default so YAML
+  // stays minimal. Catalog defaults live in src/data/pill-catalog.ts.
+  _setGalleryPillEnabled(id, enabled) {
+    const cur = (this._config?.gallery_pills && typeof this._config.gallery_pills === "object")
+      ? { ...this._config.gallery_pills } : {};
+    const entry = { ...(cur[id] || {}) };
+    if (enabled) delete entry.enabled; // default true
+    else entry.enabled = false;
+    this._commitGalleryPillEntry(cur, id, entry);
+  }
+
+  // Reorder: move srcId to the slot currently occupied by targetId.
+  // After the move all pills get fresh orders in 10-step increments;
+  // pills whose new order equals their catalog default get their
+  // `order` override removed so the YAML stays clean.
+  _reorderGalleryPillTo(srcId, targetId) {
+    if (!srcId || !targetId || srcId === targetId) return;
+    const cfgMap =
+      this._config?.gallery_pills && typeof this._config.gallery_pills === "object"
+        ? { ...this._config.gallery_pills }
+        : {};
+    const settings = resolvePillSettings(GALLERY_PILL_CATALOG, cfgMap);
+    // Build the visual order across enabled + disabled (the editor list
+    // shows both, so the user's drag target may be either).
+    const visualView = new Map([...settings].map(([k, v]) => [k, { ...v, enabled: true }]));
+    const ordered = sortPillsByOrder(GALLERY_PILL_CATALOG, visualView);
+    const fromIdx = ordered.indexOf(srcId);
+    const toIdx = ordered.indexOf(targetId);
+    if (fromIdx < 0 || toIdx < 0) return;
+
+    const newOrder = [...ordered];
+    const [moved] = newOrder.splice(fromIdx, 1);
+    newOrder.splice(toIdx, 0, moved);
+
+    newOrder.forEach((pillId, i) => {
+      const catalogEntry = GALLERY_PILL_CATALOG.find((p) => p.id === pillId);
+      const desired = (i + 1) * 10;
+      const entry = { ...(cfgMap[pillId] || {}) };
+      if (catalogEntry && desired === catalogEntry.defaultOrder) delete entry.order;
+      else entry.order = desired;
+      if (entry.enabled === undefined && entry.order === undefined) delete cfgMap[pillId];
+      else cfgMap[pillId] = entry;
+    });
+
+    const next = { ...this._config };
+    if (Object.keys(cfgMap).length === 0) delete next.gallery_pills;
+    else next.gallery_pills = cfgMap;
+    this._config = this._stripAlwaysTrueKeys(next);
+    this._fire();
+    this._scheduleRender();
+  }
+
+  _commitGalleryPillEntry(map, id, entry) {
+    if (entry.enabled === undefined && entry.order === undefined) {
+      delete map[id];
+    } else {
+      map[id] = entry;
+    }
+    const next = { ...this._config };
+    if (Object.keys(map).length === 0) delete next.gallery_pills;
+    else next.gallery_pills = map;
+    this._config = this._stripAlwaysTrueKeys(next);
+    this._fire();
+    this._scheduleRender();
+  }
+
   _set(key, value) {
     if (key === "live_provider") return;
     if (key === "preview_close_on_tap") return;
@@ -10553,7 +12652,7 @@ details summary { user-select: none; }
     }
 
     this._fire();
-    const RENDERS_REQUIRED = new Set(["source_mode", "live_enabled", "live_camera_entities", "object_filters", "delete_service", "frigate_delete_service", "live_camera_entity", "menu_buttons", "frigate_url", "live_layout"]);
+    const RENDERS_REQUIRED = new Set(["source_mode", "live_enabled", "live_camera_entities", "live_cameras", "object_filters", "delete_service", "frigate_delete_service", "menu_buttons", "frigate_url", "live_layout", "gallery_pills", "gallery_pills_align", "controls_mode", "bar_position"]);
     if (RENDERS_REQUIRED.has(key)) this._scheduleRender();
   }
 
@@ -10618,6 +12717,7 @@ details summary { user-select: none; }
       this._fire();
     }
 
+
     this._scheduleRender();
   }
 
@@ -10679,6 +12779,15 @@ details summary { user-select: none; }
       : [];
     return list.join("\n");
   }
+
+  _esc(s) {
+    return String(s ?? "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+
 
   _stripAlwaysTrueKeys(cfg) {
     const next = { ...(cfg || {}) };

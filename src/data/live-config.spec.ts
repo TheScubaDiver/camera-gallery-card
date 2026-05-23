@@ -6,6 +6,7 @@ import {
   friendlyCameraName,
   getAllLiveCameraEntities,
   getGridCameraEntities,
+  getLiveCameraEntityIds,
   getLiveCameraOptions,
   getStreamEntries,
   getStreamEntryById,
@@ -142,7 +143,10 @@ describe("getAllLiveCameraEntities", () => {
     expect(new Set(result)).toEqual(new Set(["camera.a", "camera.b"]));
   });
 
-  it("sorts by friendly name", () => {
+  it("preserves the configured list order (no alphabetic sort)", () => {
+    // Position 0 is the default camera, so the friendly-name sort the
+    // helper used to apply would have silently overridden the user's
+    // intentional ordering.
     const result = getAllLiveCameraEntities({
       config: cfg({ live_camera_entities: ["camera.x", "camera.y"] }),
       hassStates: {
@@ -152,7 +156,7 @@ describe("getAllLiveCameraEntities", () => {
       localeTag: "en",
       friendlyName: (id) => (id === "camera.x" ? "Zebra" : "Aardvark"),
     });
-    expect(result).toEqual(["camera.y", "camera.x"]);
+    expect(result).toEqual(["camera.x", "camera.y"]);
   });
 });
 
@@ -267,6 +271,34 @@ describe("getGridCameraEntities", () => {
         })
       )
     ).toEqual(["camera.front", "camera.back"]);
+  });
+});
+
+describe("getLiveCameraEntityIds", () => {
+  it("returns entity ids from legacy live_camera_entities", () => {
+    expect(getLiveCameraEntityIds(cfg({ live_camera_entities: ["camera.a", "camera.b"] }))).toEqual(
+      ["camera.a", "camera.b"]
+    );
+  });
+
+  it("excludes orphan synthetic stream ids from mic-only legacy entries", () => {
+    // A legacy `live_mic_streams` with a synthetic key but no matching
+    // stream becomes a mic-only entry under `getCanonicalLiveCameras`,
+    // stored on the `entity` field. Those aren't real HA entities and
+    // should not leak into hass.states watch-lists.
+    expect(
+      getLiveCameraEntityIds(
+        cfg({
+          live_camera_entities: ["camera.real"],
+          live_mic_streams: { [`${STREAM_ID_PREFIX}_0__`]: "orphan_mic" },
+        })
+      )
+    ).toEqual(["camera.real"]);
+  });
+
+  it("returns [] for null/empty config", () => {
+    expect(getLiveCameraEntityIds(null)).toEqual([]);
+    expect(getLiveCameraEntityIds(cfg())).toEqual([]);
   });
 });
 

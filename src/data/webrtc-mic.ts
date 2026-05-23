@@ -313,6 +313,17 @@ export class WebRtcMicClient {
     return this._level;
   }
 
+  /** Copy the current frequency-domain analyser data into `target` for the
+   * bars visualisation in the talkback bar. Returns `false` if the analyser
+   * isn't mounted (idle state, or analyser creation failed). */
+  getFrequencyData(target: Uint8Array): boolean {
+    const a = this._analyser;
+    if (!a) return false;
+    const view = new Uint8Array(target.buffer as ArrayBuffer);
+    a.getByteFrequencyData(view);
+    return true;
+  }
+
   error(): MicError | null {
     return this._error;
   }
@@ -857,7 +868,10 @@ export class WebRtcMicClient {
     try {
       const src = ctx.createMediaStreamSource(stream);
       const analyser = ctx.createAnalyser();
-      analyser.fftSize = 32;
+      // 512 bins is overkill for the RMS level meter but gives the waveform
+      // visualizer a smooth line; 32 bins (the previous value) produced
+      // jagged segments that looked like a step function.
+      analyser.fftSize = 512;
       src.connect(analyser);
       this._analyser = analyser;
       this._analyserBuf = new Uint8Array(analyser.fftSize);

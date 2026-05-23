@@ -55,6 +55,8 @@ import {
   DEFAULT_LIVE_MIC_ECHO_CANCELLATION,
   DEFAULT_LIVE_MIC_MODE,
   DEFAULT_LIVE_MIC_NOISE_SUPPRESSION,
+  DEFAULT_LIVE_PTZ_ENABLED,
+  DEFAULT_LIVE_PTZ_POSITION,
   DEFAULT_MAX_MEDIA,
   DEFAULT_OBJECT_FIT,
   DEFAULT_PREVIEW_POSITION,
@@ -66,6 +68,11 @@ import {
   DEFAULT_LIVE_LAYOUT,
   LIVE_LAYOUTS,
   MIC_MODES,
+  PTZ_SPEED_DEFAULT,
+  PTZ_SPEED_MAX,
+  PTZ_SPEED_MIN,
+  PTZ_POSITIONS,
+  PTZ_TYPES,
   MAX_MEDIA_MAX,
   MAX_MEDIA_MIN,
   OBJECT_FITS,
@@ -127,6 +134,36 @@ const liveStreamUrlEntry = object({
 });
 
 /**
+ * One entry in the unified `live_cameras` list (issue #137 — Erik's
+ * proposal to collapse `live_camera_entities` + `live_stream_urls` +
+ * `live_mic_streams` into one shape). An entry is either an HA-entity
+ * camera or an RTSP-stream camera; per-camera config (mic, name override,
+ * future knobs) lives inline on the same entry — no more fragile
+ * `__cgc_stream_<N>__` synthetic ids in a sidecar map.
+ *
+ * The cross-field rule that *exactly one* of `entity` / `url` is set is
+ * enforced in `normalize.ts` (superstruct can't conditionally require).
+ */
+const liveCameraEntry = object({
+  entity: optional(string()),
+  url: optional(string()),
+  name: defaulted(string(), ""),
+  mic: optional(string()),
+});
+
+/**
+ * One row in the configurable-pill layout. `order` is a signed integer
+ * — lower renders earlier. Pills with the same order tie-break on the
+ * catalog's natural order. Default order for pills not mentioned in
+ * `gallery_pills` lives in `data/pill-catalog.ts` (spaced by 10 so
+ * users can wedge a new pill between defaults without renumbering).
+ */
+const galleryPillEntry = object({
+  enabled: defaulted(boolean(), true),
+  order: defaulted(integer(), 0),
+});
+
+/**
  * Per-toggle Web Audio constraints for the mic. All three flags default to
  * `true` at the read site (in `webrtc-mic.ts`) so the user only needs to
  * write the keys they want to opt out of. Strict nested object — typos in
@@ -149,6 +186,80 @@ const liveMicIceServer = object({
   urls: union([string(), array(string())]),
   username: optional(string()),
   credential: optional(string()),
+});
+
+/**
+ * One free-form HA service call used as a per-direction override. `service`
+ * is validated as a non-empty string (not the strict `domain.service`
+ * regex) so users can paste templated services without tripping
+ * validation; `data` / `target` are forwarded as-is to `hass.callService`.
+ */
+const ptzServiceCall = object({
+  service: nonEmptyString,
+  data: optional(record(string(), string())),
+  target: optional(
+    object({
+      entity_id: optional(union([string(), array(string())])),
+    })
+  ),
+});
+
+/**
+ * Start + (optional) stop pair for one direction. Continuous-type
+ * overrides supply both; pulse-type overrides supply only `start` and the
+ * dispatcher no-ops stop the way EZVIZ does natively.
+ */
+const ptzActionPair = object({
+  start: ptzServiceCall,
+  stop: optional(ptzServiceCall),
+});
+
+/**
+ * Per-direction overrides. Each is optional — directions without an
+ * override fall through to the type-specific built-in dispatcher
+ * (auto-detected button entity for EZVIZ/Reolink, `frigate.ptz` for
+ * Frigate, `onvif.ptz` for ONVIF). Home is one-shot and only takes a
+ * `start`.
+ */
+const ptzActions = object({
+  up: optional(ptzActionPair),
+  down: optional(ptzActionPair),
+  left: optional(ptzActionPair),
+  right: optional(ptzActionPair),
+  zoom_in: optional(ptzActionPair),
+  zoom_out: optional(ptzActionPair),
+  home: optional(object({ start: ptzServiceCall })),
+});
+
+/**
+ * Per-camera PTZ config. `type` selects the command dispatcher.
+ * `speed` is optional: when absent the dispatcher falls back to the
+ * global `live_ptz_speed`. Range is clamped to [1, 9] (the EZVIZ
+ * window); out-of-range values are validation errors rather than
+ * silent no-ops at the integration boundary.
+ *
+ * `actions` is the YAML escape hatch — when set, the named direction
+ * (or zoom / home) is dispatched via the user-supplied service call
+ * instead of the built-in dispatcher. Useful for cameras that don't
+ * match one of the supported types (Foscam, Tapo without ONVIF, custom
+ * scripts, …).
+ */
+// `type({...})` (not `object({...})`) so legacy `presets` entries from
+// previously-saved YAML get silently ignored instead of tripping
+// validation. We don't migrate-then-strip because the field is fully
+// removed downstream — there's nothing to preserve.
+const ptzCamera = type({
+  type: defaulted(enums(PTZ_TYPES), "ezviz"),
+  /**
+   * Override for the auto-derived EZVIZ button-entity prefix. Set to the
+   * `button.<base>` prefix (no trailing `_ptz_<dir>`) when your install
+   * has renamed the buttons away from the default `button.<camera_base>_*`
+   * pattern. Empty / absent triggers auto-derivation from the camera
+   * entity id.
+   */
+  button_prefix: optional(string()),
+  speed: optional(intInRange(PTZ_SPEED_MIN, PTZ_SPEED_MAX)),
+  actions: optional(ptzActions),
 });
 
 /** Menu button entry — same strictness rationale as `liveStreamUrlEntry`. */
@@ -211,6 +322,37 @@ export const cameraGalleryCardConfigStruct = type({
   show_today: defaulted(boolean(), true),
   show_media_filter: defaulted(boolean(), true),
 
+  // Sparse order overrides for the toolbar buttons. Keys are ids from
+  // `TOOLBAR_CATALOG` (`src/data/pill-catalog.ts`); buttons without an
+  // entry use their catalog default. Enabled state still lives in the
+  // existing `show_*` keys above for backwards compatibility.
+  toolbar_order: defaulted(record(string(), integer()), {}),
+
+  // ─── Configurable pill overlay (gallery) ──────────────────
+  // Sparse overrides for the pill row that floats over the preview.
+  // Keys are pill ids defined in `GALLERY_PILL_CATALOG`
+  // (`src/data/pill-catalog.ts`); unset pills fall back to their built-in
+  // defaults. The render dispatcher iterates the catalog and applies
+  // these overrides — so YAML only needs to mention pills the user
+  // actually wants to change.
+  gallery_pills: defaulted(record(string(), galleryPillEntry), {}),
+
+  // Alignment of the pill row inside the overlay strip — `left`,
+  // `center`, or `right`. Only meaningful in overlay-mode (in fixed
+  // mode pills already stretch to fill the bar evenly).
+  gallery_pills_align: defaulted(enums(["left", "center", "right"]), "center"),
+
+  // ─── Configurable pill overlay (live view) ────────────────
+  // Sparse overrides for the always-available live pills (mute, PiP,
+  // fullscreen, refresh). Pills with their own visibility gate (picker,
+  // hamburger, PTZ, diagnostics) stay hardcoded — they don't appear in
+  // this catalog. Keys are pill ids defined in `LIVE_PILL_CATALOG`.
+  //
+  // Layout is fixed: camera-name stays left, action pills stay right —
+  // no alignment knob (intentionally). Drop the key entirely if the user
+  // hasn't touched any pill.
+  live_pills: defaulted(record(string(), galleryPillEntry), {}),
+
   // ─── Playback ──────────────────────────────────────────────
   autoplay: defaulted(boolean(), DEFAULT_AUTOPLAY),
   auto_muted: defaulted(boolean(), DEFAULT_AUTOMUTED),
@@ -218,7 +360,11 @@ export const cameraGalleryCardConfigStruct = type({
   // ─── Live preview ──────────────────────────────────────────
   live_enabled: defaulted(boolean(), DEFAULT_LIVE_ENABLED),
   live_auto_muted: defaulted(boolean(), DEFAULT_LIVE_AUTO_MUTED),
-  live_camera_entity: defaulted(string(), ""),
+  // Unified camera list (issue #137). When non-empty, this is the
+  // canonical source of truth; the legacy keys below are populated by the
+  // pre-migrate step from `live_cameras` (or vice-versa for old configs)
+  // and consumers should read `live_cameras` directly.
+  live_cameras: defaulted(array(liveCameraEntry), []),
   live_camera_entities: defaulted(array(string()), []),
   live_layout: defaulted(enums(LIVE_LAYOUTS), DEFAULT_LIVE_LAYOUT),
   live_grid_labels: defaulted(boolean(), true),
@@ -246,6 +392,21 @@ export const cameraGalleryCardConfigStruct = type({
   // aggressive symmetric NAT use these to override.
   live_mic_ice_servers: optional(array(liveMicIceServer)),
   live_mic_force_relay: defaulted(boolean(), false),
+  // Talkback waveform visualizer — frequency-bars overlay on the talkback
+  // bar while the mic is `active`. Just an on/off + three sensitivity
+  // presets; style and opacity are hard-coded for a consistent look.
+  live_mic_waveform_enabled: defaulted(boolean(), true),
+  live_mic_waveform_sensitivity: defaulted(enums(["low", "medium", "high"]), "medium"),
+
+  // ─── Live PTZ (pan/tilt + presets) ─────────────────────────
+  // Per-camera map keyed by camera entity id; values configure the
+  // command dispatcher + presets. Cameras absent from the map have
+  // no PTZ overlay. `live_ptz_enabled` is a global kill-switch so users
+  // can hide the overlay without losing their per-camera config.
+  live_ptz_enabled: defaulted(boolean(), DEFAULT_LIVE_PTZ_ENABLED),
+  live_ptz_position: defaulted(enums(PTZ_POSITIONS), DEFAULT_LIVE_PTZ_POSITION),
+  live_ptz_speed: defaulted(intInRange(PTZ_SPEED_MIN, PTZ_SPEED_MAX), PTZ_SPEED_DEFAULT),
+  live_ptz_cameras: defaulted(record(string(), ptzCamera), {}),
   start_mode: defaulted(enums(START_MODES), "gallery"),
 
   // ─── Delete ────────────────────────────────────────────────

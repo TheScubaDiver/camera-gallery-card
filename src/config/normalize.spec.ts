@@ -403,6 +403,89 @@ describe("Audit fix #4 — numeric clamp ranges as struct refinements", () => {
   });
 });
 
+describe("live_cameras unified shape (issue #137)", () => {
+  it("builds entries from live_camera_entities + live_mic_streams", () => {
+    const { config } = normalizeConfig({
+      ...minimalSensor,
+      live_camera_entities: ["camera.front", "camera.back"],
+      live_mic_streams: { "camera.front": "front_2way" },
+    });
+    expect(config.live_cameras).toEqual([
+      { entity: "camera.front", name: "", mic: "front_2way" },
+      { entity: "camera.back", name: "" },
+    ]);
+  });
+
+  it("builds entries from live_stream_urls + per-stream mic via synthetic key", () => {
+    const { config } = normalizeConfig({
+      ...minimalSensor,
+      live_stream_urls: [
+        { url: "rtsp://a", name: "Door" },
+        { url: "rtsp://b", name: "" },
+      ],
+      live_mic_streams: { __cgc_stream_1__: "back_2way" },
+    });
+    expect(config.live_cameras).toEqual([
+      { url: "rtsp://a", name: "Door" },
+      { url: "rtsp://b", name: "", mic: "back_2way" },
+    ]);
+  });
+
+  it("supports singular live_stream_url shorthand with default name", () => {
+    const { config } = normalizeConfig({
+      ...minimalSensor,
+      live_stream_url: "rtsp://single",
+    });
+    expect(config.live_cameras).toEqual([{ url: "rtsp://single", name: "Stream" }]);
+  });
+
+  it("honors explicit live_stream_name on singular shorthand", () => {
+    const { config } = normalizeConfig({
+      ...minimalSensor,
+      live_stream_url: "rtsp://x",
+      live_stream_name: "Driveway",
+    });
+    expect(config.live_cameras).toEqual([{ url: "rtsp://x", name: "Driveway" }]);
+  });
+
+  it("preserves orphan mic-only legacy entries (no matching entity/stream)", () => {
+    const { config } = normalizeConfig({
+      ...minimalSensor,
+      live_mic_streams: { "camera.orphan": "orphan_2way" },
+    });
+    expect(config.live_cameras).toEqual([
+      { entity: "camera.orphan", name: "", mic: "orphan_2way" },
+    ]);
+  });
+
+  it("honors an explicit live_cameras array and cleans malformed entries", () => {
+    const { config } = normalizeConfig({
+      ...minimalSensor,
+      live_cameras: [
+        { entity: "camera.a", mic: "a_2way" },
+        { url: "rtsp://b", name: "B" },
+        { entity: "camera.c", url: "rtsp://c" }, // both → dropped
+        {}, // empty → dropped
+        { name: "lone-name" }, // no entity/url → dropped
+      ],
+    });
+    expect(config.live_cameras).toEqual([
+      { entity: "camera.a", name: "", mic: "a_2way" },
+      { url: "rtsp://b", name: "B" },
+    ]);
+  });
+
+  it("explicit live_cameras wins over legacy keys (legacy ignored)", () => {
+    const { config } = normalizeConfig({
+      ...minimalSensor,
+      live_cameras: [{ entity: "camera.explicit" }],
+      live_camera_entities: ["camera.legacy"],
+      live_mic_streams: { "camera.legacy": "legacy_2way" },
+    });
+    expect(config.live_cameras).toEqual([{ entity: "camera.explicit", name: "" }]);
+  });
+});
+
 describe("Audit fix #5/#6 — malformed array entries become validation errors", () => {
   it("rejects live_stream_urls with missing url", () => {
     expect(() =>
