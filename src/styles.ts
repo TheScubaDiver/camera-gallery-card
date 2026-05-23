@@ -680,6 +680,7 @@ export const cardStyles = css`
     margin-top: 0;
     margin-left: -4px;
     margin-right: -4px;
+    position: relative;
 
     &.horizontal {
       min-height: var(--cgc-thumb-row-h, 86px);
@@ -700,6 +701,40 @@ export const cardStyles = css`
       display: flex;
       align-items: stretch;
       background: transparent;
+    }
+  }
+
+  .scroll-time-pill {
+    position: absolute;
+    top: 8px;
+    left: 50%;
+    transform: translateX(-50%) translateY(-6px);
+    background: rgba(0, 0, 0, 0.32);
+    backdrop-filter: blur(16px) saturate(160%);
+    -webkit-backdrop-filter: blur(16px) saturate(160%);
+    color: #fff;
+    padding: 5px 12px;
+    border-radius: 14px;
+    font-size: 12.5px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    pointer-events: none;
+    z-index: 20;
+    opacity: 0;
+    transition:
+      opacity 220ms ease-out,
+      transform 220ms ease-out;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+    white-space: nowrap;
+  }
+  .scroll-time-pill.visible {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .scroll-time-pill {
+      transition: opacity 0s;
+      transform: translateX(-50%);
     }
   }
 
