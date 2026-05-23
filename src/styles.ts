@@ -127,10 +127,10 @@ export const cardStyles = css`
 
   .panel {
     background: var(--cgc-card-bg, var(--card-background-color, #fff));
-    border: 1px solid var(--cgc-card-border-color, var(--divider-color, rgba(0, 0, 0, 0.12)));
+    border: none;
     border-radius: var(--cgc-card-radius);
     box-sizing: border-box;
-    padding: var(--cardPad, 4px 4px);
+    padding: 0;
     display: flex;
     flex-direction: column;
     gap: var(--cgc-row-gap, 8px);
