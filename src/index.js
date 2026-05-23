@@ -1103,10 +1103,17 @@ class CameraGalleryCard extends LitElement {
       // Wire transport state to gallery pills (play/pause + time display).
       // requestUpdate via the existing _galleryPlaying/_galleryCurrentTime
       // setters keeps the pill row in sync without polling.
-      video.addEventListener("play", () => { this._galleryPlaying = true; });
-      video.addEventListener("pause", () => { this._galleryPlaying = false; });
+      video.addEventListener("play", () => {
+        this._galleryPlaying = true;
+        this._startGalleryProgressRaf();
+      });
+      video.addEventListener("pause", () => {
+        this._galleryPlaying = false;
+        this._stopGalleryProgressRaf();
+      });
       video.addEventListener("ended", () => {
         this._galleryPlaying = false;
+        this._stopGalleryProgressRaf();
         if (this._galleryAutoplayAll) {
           // Defer so the `ended` event finishes propagating before we
           // tear down the src + swap to the next clip.
@@ -2066,6 +2073,33 @@ class CameraGalleryCard extends LitElement {
       this.requestUpdate();
     } catch (_) {
       // user dismissed prompt or PiP unsupported on this stream
+    }
+  }
+
+  // 60fps progress-bar updates via rAF — reads video.currentTime each
+  // frame and writes width directly to the fill element, bypassing lit's
+  // render cycle (which is bound to timeupdate's ~4Hz cadence).
+  _startGalleryProgressRaf() {
+    if (this._galleryProgressRaf) return;
+    const tick = () => {
+      const video = this._previewVideoEl;
+      const dur = this._galleryDuration || 0;
+      if (!video || dur <= 0) {
+        this._galleryProgressRaf = requestAnimationFrame(tick);
+        return;
+      }
+      const pct = Math.max(0, Math.min(100, (video.currentTime / dur) * 100));
+      const fill = this.renderRoot?.querySelector(".vid-progress-fill");
+      if (fill) fill.style.width = pct + "%";
+      this._galleryProgressRaf = requestAnimationFrame(tick);
+    };
+    this._galleryProgressRaf = requestAnimationFrame(tick);
+  }
+
+  _stopGalleryProgressRaf() {
+    if (this._galleryProgressRaf) {
+      cancelAnimationFrame(this._galleryProgressRaf);
+      this._galleryProgressRaf = null;
     }
   }
 

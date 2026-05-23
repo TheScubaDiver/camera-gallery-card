@@ -1065,7 +1065,7 @@ export const cardStyles = css`
     left: 0;
     right: 0;
     bottom: 0;
-    height: 3px;
+    height: 5px;
     background: transparent;
     cursor: pointer;
     z-index: 9;
@@ -1100,7 +1100,6 @@ export const cardStyles = css`
     height: 100%;
     background: #fff;
     pointer-events: none;
-    transition: width 0.08s linear;
   }
 
   /* Big centered play/pause button for the gallery video preview.
@@ -1157,15 +1156,15 @@ export const cardStyles = css`
   .vid-time {
     position: absolute;
     right: 8px;
-    bottom: 10px;
+    bottom: 9px;
     z-index: 10;
-    padding: 4px 9px;
+    padding: 3px 7px;
     border-radius: 999px;
     background: transparent;
     backdrop-filter: blur(16px) saturate(160%);
     -webkit-backdrop-filter: blur(16px) saturate(160%);
     color: var(--cgc-tsbar-txt, #fff);
-    font-size: 12px;
+    font-size: 11px;
     font-weight: 600;
     line-height: 1;
     letter-spacing: 0.02em;
