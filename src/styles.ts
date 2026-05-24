@@ -1393,10 +1393,7 @@ export const cardStyles = css`
     user-select: none;
     opacity: 0.3;
     transform: scale(0.94);
-    transition:
-      transform 0.1s ease,
-      opacity 0.12s ease,
-      box-shadow 0.14s ease;
+    transition: none;
 
     &:focus {
       outline: none;
