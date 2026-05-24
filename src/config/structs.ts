@@ -40,6 +40,7 @@ import {
   DEFAULT_AUTOMUTED,
   DEFAULT_AUTOPLAY,
   DEFAULT_BAR_OPACITY,
+  DEFAULT_THUMB_OFF_OPACITY,
   DEFAULT_BAR_POSITION,
   DEFAULT_CONTROLS_MODE,
   DEFAULT_DELETE_CONFIRM,
@@ -258,6 +259,10 @@ export const cameraGalleryCardConfigStruct = type({
   chevron_opacity: defaulted(intInRange(BAR_OPACITY_MIN, BAR_OPACITY_MAX), DEFAULT_BAR_OPACITY),
   bar_position: defaulted(enums(BAR_POSITIONS), DEFAULT_BAR_POSITION),
   thumb_size: defaulted(intInRange(THUMB_SIZE_MIN, THUMB_SIZE_MAX), THUMB_SIZE),
+  thumb_off_opacity: defaulted(
+    intInRange(BAR_OPACITY_MIN, BAR_OPACITY_MAX),
+    DEFAULT_THUMB_OFF_OPACITY
+  ),
   thumb_bar_position: defaulted(enums(THUMB_BAR_POSITIONS), DEFAULT_THUMB_BAR_POSITION),
   thumb_layout: defaulted(enums(THUMB_LAYOUTS), DEFAULT_THUMB_LAYOUT),
   thumb_sort_order: defaulted(enums(THUMB_SORT_ORDERS), DEFAULT_THUMB_SORT_ORDER),

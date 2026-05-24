@@ -1391,7 +1391,7 @@ export const cardStyles = css`
     scroll-snap-align: start;
     -webkit-touch-callout: none;
     user-select: none;
-    opacity: 0.3;
+    opacity: calc(var(--cgc-thumb-off-opacity, 30) / 100);
     transform: scale(0.94);
     transition: none;
 

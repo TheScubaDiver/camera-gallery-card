@@ -143,6 +143,7 @@ export interface InputConfig {
   chevron_opacity?: number;
   bar_position?: string;
   thumb_size?: number;
+  thumb_off_opacity?: number;
   thumb_bar_position?: string;
   thumb_layout?: string;
   thumb_sort_order?: string;

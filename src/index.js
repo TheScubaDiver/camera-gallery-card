@@ -4041,6 +4041,7 @@ class CameraGalleryCard extends LitElement {
       --cgc-chevron-opacity:${this.config.chevron_opacity ?? this.config.bar_opacity};
       --cgc-thumb-row-h:${this.config.thumb_size}px;
       --cgc-thumb-empty-h:${this.config.thumb_size}px;
+      --cgc-thumb-off-opacity:${this.config.thumb_off_opacity};
       --cgc-topbar-margin:${STYLE.topbar_margin};
       --cgc-topbar-padding:${STYLE.topbar_padding};
       --cgc-thumbs-max-h:${(this.config.card_height ?? 0) > 0 ? this.config.card_height + "px" : "320px"};
@@ -8490,7 +8491,7 @@ class CameraGalleryCardEditor extends HTMLElement {
         .radius-value-wrap {
           display: inline-flex;
           align-items: baseline;
-          gap: 2px;
+          gap: 0;
           font-size: 12px;
           font-weight: 800;
           color: var(--ed-text2);

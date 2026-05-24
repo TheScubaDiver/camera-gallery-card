@@ -57,6 +57,7 @@ const UI_ONLY_KEYS = new Set<ConfigKey>([
   "thumb_bar_position",
   "thumb_layout",
   "thumb_size",
+  "thumb_off_opacity",
   "show_camera_title",
   "controls_mode",
 ]);
