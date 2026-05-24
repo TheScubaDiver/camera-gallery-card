@@ -6934,17 +6934,47 @@ class CameraGalleryCardEditor extends HTMLElement {
 
     this.shadowRoot.querySelectorAll("[data-radius]").forEach((slider) => {
       const variable = slider.dataset.radius;
-      const safeId = variable.replace(/[^a-z0-9]/gi, "-");
-      const display = this.shadowRoot.getElementById("radius-val-" + safeId);
+      const numInput = this.shadowRoot.getElementById(slider.dataset.radiusMirrorId);
 
       slider.addEventListener("input", (e) => {
-        if (display) display.textContent = e.target.value + "px";
+        if (numInput) numInput.value = e.target.value;
       }, sig);
 
       slider.addEventListener("change", (e) => {
+        if (numInput) numInput.value = e.target.value;
         this._setStyleVariable(variable, e.target.value + "px");
         this._fire();
         this._scheduleRender();
+      }, sig);
+    });
+
+    this.shadowRoot.querySelectorAll("[data-radius-input]").forEach((numInput) => {
+      const variable = numInput.dataset.radiusInput;
+      const defaultVal = Number(numInput.dataset.radiusDefault);
+      const slider = this.shadowRoot.querySelector(`[data-radius="${variable}"]`);
+      const min = Number(numInput.min);
+      const max = Number(numInput.max);
+
+      const commit = () => {
+        let v = Number(numInput.value);
+        if (!Number.isFinite(v)) v = defaultVal;
+        v = Math.min(max, Math.max(min, Math.round(v)));
+        numInput.value = v;
+        if (slider) slider.value = v;
+        this._setStyleVariable(variable, v + "px");
+        this._fire();
+        this._scheduleRender();
+      };
+
+      numInput.addEventListener("input", () => {
+        const v = Number(numInput.value);
+        if (Number.isFinite(v) && slider) slider.value = Math.min(max, Math.max(min, v));
+      }, sig);
+
+      numInput.addEventListener("change", commit, sig);
+      numInput.addEventListener("blur", commit, sig);
+      numInput.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") { e.preventDefault(); commit(); numInput.blur(); }
       }, sig);
     });
 
@@ -7694,11 +7724,25 @@ class CameraGalleryCardEditor extends HTMLElement {
                               type="range"
                               class="radius-range"
                               data-radius="${ctrl.variable}"
+                              data-radius-mirror-id="radius-num-${safeId}"
                               min="${ctrl.min}"
                               max="${ctrl.max}"
                               value="${val}"
                             >
-                            <span class="radius-value" id="radius-val-${safeId}">${val}px</span>
+                            <span class="radius-value-wrap" id="radius-val-${safeId}" data-slider-unit="px">
+                              <input
+                                type="number"
+                                class="radius-value-input"
+                                id="radius-num-${safeId}"
+                                data-radius-input="${ctrl.variable}"
+                                data-radius-default="${ctrl.default}"
+                                min="${ctrl.min}"
+                                max="${ctrl.max}"
+                                step="1"
+                                value="${val}"
+                              >
+                              <span class="radius-value-unit">px</span>
+                            </span>
                             <button type="button" class="color-reset" data-reset="${ctrl.variable}" title="Reset to default">
                               ${svgIcon('mdi:backup-restore', 16)}
                             </button>
