@@ -245,6 +245,7 @@ export const DEFAULT_AUTOMUTED = true;
 export const DEFAULT_AUTOPLAY = false;
 export const DEFAULT_ASPECT_RATIO = "16:9" satisfies AspectRatio;
 export const DEFAULT_BAR_OPACITY = 30;
+export const DEFAULT_THUMB_OFF_OPACITY = 30;
 export const DEFAULT_BAR_POSITION = "top" satisfies BarPosition;
 export const DEFAULT_FRIGATE_THUMB_BBOX = false;
 export const DEFAULT_FRIGATE_EVENT_CLUSTER = false;
