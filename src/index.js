@@ -508,6 +508,12 @@ class CameraGalleryCard extends LitElement {
     this._previewLoadTimer = null;
 
     this._revealedThumbs = new Set();
+    // Cluster expand-on-tap: tracks which cluster representatives the user
+    // has clicked open. Keys are MsItem.id (the clip's media-source URI).
+    // When expanded, the cluster's members get spliced into `filtered` in
+    // chronological position so the gallery treats them as normal items
+    // (own index, own click handler, own viewer state).
+    this._expandedClusters = new Set();
     this._thumbObserver = null;
     this._thumbObserverRoot = null;
     this._observedThumbs = new WeakSet();
@@ -760,7 +766,12 @@ class CameraGalleryCard extends LitElement {
 
     const filteredAll = base.objFiltered.filter((x) => this._matchesTypeFilter(x.src));
     const cap = (this.config?.max_media ?? DEFAULT_MAX_MEDIA);
-    const filtered = filteredAll.slice(0, Math.min(cap, filteredAll.length));
+    const filteredBeforeCluster = filteredAll.slice(0, Math.min(cap, filteredAll.length));
+    // Mirror the render's view (cluster expansion injects members) so
+    // _selectedIndex resolves to the same slot — otherwise tapping a
+    // member updates the index but the player here sees a different
+    // list and plays the wrong (or no) clip.
+    const filtered = this._injectExpandedClusterMembers(filteredBeforeCluster);
 
     if (!filtered.length) {
       this._clearPreviewVideoHostPlayback();
@@ -3381,6 +3392,40 @@ class CameraGalleryCard extends LitElement {
     this.requestUpdate();
   }
 
+  /**
+   * Open / close the inline mini-strip of cluster members for a
+   * representative thumb. Triggered by the count-badge click.
+   */
+  _toggleClusterExpand(repSrc) {
+    if (!repSrc) return;
+    if (this._expandedClusters.has(repSrc)) this._expandedClusters.delete(repSrc);
+    else this._expandedClusters.add(repSrc);
+    this.requestUpdate();
+  }
+
+  /**
+   * Splice members of currently-expanded clusters into a filtered item list,
+   * right after the representative. Each member becomes a regular gallery
+   * item with its own `i` index, so click → viewer works through the same
+   * code path as any other thumb. Cluster members carry a marker flag so
+   * the thumb render can style them differently.
+   */
+  _injectExpandedClusterMembers(filteredList) {
+    if (!this._expandedClusters?.size) return filteredList;
+    const out = [];
+    for (const item of filteredList) {
+      out.push(item);
+      if (!this._expandedClusters.has(item.src)) continue;
+      const meta = this._mediaClient?.getClusterMeta?.(item.src);
+      if (!meta?.members?.length) continue;
+      for (const m of meta.members) {
+        if (m.id === item.src) continue;
+        out.push({ src: m.id, dtMs: m.dtMs, _clusterMember: true });
+      }
+    }
+    return out;
+  }
+
   // ─── Preview interactions ─────────────────────────────────────────
 
   _isInsideTsbar(e) {
@@ -3808,7 +3853,10 @@ class CameraGalleryCard extends LitElement {
       const filteredAll = base.objFiltered;
 
       const cap = (this.config?.max_media ?? DEFAULT_MAX_MEDIA);
-      const filtered = filteredAll.slice(0, Math.min(cap, filteredAll.length));
+      const filteredBeforeCluster = filteredAll.slice(0, Math.min(cap, filteredAll.length));
+      // Match the render's view so the resolve queue includes expanded
+      // cluster members — otherwise tapping a member sits on a skeleton.
+      const filtered = this._injectExpandedClusterMembers(filteredBeforeCluster);
       const thumbRenderLimit = this._getThumbRenderLimit(cap, usingMediaSource);
 
       const idx = filtered.length
@@ -3951,9 +3999,10 @@ class CameraGalleryCard extends LitElement {
     const noResultsForFilter = !filteredAll.length;
 
     const cap = (this.config?.max_media ?? DEFAULT_MAX_MEDIA);
-    const filtered = noResultsForFilter
+    const filteredBeforeCluster = noResultsForFilter
       ? []
       : filteredAll.slice(0, Math.min(cap, filteredAll.length));
+    const filtered = this._injectExpandedClusterMembers(filteredBeforeCluster);
 
     if (!filtered.length) this._selectedIndex = 0;
     else if ((this._selectedIndex ?? 0) >= filtered.length)
@@ -4346,6 +4395,8 @@ class CameraGalleryCard extends LitElement {
                     const isOn = it.i === idx && !isLive;
                     const isSel = this._selectedSet?.has(it.src);
                     const isMs = usingMediaSource && isMediaSourceId(it.src);
+                    const clusterMeta = isMs ? this._mediaClient?.getClusterMeta?.(it.src) : null;
+                    const isExpanded = clusterMeta && this._expandedClusters.has(it.src);
 
                     let thumbUrl = it.src;
                     if (isMs) thumbUrl = this._mediaClient.getUrlCache().get(it.src) || "";
@@ -4405,7 +4456,7 @@ class CameraGalleryCard extends LitElement {
 
                     return html`
                       <button
-                        class="tthumb ${isOn ? "on" : ""} ${this._selectMode && isSel ? "sel" : ""} bar-${barPos} ${showBar ? "with-bar" : ""}"
+                        class="tthumb ${isOn ? "on" : ""} ${this._selectMode && isSel ? "sel" : ""} bar-${barPos} ${showBar ? "with-bar" : ""} ${it._clusterMember ? "cluster-member" : ""}"
                         data-i="${it.i}"
                         data-lazy-src="${it.src}"
                         style="${thumbStyle}"
@@ -4445,6 +4496,16 @@ class CameraGalleryCard extends LitElement {
                             } else {
                               this._previewOpen = true;
                             }
+                          }
+
+                          // Collapse any open clusters when the user taps
+                          // outside the active set. Members and the rep
+                          // of a currently-expanded cluster both count
+                          // as "inside" — only fully unrelated thumbs
+                          // close it.
+                          const isOwnRep = this._expandedClusters.has(it.src);
+                          if (!it._clusterMember && !isOwnRep && this._expandedClusters.size > 0) {
+                            this._expandedClusters.clear();
                           }
 
                           this._pendingScrollToI = it.i;
@@ -4525,6 +4586,20 @@ class CameraGalleryCard extends LitElement {
                           <ha-icon icon="${this._favorites.has(it.src) ? 'mdi:star' : 'mdi:star-outline'}"></ha-icon>
                         </div>
                         `}
+
+                        ${clusterMeta && clusterMeta.count > 1
+                          ? html`<button
+                              type="button"
+                              class="cluster-badge ${isExpanded ? "open" : ""}"
+                              title="${clusterMeta.count} events — tap to ${isExpanded ? "collapse" : "expand"}"
+                              @pointerdown=${(e) => e.stopPropagation()}
+                              @click=${(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                this._toggleClusterExpand(it.src);
+                              }}
+                            >${clusterMeta.count}×</button>`
+                          : html``}
                       </button>
                     `;
                   })}

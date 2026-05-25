@@ -52,7 +52,7 @@ import {
   discoverTree,
   loadDay,
 } from "./media-tree";
-import { clusterFrigateEvents } from "./event-cluster";
+import { clusterFrigateEventsGrouped } from "./event-cluster";
 import { dedupeByRelPath, pairMediaSourceThumbnails } from "./pairing";
 import { parsePathFormat, type PathFormat } from "./path-format";
 import { discoverReolink, isReolinkRoot, loadReolinkDay } from "./reolink-engine";
@@ -100,6 +100,12 @@ interface MediaSourceState {
    * day-navigation re-renders. Without this, a day-pick that triggers
    * `_refreshList` would drop every Frigate event from the gallery. */
   frigateItems: MsItem[];
+  /** Cluster metadata keyed by the representative MsItem's id (= clip URL).
+   * Populated by the Frigate WS / REST paths when `frigate_event_cluster`
+   * is enabled. Read by the card's render to draw a count badge and inline
+   * member thumbs when the user taps the badge. Always omitted for
+   * single-member clusters — only count > 1 ends up here. */
+  clusterMeta: Map<string, { count: number; members: MsItem[] }>;
 }
 
 export interface MediaSourceClientOptions {
@@ -454,7 +460,19 @@ export class MediaSourceClient {
   }
 
   getMetaById(id: string): { cls: string; mime: string; title: string; thumb: string } {
-    const it = this.state.listIndex.get(id);
+    let it = this.state.listIndex.get(id);
+    if (!it) {
+      // Fall back to cluster members — these never enter listIndex (clustering
+      // collapses them out of the gallery), but the card needs their meta to
+      // render the inline-expand preview correctly.
+      for (const cluster of this.state.clusterMeta.values()) {
+        const m = cluster.members.find((x) => x.id === id);
+        if (m) {
+          it = m;
+          break;
+        }
+      }
+    }
     if (!it) return { cls: "", mime: "", title: "", thumb: "" };
     return {
       cls: it.cls || "",
@@ -479,6 +497,15 @@ export class MediaSourceClient {
   /** Read-only slice of the URL cache for render-side reads. */
   getUrlCache(): ReadonlyMap<string, string> {
     return this.state.urlCache;
+  }
+
+  /**
+   * Lookup cluster metadata for a representative item. Returns null when
+   * the src isn't a cluster rep (most items aren't — only those that
+   * collapsed >= 2 events during the cluster pre-pass).
+   */
+  getClusterMeta(src: string): { count: number; members: MsItem[] } | null {
+    return this.state.clusterMeta.get(src) ?? null;
   }
 
   /** Read-only slice of the paired thumbnails map. */
@@ -764,11 +791,43 @@ export class MediaSourceClient {
     config: CameraGalleryCardConfig
   ): Promise<MsItem[]> {
     const useBbox = !!config.frigate_thumb_bbox;
+    const clusterOn = !!config.frigate_event_cluster;
+    const gapSec = Number(config.frigate_event_cluster_gap_sec) || 0;
     const hass = this._hass;
     if (!hass) return [];
     const all: MsItem[] = [];
     const seenIds = new Set<string>();
     const FRIGATE_WS_LIMIT = 10000;
+    // Reset cluster meta on every fetch — stale entries (from a previous
+    // gap value or a since-deleted event) would otherwise linger.
+    this.state.clusterMeta.clear();
+
+    const evToItem = (ev: FrigateEvent, inst: string): MsItem | null => {
+      const eventId = String(ev?.id ?? "");
+      if (!eventId) return null;
+      const camera = String(ev?.camera ?? "");
+      if (!camera) return null;
+      const id = `${FRIGATE_URI_PREFIX}/${inst}/event/clips/${camera}/${eventId}`;
+      const startSec = Number(ev?.start_time ?? 0);
+      const dtMs =
+        Number.isFinite(startSec) && startSec > 0
+          ? Math.round(startSec * 1000)
+          : (frigateEventIdMs(id) ?? 0);
+      if (!dtMs) return null;
+      const label = String(ev?.label ?? "");
+      const title = [new Date(dtMs).toLocaleString(), camera, label].filter(Boolean).join(" — ");
+      return {
+        id,
+        title,
+        cls: "video",
+        mime: "video/mp4",
+        thumb: useBbox
+          ? `/api/frigate/${inst}/notifications/${eventId}/snapshot.jpg?bbox=1&height=200`
+          : `/api/frigate/${inst}/notifications/${eventId}/thumbnail.jpg`,
+        dtMs,
+      };
+    };
+
     for (const root of frigateRoots) {
       const inst = frigateInstanceIdFromRoot(root);
       if (!inst) continue;
@@ -778,35 +837,26 @@ export class MediaSourceClient {
         FRIGATE_WS_LIMIT
       );
       if (!rawEvents) continue;
-      const events = config.frigate_event_cluster
-        ? clusterFrigateEvents(rawEvents, Number(config.frigate_event_cluster_gap_sec) || 0)
-        : rawEvents;
-      for (const ev of events) {
-        const eventId = String(ev?.id ?? "");
-        if (!eventId) continue;
-        const camera = String(ev?.camera ?? "");
-        if (!camera) continue;
-        const id = `${FRIGATE_URI_PREFIX}/${inst}/event/clips/${camera}/${eventId}`;
-        if (seenIds.has(id)) continue;
-        seenIds.add(id);
-        const startSec = Number(ev?.start_time ?? 0);
-        const dtMs =
-          Number.isFinite(startSec) && startSec > 0
-            ? Math.round(startSec * 1000)
-            : (frigateEventIdMs(id) ?? 0);
-        if (!dtMs) continue;
-        const label = String(ev?.label ?? "");
-        const title = [new Date(dtMs).toLocaleString(), camera, label].filter(Boolean).join(" — ");
-        all.push({
-          id,
-          title,
-          cls: "video",
-          mime: "video/mp4",
-          thumb: useBbox
-            ? `/api/frigate/${inst}/notifications/${eventId}/snapshot.jpg?bbox=1&height=200`
-            : `/api/frigate/${inst}/notifications/${eventId}/thumbnail.jpg`,
-          dtMs,
-        });
+      const clusters = clusterOn
+        ? clusterFrigateEventsGrouped(rawEvents, gapSec)
+        : rawEvents.map((ev) => ({ rep: ev, members: [ev] }));
+      for (const cluster of clusters) {
+        const repItem = evToItem(cluster.rep, inst);
+        if (!repItem) continue;
+        if (seenIds.has(repItem.id)) continue;
+        seenIds.add(repItem.id);
+        all.push(repItem);
+        if (cluster.members.length > 1) {
+          const memberItems: MsItem[] = [];
+          for (const m of cluster.members) {
+            const it = evToItem(m, inst);
+            if (it) memberItems.push(it);
+          }
+          this.state.clusterMeta.set(repItem.id, {
+            count: memberItems.length,
+            members: memberItems,
+          });
+        }
       }
     }
     all.sort((a, b) => (b.dtMs ?? 0) - (a.dtMs ?? 0));
@@ -882,18 +932,40 @@ export class MediaSourceClient {
 
     const rawEvents = await fetchFrigateEvents(base, limit);
     if (!rawEvents) return null;
-    const events = config.frigate_event_cluster
-      ? clusterFrigateEvents(rawEvents, Number(config.frigate_event_cluster_gap_sec) || 0)
-      : rawEvents;
+    const clusterOn = !!config.frigate_event_cluster;
+    const gapSec = Number(config.frigate_event_cluster_gap_sec) || 0;
+    const clusters = clusterOn
+      ? clusterFrigateEventsGrouped(rawEvents, gapSec)
+      : rawEvents.map((ev) => ({ rep: ev, members: [ev] }));
+    // Reset cluster meta — stale entries from a previous fetch would
+    // otherwise linger.
+    this.state.clusterMeta.clear();
 
-    const items: MsItem[] = [];
-    for (const ev of events) {
+    const mapMember = (ev: FrigateEvent): MsItem | null => {
       const mapped = mapFrigateEventToItem(ev, base, {
         bbox: !!config.frigate_thumb_bbox,
       });
-      if (!mapped) continue;
+      if (!mapped) return null;
       this.state.urlCache.set(mapped.item.id, mapped.clipUrl);
-      items.push(mapped.item as MsItem);
+      return mapped.item as MsItem;
+    };
+
+    const items: MsItem[] = [];
+    for (const cluster of clusters) {
+      const repItem = mapMember(cluster.rep);
+      if (!repItem) continue;
+      items.push(repItem);
+      if (cluster.members.length > 1) {
+        const memberItems: MsItem[] = [];
+        for (const m of cluster.members) {
+          const it = mapMember(m);
+          if (it) memberItems.push(it);
+        }
+        this.state.clusterMeta.set(repItem.id, {
+          count: memberItems.length,
+          members: memberItems,
+        });
+      }
     }
     return items;
   }
@@ -1453,5 +1525,6 @@ function makeEmptyState(): MediaSourceState {
     calendar: { byDay: new Map(), days: [] },
     dayCache: new Map(),
     frigateItems: [],
+    clusterMeta: new Map(),
   };
 }
