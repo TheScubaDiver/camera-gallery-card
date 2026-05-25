@@ -52,6 +52,7 @@ import {
   discoverTree,
   loadDay,
 } from "./media-tree";
+import { clusterFrigateEvents } from "./event-cluster";
 import { dedupeByRelPath, pairMediaSourceThumbnails } from "./pairing";
 import { parsePathFormat, type PathFormat } from "./path-format";
 import { discoverReolink, isReolinkRoot, loadReolinkDay } from "./reolink-engine";
@@ -771,12 +772,15 @@ export class MediaSourceClient {
     for (const root of frigateRoots) {
       const inst = frigateInstanceIdFromRoot(root);
       if (!inst) continue;
-      const events: FrigateEvent[] | null = await fetchFrigateEventsViaWs(
+      const rawEvents: FrigateEvent[] | null = await fetchFrigateEventsViaWs(
         hass,
         inst,
         FRIGATE_WS_LIMIT
       );
-      if (!events) continue;
+      if (!rawEvents) continue;
+      const events = config.frigate_event_cluster
+        ? clusterFrigateEvents(rawEvents, Number(config.frigate_event_cluster_gap_sec) || 0)
+        : rawEvents;
       for (const ev of events) {
         const eventId = String(ev?.id ?? "");
         if (!eventId) continue;
@@ -876,8 +880,11 @@ export class MediaSourceClient {
       Math.max((config.max_media ?? DEFAULT_MAX_MEDIA) * 2, 100)
     );
 
-    const events = await fetchFrigateEvents(base, limit);
-    if (!events) return null;
+    const rawEvents = await fetchFrigateEvents(base, limit);
+    if (!rawEvents) return null;
+    const events = config.frigate_event_cluster
+      ? clusterFrigateEvents(rawEvents, Number(config.frigate_event_cluster_gap_sec) || 0)
+      : rawEvents;
 
     const items: MsItem[] = [];
     for (const ev of events) {

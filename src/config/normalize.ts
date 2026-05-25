@@ -93,6 +93,8 @@ export interface InputConfig {
   media_sources?: string[] | string;
   frigate_url?: string;
   frigate_thumb_bbox?: boolean;
+  frigate_event_cluster?: boolean;
+  frigate_event_cluster_gap_sec?: number;
 
   // ─── Datetime parsing ──────────────────────────────────────
   path_datetime_format?: string;

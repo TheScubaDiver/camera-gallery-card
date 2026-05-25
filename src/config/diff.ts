@@ -22,6 +22,8 @@ const SOURCE_KEYS = new Set<ConfigKey>([
   "entities",
   "frigate_url",
   "frigate_thumb_bbox",
+  "frigate_event_cluster",
+  "frigate_event_cluster_gap_sec",
   "max_media",
   "media_sources",
   // path_datetime_format is consumed by every dtMs/dayKey resolution. A
