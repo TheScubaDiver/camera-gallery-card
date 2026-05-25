@@ -7935,6 +7935,17 @@ class CameraGalleryCardEditor extends HTMLElement {
             <input type="text" class="ed-input" id="frigate_url" placeholder="http://192.168.1.x:5000" autocomplete="off" value="${this._config.frigate_url || ""}" />
           </div>
         </div>
+        <div class="row">
+          <div class="row-head">
+            <div>
+              <div class="lbl">Bounding box on thumbs</div>
+              <div class="desc">Use Frigate's annotated snapshot for gallery thumbs instead of the plain thumbnail. Requires <code>snapshots.bounding_box: true</code> in your Frigate camera config.</div>
+            </div>
+            <div class="togrow">
+              <label class="cgc-switch"><input type="checkbox" id="frigate-thumb-bbox" ${this._config.frigate_thumb_bbox ? "checked" : ""}><span class="cgc-track"></span></label>
+            </div>
+          </div>
+        </div>
       `;
 
       const showFrigate = mediaModeOn || combinedModeOn;
@@ -11342,6 +11353,10 @@ details summary { user-select: none; }
 
     $("capture-video-thumbnails")?.addEventListener("change", (e) => {
       this._set("capture_video_thumbnails", !!e.target.checked);
+    });
+
+    $("frigate-thumb-bbox")?.addEventListener("change", (e) => {
+      this._set("frigate_thumb_bbox", !!e.target.checked);
     });
 
     $("persistentcontrols")?.addEventListener("change", (e) => {
