@@ -7729,7 +7729,7 @@ class CameraGalleryCardEditor extends HTMLElement {
                               max="${ctrl.max}"
                               value="${val}"
                             >
-                            <span class="radius-value-wrap" id="radius-val-${safeId}" data-slider-unit="px">
+                            <span class="radius-value-wrap" id="radius-val-${safeId}">
                               <input
                                 type="number"
                                 class="radius-value-input"
