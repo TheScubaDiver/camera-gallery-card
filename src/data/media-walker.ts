@@ -760,8 +760,9 @@ export class MediaSourceClient {
    */
   private async _fetchFrigateWsItems(
     frigateRoots: readonly string[],
-    _config: CameraGalleryCardConfig
+    config: CameraGalleryCardConfig
   ): Promise<MsItem[]> {
+    const useBbox = !!config.frigate_thumb_bbox;
     const hass = this._hass;
     if (!hass) return [];
     const all: MsItem[] = [];
@@ -797,7 +798,9 @@ export class MediaSourceClient {
           title,
           cls: "video",
           mime: "video/mp4",
-          thumb: `/api/frigate/${inst}/notifications/${eventId}/thumbnail.jpg`,
+          thumb: useBbox
+            ? `/api/frigate/${inst}/notifications/${eventId}/snapshot.jpg?bbox=1&height=200`
+            : `/api/frigate/${inst}/notifications/${eventId}/thumbnail.jpg`,
           dtMs,
         });
       }
@@ -878,7 +881,9 @@ export class MediaSourceClient {
 
     const items: MsItem[] = [];
     for (const ev of events) {
-      const mapped = mapFrigateEventToItem(ev, base);
+      const mapped = mapFrigateEventToItem(ev, base, {
+        bbox: !!config.frigate_thumb_bbox,
+      });
       if (!mapped) continue;
       this.state.urlCache.set(mapped.item.id, mapped.clipUrl);
       items.push(mapped.item as MsItem);

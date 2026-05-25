@@ -21,6 +21,7 @@ const SOURCE_KEYS = new Set<ConfigKey>([
   "delete_service",
   "entities",
   "frigate_url",
+  "frigate_thumb_bbox",
   "max_media",
   "media_sources",
   // path_datetime_format is consumed by every dtMs/dayKey resolution. A

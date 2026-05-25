@@ -240,6 +240,7 @@ export const DEFAULT_AUTOPLAY = false;
 export const DEFAULT_ASPECT_RATIO = "16:9" satisfies AspectRatio;
 export const DEFAULT_BAR_OPACITY = 30;
 export const DEFAULT_BAR_POSITION = "top" satisfies BarPosition;
+export const DEFAULT_FRIGATE_THUMB_BBOX = false;
 export const DEFAULT_CONTROLS_MODE = "overlay" satisfies ControlsMode;
 export const DEFAULT_BROWSE_TIMEOUT_MS = 10000;
 export const DEFAULT_CLEAN_MODE = false;

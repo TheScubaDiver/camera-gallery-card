@@ -153,14 +153,23 @@ export async function fetchFrigateEvents(
  * clip URL the caller should register in its url cache. Returns null when
  * the event has no id (defensive — Frigate always supplies one).
  */
-export function mapFrigateEventToItem(ev: FrigateEvent, base: string): MappedFrigateItem | null {
+export function mapFrigateEventToItem(
+  ev: FrigateEvent,
+  base: string,
+  opts?: { bbox?: boolean }
+): MappedFrigateItem | null {
   const id = String(ev?.id || "");
   if (!id) return null;
   const trimmedBase = String(base ?? "")
     .trim()
     .replace(/\/+$/, "");
   const clipUrl = `${trimmedBase}/api/events/${id}/clip.mp4`;
-  const thumbUrl = `${trimmedBase}/api/events/${id}/thumbnail.jpg`;
+  // When `bbox` is enabled, use Frigate's full snapshot endpoint with
+  // bbox=1 and a height cap (server-side resize). The thumbnail endpoint
+  // bakes no bbox even if `snapshots.bounding_box: true` is set in Frigate.
+  const thumbUrl = opts?.bbox
+    ? `${trimmedBase}/api/events/${id}/snapshot.jpg?bbox=1&height=200`
+    : `${trimmedBase}/api/events/${id}/thumbnail.jpg`;
   const startSec = Number(ev.start_time);
   const ts = Number.isFinite(startSec) && startSec > 0 ? Math.round(startSec * 1000) : 0;
   const label = String(ev.label || "");
