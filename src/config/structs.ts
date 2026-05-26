@@ -145,11 +145,33 @@ const liveStreamUrlEntry = object({
  * The cross-field rule that *exactly one* of `entity` / `url` is set is
  * enforced in `normalize.ts` (superstruct can't conditionally require).
  */
+/**
+ * Per-camera crop rectangle expressed as percentages of the source frame.
+ * Lets the live overlay zoom into a region of interest (e.g. show only the
+ * doormat of a wide-angle camera). All four fields are 0–100; absence of
+ * `crop` (or any field set to default 0 width/height) means no crop.
+ *
+ *   x, y  — top-left corner of the visible region, in % from top-left
+ *   w, h  — width / height of the visible region, in %
+ */
+const liveCameraCrop = object({
+  x: defaulted(intInRange(0, 100), 0),
+  y: defaulted(intInRange(0, 100), 0),
+  w: defaulted(intInRange(0, 100), 100),
+  h: defaulted(intInRange(0, 100), 100),
+  // Source aspect ratio detected when the user saved the crop. Used at
+  // runtime to resize the live container so the crop region fills it
+  // without distortion. Format: "W/H" (e.g. "16/9", "4/3"). Optional —
+  // legacy crops without this field fall back to "16/9".
+  source_ar: optional(string()),
+});
+
 const liveCameraEntry = object({
   entity: optional(string()),
   url: optional(string()),
   name: defaulted(string(), ""),
   mic: optional(string()),
+  crop: optional(liveCameraCrop),
 });
 
 /**

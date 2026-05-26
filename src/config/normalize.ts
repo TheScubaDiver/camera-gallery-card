@@ -61,6 +61,16 @@ export interface LiveCameraEntryInput {
   url?: string;
   name?: string;
   mic?: string;
+  crop?: LiveCameraCropInput;
+}
+
+/** Per-camera crop rectangle (0–100 % of source frame). See `liveCameraCrop` in structs.ts. */
+export interface LiveCameraCropInput {
+  x?: number;
+  y?: number;
+  w?: number;
+  h?: number;
+  source_ar?: string;
 }
 
 /** A single menu-button entry, in the input shape (validated by struct). */
@@ -582,6 +592,36 @@ function preMigrateConfig(input: InputConfig): PreMigrated {
         if (url) built["url"] = url;
         built["name"] = name;
         if (mic) built["mic"] = mic;
+        // Carry over the per-camera crop rectangle. Each field is clamped
+        // to [0, 100]; missing fields default to the no-crop full frame.
+        const cropRaw = r["crop"];
+        if (cropRaw && typeof cropRaw === "object") {
+          const cr = cropRaw as Record<string, unknown>;
+          const clamp = (v: unknown, def: number): number => {
+            const n = Number(v);
+            if (!Number.isFinite(n)) return def;
+            return Math.max(0, Math.min(100, Math.round(n)));
+          };
+          const cx = clamp(cr["x"], 0);
+          const cy = clamp(cr["y"], 0);
+          const cw = clamp(cr["w"], 100);
+          const ch = clamp(cr["h"], 100);
+          // Only attach when the crop is non-trivial — full frame is the
+          // implicit default, so leaving the key off keeps YAML clean.
+          if (!(cx === 0 && cy === 0 && cw === 100 && ch === 100)) {
+            const cropOut: { x: number; y: number; w: number; h: number; source_ar?: string } = {
+              x: cx,
+              y: cy,
+              w: cw,
+              h: ch,
+            };
+            const arRaw = cr["source_ar"];
+            if (typeof arRaw === "string" && /^\d+(\.\d+)?\/\d+(\.\d+)?$/.test(arRaw)) {
+              cropOut.source_ar = arRaw;
+            }
+            built["crop"] = cropOut;
+          }
+        }
         return built;
       })
       .filter((c) => c !== null);
