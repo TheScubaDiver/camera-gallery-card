@@ -54,6 +54,14 @@ export interface LiveStreamUrlEntryInput {
   name?: string;
 }
 
+/** One entry in the unified `live_cameras` list — input shape (issue #137). */
+export interface LiveCameraEntryInput {
+  entity?: string;
+  url?: string;
+  name?: string;
+  mic?: string;
+}
+
 /** A single menu-button entry, in the input shape (validated by struct). */
 export interface MenuButtonInput {
   entity?: string;
@@ -79,6 +87,19 @@ export interface MenuButtonInput {
  * downstream code only sees `CameraGalleryCardConfig` — this `InputConfig`
  * is internal to the normalization layer.
  */
+/** One free-form HA service call used as a PTZ direction override. */
+interface PtzServiceCallInput {
+  service?: string;
+  data?: Record<string, string>;
+  target?: { entity_id?: string | string[] };
+}
+
+/** Start + (optional) stop pair for a PTZ override on a single direction. */
+interface PtzActionPairInput {
+  start?: PtzServiceCallInput;
+  stop?: PtzServiceCallInput;
+}
+
 export interface InputConfig {
   // ─── Identity ──────────────────────────────────────────────
   type?: string;
@@ -106,8 +127,8 @@ export interface InputConfig {
   // ─── Live preview ──────────────────────────────────────────
   live_enabled?: boolean;
   live_auto_muted?: boolean;
-  live_camera_entity?: string;
   live_camera_entities?: string[];
+  live_cameras?: LiveCameraEntryInput[];
   live_layout?: string;
   live_grid_labels?: boolean;
   live_stream_url?: string;
@@ -128,6 +149,26 @@ export interface InputConfig {
     credential?: string;
   }>;
   live_mic_force_relay?: boolean;
+  live_ptz_enabled?: boolean;
+  live_ptz_position?: string;
+  live_ptz_speed?: number;
+  live_ptz_cameras?: Record<
+    string,
+    {
+      type?: string;
+      button_prefix?: string;
+      speed?: number;
+      actions?: {
+        up?: PtzActionPairInput;
+        down?: PtzActionPairInput;
+        left?: PtzActionPairInput;
+        right?: PtzActionPairInput;
+        zoom_in?: PtzActionPairInput;
+        zoom_out?: PtzActionPairInput;
+        home?: { start: PtzServiceCallInput };
+      };
+    }
+  >;
   start_mode?: string;
 
   // ─── Delete ────────────────────────────────────────────────
@@ -146,6 +187,7 @@ export interface InputConfig {
   chevron_opacity?: number;
   bar_position?: string;
   thumb_size?: number;
+  thumb_off_opacity?: number;
   thumb_bar_position?: string;
   thumb_layout?: string;
   thumb_sort_order?: string;
@@ -472,9 +514,21 @@ function preMigrateConfig(input: InputConfig): PreMigrated {
   trimOptionalString(out, "sync_entity");
 
   // Defaulted-to-`""` string fields: trim, never delete.
-  out.live_camera_entity = (out.live_camera_entity ?? "").trim();
   out.path_datetime_format = (out.path_datetime_format ?? "").trim();
   out.style_variables = (out.style_variables ?? "").trim();
+
+  // Talkback waveform — old configs used an int 10..200 for sensitivity and
+  // had extra `live_mic_waveform_style` / `_opacity` keys. Map the int into
+  // the new low/medium/high enum (≤40 → low, ≤120 → medium, > → high) and
+  // drop the deprecated keys so the validator doesn't complain.
+  const outAny = out as Record<string, unknown>;
+  const wfSens = outAny["live_mic_waveform_sensitivity"];
+  if (typeof wfSens === "number") {
+    outAny["live_mic_waveform_sensitivity"] =
+      wfSens <= 40 ? "low" : wfSens <= 120 ? "medium" : "high";
+  }
+  delete outAny["live_mic_waveform_style"];
+  delete outAny["live_mic_waveform_opacity"];
 
   // live_camera_entities: trim + drop empties.
   const cams = out.live_camera_entities;
@@ -482,6 +536,167 @@ function preMigrateConfig(input: InputConfig): PreMigrated {
     out.live_camera_entities = Array.isArray(cams)
       ? cams.map((s: string) => s.trim()).filter((s) => s.length > 0)
       : [];
+  }
+
+  // ── live_cameras unified shape (issue #137) ───────────────────────────
+  //
+  // Build `live_cameras` from the three legacy lists when the user hasn't
+  // written one yet:
+  //   - live_camera_entities[]              → { entity, mic? } entries
+  //   - live_stream_urls[{ url, name }]     → { url, name, mic? } entries
+  //   - live_mic_streams { id → stream }    → inline `mic` on the entry
+  //     • key matching an entity id        → that entity's entry
+  //     • `__cgc_stream_<N>__`             → the Nth url entry
+  //
+  // If the user already wrote a `live_cameras` array we normalize each
+  // entry (trim strings, drop empties) but otherwise leave it untouched —
+  // their explicit list wins. Empty / malformed entries are dropped.
+  const outR = out as Record<string, unknown>;
+  const liveCamsExisting = outR["live_cameras"];
+  const entitiesIn = Array.isArray(out.live_camera_entities) ? out.live_camera_entities : [];
+  const streamsIn = Array.isArray(out.live_stream_urls) ? out.live_stream_urls : [];
+  const micMapIn =
+    out.live_mic_streams && typeof out.live_mic_streams === "object"
+      ? (out.live_mic_streams as Record<string, string>)
+      : {};
+
+  if (Array.isArray(liveCamsExisting) && liveCamsExisting.length > 0) {
+    // Honour an explicit list but clean it up.
+    outR["live_cameras"] = liveCamsExisting
+      .map((c) => {
+        if (!c || typeof c !== "object") return null;
+        const r = c as Record<string, unknown>;
+        const entityRaw = r["entity"];
+        const urlRaw = r["url"];
+        const nameRaw = r["name"];
+        const micRaw = r["mic"];
+        const entity = typeof entityRaw === "string" ? entityRaw.trim() : "";
+        const url = typeof urlRaw === "string" ? urlRaw.trim() : "";
+        if (!entity && !url) return null; // need at least one
+        if (entity && url) return null; // can't have both
+        const name = typeof nameRaw === "string" ? nameRaw : "";
+        const mic = typeof micRaw === "string" && micRaw.trim() ? micRaw.trim() : undefined;
+        const built: Record<string, unknown> = {};
+        if (entity) built["entity"] = entity;
+        if (url) built["url"] = url;
+        built["name"] = name;
+        if (mic) built["mic"] = mic;
+        return built;
+      })
+      .filter((c) => c !== null);
+  } else {
+    // Build from legacy keys. Mirrors `getCanonicalLiveCameras` in
+    // live-config.ts so both paths produce the same shape — tests that
+    // bypass normalize and runtime configs that don't both stay in sync.
+    const built: Record<string, unknown>[] = [];
+    for (const ent of entitiesIn) {
+      if (typeof ent !== "string" || !ent.trim()) continue;
+      const entity = ent.trim();
+      const cam: Record<string, unknown> = { entity, name: "" };
+      const mic = micMapIn[entity];
+      if (typeof mic === "string" && mic.trim()) cam["mic"] = mic.trim();
+      built.push(cam);
+    }
+    if (streamsIn.length > 0) {
+      for (let i = 0; i < streamsIn.length; i++) {
+        const s = streamsIn[i];
+        if (!s || typeof s !== "object") continue;
+        const sr = s as Record<string, unknown>;
+        const urlRaw = sr["url"];
+        const nameRaw = sr["name"];
+        const url = typeof urlRaw === "string" ? urlRaw.trim() : "";
+        if (!url) continue;
+        const name = typeof nameRaw === "string" ? nameRaw : "";
+        const cam: Record<string, unknown> = { url, name };
+        const mic = micMapIn[`__cgc_stream_${i}__`];
+        if (typeof mic === "string" && mic.trim()) cam["mic"] = mic.trim();
+        built.push(cam);
+      }
+    } else {
+      // Legacy single-stream shorthand: `live_stream_url` + `live_stream_name`.
+      // Default to "Stream" (no index) when no name — distinct from the
+      // plural-path default of "Stream N+1".
+      const singleRaw = out["live_stream_url"];
+      const single = typeof singleRaw === "string" ? singleRaw.trim() : "";
+      if (single) {
+        const explicitNameRaw = out["live_stream_name"];
+        const explicitName = typeof explicitNameRaw === "string" ? explicitNameRaw.trim() : "";
+        const cam: Record<string, unknown> = {
+          url: single,
+          name: explicitName || "Stream",
+        };
+        const mic = micMapIn["__cgc_stream_0__"];
+        if (typeof mic === "string" && mic.trim()) cam["mic"] = mic.trim();
+        built.push(cam);
+      }
+    }
+
+    // Orphan mic-only legacy keys: a v2.11 user could configure
+    // `live_mic_streams` without a corresponding `live_camera_entities`
+    // entry (the camera id was implied by the active live surface).
+    // Preserve that pattern by emitting a mic-only entry keyed on the
+    // map key — both `camera.*` and synthetic stream ids are stored
+    // under `entity` so `findLiveCamera` can match by exact id.
+    const covered = new Set<string>();
+    for (const c of built) {
+      const e = typeof c["entity"] === "string" ? (c["entity"] as string).trim() : "";
+      if (e) covered.add(e);
+    }
+    let streamIdx = 0;
+    for (const c of built) {
+      if (typeof c["url"] === "string" && (c["url"] as string).trim()) {
+        covered.add(`__cgc_stream_${streamIdx}__`);
+        streamIdx++;
+      }
+    }
+    for (const [key, val] of Object.entries(micMapIn)) {
+      if (typeof val !== "string" || !val.trim()) continue;
+      if (covered.has(key)) continue;
+      built.push({ entity: key, name: "", mic: val.trim() });
+    }
+
+    if (built.length > 0) outR["live_cameras"] = built;
+  }
+
+  // live_camera_entity (deprecated): a v2.11 config could pin a default
+  // camera via this key. The first entry in `live_cameras` is now the
+  // default. Reorder so the pinned camera moves to position 0 (keeping
+  // existing users' default behaviour), then drop the key. If the pinned
+  // camera isn't in the list yet, prepend a bare entry so the card still
+  // boots on it.
+  const lceRaw = outR["live_camera_entity"];
+  const lce = typeof lceRaw === "string" ? lceRaw.trim() : "";
+  if (lce) {
+    const lceCams = Array.isArray(outR["live_cameras"])
+      ? [...(outR["live_cameras"] as Record<string, unknown>[])]
+      : [];
+    const idx = lceCams.findIndex(
+      (c) => c && typeof c["entity"] === "string" && (c["entity"] as string).trim() === lce
+    );
+    if (idx > 0) {
+      const moved = lceCams[idx]!;
+      lceCams.splice(idx, 1);
+      lceCams.unshift(moved);
+      outR["live_cameras"] = lceCams;
+    } else if (idx < 0) {
+      lceCams.unshift({ entity: lce, name: "" });
+      outR["live_cameras"] = lceCams;
+    }
+  }
+  delete outR["live_camera_entity"];
+
+  // Once `live_cameras` is populated, drop the other legacy keys whose
+  // data has been folded into the unified shape. Keeping them around
+  // would leave stale duplicates in user YAML that can drift out of
+  // sync with `live_cameras` and confuse the editor on a later save.
+  // The migration is one-way: the next save writes a clean YAML with
+  // `live_cameras` only.
+  if (Array.isArray(outR["live_cameras"]) && (outR["live_cameras"] as unknown[]).length > 0) {
+    delete outR["live_camera_entities"];
+    delete outR["live_mic_streams"];
+    delete outR["live_stream_urls"];
+    delete outR["live_stream_url"];
+    delete outR["live_stream_name"];
   }
 
   // object_filters: unwrap the loose `string | {name: icon}` input shape into

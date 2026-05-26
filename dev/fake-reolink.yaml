@@ -1,0 +1,98 @@
+# Fake Reolink PTZ camera for testing CGC's PTZ overlay.
+#
+# Drops a single set of button.* + camera.* entities into HA that match
+# the Reolink integration's naming convention (button.<base>_ptz_<dir>
+# + button.<base>_ptz_stop). CGC's auto-detect picks them up as a
+# continuous-type Reolink camera, so the editor will offer to enable it
+# and the live overlay will use phase: start/stop semantics.
+#
+# Each press fires a `system_log.write` with the direction so you can
+# tail the HA logs (or Developer Tools → Logs) to verify the wiring.
+#
+# How to install:
+#   1. SCP this file to /config/cgc_fake_reolink.yaml on HA.
+#   2. Add the following two lines to the top-level of
+#      /config/configuration.yaml (alongside `template:` and `camera:`):
+#
+#         template: !include_dir_merge_list cgc_templates/
+#         camera: !include cgc_fake_reolink_camera.yaml
+#
+#   …OR simpler: paste the contents below directly inside your existing
+#   `template:` (as new list items) and add the camera block at the top
+#   level of configuration.yaml. The button + camera names below are
+#   chosen so the entity_ids slug correctly:
+#       camera.fake_reolink
+#       button.fake_reolink_ptz_up / _down / _left / _right / _stop
+#   That matches what CGC's `detectPtzType` looks for.
+#
+#   3. Developer Tools → YAML → reload "Template Entities" (or restart HA).
+#   4. Add `camera.fake_reolink` to your CGC card's
+#      `live_camera_entities` list in the editor. The PTZ section in the
+#      editor should now show it as auto-detected Reolink.
+
+# --- paste inside your existing top-level `template:` list ---
+- button:
+    - name: "Fake Reolink PTZ up"
+      unique_id: fake_reolink_ptz_up
+      icon: mdi:arrow-up-bold
+      press:
+        - action: system_log.write
+          data:
+            message: "Fake Reolink: PTZ start UP"
+            level: warning
+    - name: "Fake Reolink PTZ down"
+      unique_id: fake_reolink_ptz_down
+      icon: mdi:arrow-down-bold
+      press:
+        - action: system_log.write
+          data:
+            message: "Fake Reolink: PTZ start DOWN"
+            level: warning
+    - name: "Fake Reolink PTZ left"
+      unique_id: fake_reolink_ptz_left
+      icon: mdi:arrow-left-bold
+      press:
+        - action: system_log.write
+          data:
+            message: "Fake Reolink: PTZ start LEFT"
+            level: warning
+    - name: "Fake Reolink PTZ right"
+      unique_id: fake_reolink_ptz_right
+      icon: mdi:arrow-right-bold
+      press:
+        - action: system_log.write
+          data:
+            message: "Fake Reolink: PTZ start RIGHT"
+            level: warning
+    - name: "Fake Reolink PTZ stop"
+      unique_id: fake_reolink_ptz_stop
+      icon: mdi:stop-circle-outline
+      press:
+        - action: system_log.write
+          data:
+            message: "Fake Reolink: PTZ STOP"
+            level: warning
+    - name: "Fake Reolink PTZ zoom in"
+      unique_id: fake_reolink_ptz_zoom_in
+      icon: mdi:magnify-plus-outline
+      press:
+        - action: system_log.write
+          data:
+            message: "Fake Reolink: PTZ zoom IN"
+            level: warning
+    - name: "Fake Reolink PTZ zoom out"
+      unique_id: fake_reolink_ptz_zoom_out
+      icon: mdi:magnify-minus-outline
+      press:
+        - action: system_log.write
+          data:
+            message: "Fake Reolink: PTZ zoom OUT"
+            level: warning
+
+# --- the camera entity itself; add at the top level of configuration.yaml
+#     under a fresh `camera:` block (or merge with your existing one). ---
+# camera:
+#   - platform: generic
+#     name: Fake Reolink
+#     still_image_url: "https://picsum.photos/seed/fakereolink/640/480"
+#     verify_ssl: false

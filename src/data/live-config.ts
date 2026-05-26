@@ -29,35 +29,120 @@ export const STREAM_ID_PREFIX = "__cgc_stream";
 
 const STREAM_ID_LEGACY_ALIAS = "__cgc_stream__";
 
+type LiveCameraEntry = NonNullable<CameraGalleryCardConfig["live_cameras"]>[number];
+
 /**
- * Normalize the configured live stream URLs into a typed list. Honors both:
- *  - `live_stream_urls: [{url, name}, ...]` (canonical / current)
- *  - `live_stream_url: "..."` + `live_stream_name: "..."` (single-stream
- *    shorthand still accepted by the struct)
+ * Canonical live-cameras list. Reads `config.live_cameras` when populated;
+ * otherwise builds it on the fly from the legacy keys
+ * (`live_camera_entities`, `live_stream_urls`, `live_stream_url` singular,
+ * `live_mic_streams`). This lets every helper below treat `live_cameras`
+ * as the single source of truth without duplicating fallback logic.
  *
- * Empty / malformed entries are dropped.
+ * `normalize.ts` does the same migration when a config flows through the
+ * full pipeline; this helper is the in-memory fallback for callers who
+ * skip normalization (notably the test suite and the editor's interim
+ * states).
+ */
+function getCanonicalLiveCameras(
+  config: CameraGalleryCardConfig | null | undefined
+): LiveCameraEntry[] {
+  if (!config) return [];
+  const existing = Array.isArray(config.live_cameras) ? config.live_cameras : [];
+  if (existing.length > 0) return existing;
+
+  const entities = Array.isArray(config.live_camera_entities) ? config.live_camera_entities : [];
+  const streamsPlural = Array.isArray(config.live_stream_urls) ? config.live_stream_urls : null;
+  const micMap =
+    config.live_mic_streams && typeof config.live_mic_streams === "object"
+      ? (config.live_mic_streams as Record<string, string>)
+      : {};
+
+  const built: LiveCameraEntry[] = [];
+
+  for (const ent of entities) {
+    if (typeof ent !== "string" || !ent.trim()) continue;
+    const entity = ent.trim();
+    const cam: LiveCameraEntry = { entity, name: "" };
+    const mic = micMap[entity];
+    if (typeof mic === "string" && mic.trim()) cam.mic = mic.trim();
+    built.push(cam);
+  }
+
+  if (streamsPlural && streamsPlural.length > 0) {
+    streamsPlural.forEach((s, i) => {
+      const url = String(s?.url ?? "").trim();
+      if (!url) return;
+      const cam: LiveCameraEntry = { url, name: String(s?.name ?? "") };
+      const mic = micMap[`__cgc_stream_${i}__`];
+      if (typeof mic === "string" && mic.trim()) cam.mic = mic.trim();
+      built.push(cam);
+    });
+  } else {
+    // Legacy single-stream shorthand: live_stream_url + live_stream_name.
+    // When the name is unset, default to "Stream" (no index) — distinct from
+    // the plural-path default of "Stream N+1" so single-stream configs read
+    // naturally.
+    const single = String(config.live_stream_url ?? "").trim();
+    if (single) {
+      const explicitName = String(config.live_stream_name ?? "").trim();
+      const cam: LiveCameraEntry = {
+        url: single,
+        name: explicitName || "Stream",
+      };
+      const mic = micMap["__cgc_stream_0__"];
+      if (typeof mic === "string" && mic.trim()) cam.mic = mic.trim();
+      built.push(cam);
+    }
+  }
+
+  // Orphan mic-only legacy keys: a v2.11 user could configure
+  // `live_mic_streams` without `live_camera_entities` (the entity id was
+  // implied by the camera_image / grid_camera_entities surface). Preserve
+  // that shape by emitting a mic-only entry keyed on the map key — both
+  // `camera.*` and synthetic stream ids are stored under `entity` so
+  // `findLiveCamera` can match by exact id.
+  const covered = new Set<string>();
+  for (const c of built) {
+    const e = typeof c.entity === "string" ? c.entity.trim() : "";
+    if (e) covered.add(e);
+  }
+  let streamIdx = 0;
+  for (const c of built) {
+    if (typeof c.url === "string" && c.url.trim()) {
+      covered.add(`__cgc_stream_${streamIdx}__`);
+      streamIdx++;
+    }
+  }
+  for (const [key, val] of Object.entries(micMap)) {
+    if (typeof val !== "string" || !val.trim()) continue;
+    if (covered.has(key)) continue;
+    built.push({ entity: key, name: "", mic: val.trim() });
+  }
+
+  return built;
+}
+
+/**
+ * Normalize the configured live stream URLs into a typed list. Reads
+ * from the canonical live_cameras shape (with legacy fallback handled by
+ * `getCanonicalLiveCameras`). Stream entries are the subset whose entry
+ * has a `url`; the synthetic id index is their position in that
+ * stream-only subset (`__cgc_stream_0__`, `__cgc_stream_1__`, …).
  */
 export function getStreamEntries(
   config: CameraGalleryCardConfig | null | undefined
 ): StreamEntry[] {
-  if (!config) return [];
-  const urls = config.live_stream_urls;
-  if (Array.isArray(urls) && urls.length > 0) {
-    const out: StreamEntry[] = [];
-    urls.forEach((entry, i) => {
-      const url = String(entry?.url ?? "").trim();
-      if (!url) return;
-      const name = String(entry?.name ?? "").trim() || `Stream ${i + 1}`;
-      out.push({ id: `${STREAM_ID_PREFIX}_${i}__`, url, name });
-    });
-    return out;
+  const cams = getCanonicalLiveCameras(config);
+  const out: StreamEntry[] = [];
+  let streamIdx = 0;
+  for (const c of cams) {
+    const url = String(c?.url ?? "").trim();
+    if (!url) continue;
+    const name = String(c?.name ?? "").trim() || `Stream ${streamIdx + 1}`;
+    out.push({ id: `${STREAM_ID_PREFIX}_${streamIdx}__`, url, name });
+    streamIdx++;
   }
-  const single = String(config.live_stream_url ?? "").trim();
-  if (single) {
-    const name = String(config.live_stream_name ?? "").trim() || "Stream";
-    return [{ id: `${STREAM_ID_PREFIX}_0__`, url: single, name }];
-  }
-  return [];
+  return out;
 }
 
 /**
@@ -97,23 +182,20 @@ export function getAllLiveCameraEntities(opts: {
   localeTag: string | undefined;
   friendlyName: (entityId: string) => string;
 }): string[] {
-  const allowed = opts.config?.live_camera_entities;
-  if (!Array.isArray(allowed) || allowed.length === 0) return [];
+  const cams = getCanonicalLiveCameras(opts.config);
+  if (cams.length === 0) return [];
   const states = opts.hassStates ?? {};
-  const allowSet = new Set(allowed);
+  // Preserve the order from `live_cameras` — position 0 is the default
+  // camera, so an alphabetic sort here would silently override the user's
+  // chosen ordering. Drop entries whose entity id is not in `hass.states`
+  // (offline / typo / removed integration) so they don't pollute the picker.
   const out: string[] = [];
-  for (const entityId of Object.keys(states)) {
-    if (!entityId.startsWith("camera.")) continue;
-    if (!allowSet.has(entityId)) continue;
-    if (!states[entityId]) continue;
-    out.push(entityId);
+  for (const c of cams) {
+    const entity = typeof c?.entity === "string" ? c.entity.trim() : "";
+    if (!entity || !entity.startsWith("camera.")) continue;
+    if (!states[entity]) continue;
+    out.push(entity);
   }
-  out.sort((a, b) =>
-    opts
-      .friendlyName(a)
-      .toLowerCase()
-      .localeCompare(opts.friendlyName(b).toLowerCase(), opts.localeTag)
-  );
   return out;
 }
 
@@ -150,16 +232,55 @@ export function hasLiveConfig(opts: {
 }
 
 /**
- * Has the user configured at least one entry in the per-camera mic map?
- * Used by `micStreamForCamera` to decide whether the legacy single-global
- * fallback applies — once the map has any entry, it owns the namespace.
+ * Has any entry in `live_cameras` got a non-empty `mic` field? Used by
+ * `micStreamForCamera` to decide whether the legacy single-global fallback
+ * still applies — once any inline mic is set, the map is authoritative.
  */
-function hasMicMapEntries(map: unknown): map is Record<string, string> {
-  if (!map || typeof map !== "object") return false;
-  for (const v of Object.values(map as Record<string, unknown>)) {
-    if (typeof v === "string" && v.trim()) return true;
+function liveCamerasHaveAnyMic(config: CameraGalleryCardConfig | null | undefined): boolean {
+  for (const c of getCanonicalLiveCameras(config)) {
+    if (typeof c?.mic === "string" && c.mic.trim()) return true;
   }
   return false;
+}
+
+/**
+ * Find the `live_cameras` entry that corresponds to `cameraId` (an HA
+ * entity id, or a `__cgc_stream_<N>__` synthetic). Returns null when no
+ * match.
+ */
+function findLiveCamera(
+  cameraId: string | null | undefined,
+  config: CameraGalleryCardConfig | null | undefined
+): LiveCameraEntry | null {
+  const id = String(cameraId ?? "").trim();
+  if (!id) return null;
+  const cams = getCanonicalLiveCameras(config);
+  if (id.startsWith(STREAM_ID_PREFIX)) {
+    // Stream id → first try Nth url-typed entry, then fall back to an
+    // exact `entity` match (orphan mic-only entry, see getCanonicalLiveCameras).
+    const m = /^__cgc_stream_(\d+)__$/.exec(id);
+    const wanted = m ? parseInt(m[1] ?? "", 10) : NaN;
+    if (Number.isFinite(wanted)) {
+      let i = 0;
+      for (const c of cams) {
+        const url = String(c?.url ?? "").trim();
+        if (!url) continue;
+        if (i === wanted) return c;
+        i++;
+      }
+    }
+    for (const c of cams) {
+      const entity = String(c?.entity ?? "").trim();
+      if (entity && entity === id) return c;
+    }
+    return null;
+  }
+  // Entity id → match on entity field.
+  for (const c of cams) {
+    const entity = String(c?.entity ?? "").trim();
+    if (entity && entity === id) return c;
+  }
+  return null;
 }
 
 /**
@@ -168,51 +289,35 @@ function hasMicMapEntries(map: unknown): map is Record<string, string> {
  * for that camera.
  *
  * Lookup order:
- *  1. **If `live_mic_streams` has any entry**, only the map applies —
- *     cameras absent from the map have no mic. This is the canonical
- *     mode for multi-camera setups: once you start filling the map, you
- *     own the mic surface for every camera.
- *  2. **If the map is empty / absent**, fall back to the legacy
+ *  1. **If any live_cameras entry has an inline `mic`**, only inline mics
+ *     apply — cameras whose entry has no `mic` have no backchannel. The
+ *     moment the unified shape carries any mic, it owns the mic surface.
+ *  2. **If no inline mic is set anywhere**, fall back to the legacy
  *     `live_go2rtc_stream` — applies globally to whichever camera is
  *     active. Preserves the original single-camera behavior for users
- *     who haven't migrated to the map yet.
- *
- * The split matters: previously the resolver fell back to legacy on every
- * per-key miss, which meant a user with one map entry + a legacy key
- * would see mic pills on every other camera too. Now the map is
- * authoritative the moment it's used.
+ *     who haven't moved to the new shape yet.
  */
 export function micStreamForCamera(
   cameraId: string | null | undefined,
   config: CameraGalleryCardConfig | null | undefined
 ): string {
   const id = String(cameraId ?? "").trim();
-  const map = config?.live_mic_streams;
-  if (id && hasMicMapEntries(map)) {
-    const v = map[id];
-    if (typeof v === "string") {
-      const trimmed = v.trim();
-      if (trimmed) return trimmed;
-    }
-    return ""; // Map is authoritative — don't fall through to legacy.
+  if (id && liveCamerasHaveAnyMic(config)) {
+    const entry = findLiveCamera(id, config);
+    const mic = typeof entry?.mic === "string" ? entry.mic.trim() : "";
+    return mic; // Inline-mics are authoritative — don't fall through to legacy.
   }
-  const single = String(config?.live_go2rtc_stream ?? "").trim();
-  return single;
+  return String(config?.live_go2rtc_stream ?? "").trim();
 }
 
 /**
- * `true` when the user has configured any mic backchannel — either the
- * per-camera map has at least one non-empty entry, or the legacy single
+ * `true` when the user has configured any mic backchannel — either a
+ * live_cameras entry has an inline `mic`, or the legacy single
  * `live_go2rtc_stream` is set. Used to decide whether to render the
  * editor's "Microphone backchannels" section at all.
  */
 export function hasAnyMicStream(config: CameraGalleryCardConfig | null | undefined): boolean {
-  const map = config?.live_mic_streams;
-  if (map && typeof map === "object") {
-    for (const v of Object.values(map)) {
-      if (typeof v === "string" && v.trim()) return true;
-    }
-  }
+  if (liveCamerasHaveAnyMic(config)) return true;
   return Boolean(String(config?.live_go2rtc_stream ?? "").trim());
 }
 
@@ -228,9 +333,33 @@ export function hasAnyMicStream(config: CameraGalleryCardConfig | null | undefin
 export function getGridCameraEntities(
   config: CameraGalleryCardConfig | null | undefined
 ): string[] {
-  const list = config?.live_camera_entities;
-  if (!Array.isArray(list)) return [];
-  return list.filter((e): e is string => typeof e === "string" && e.startsWith("camera."));
+  const cams = getCanonicalLiveCameras(config);
+  const out: string[] = [];
+  for (const c of cams) {
+    const entity = typeof c?.entity === "string" ? c.entity.trim() : "";
+    if (entity && entity.startsWith("camera.")) out.push(entity);
+  }
+  return out;
+}
+
+/**
+ * Raw entity ids from `live_cameras` — no hass/locale deps, used by
+ * change-watch and diff code that just needs the configured ids.
+ * Honors the same legacy-fallback path as the other helpers.
+ *
+ * Orphan mic-only entries (where `entity` holds a synthetic stream id
+ * like `__cgc_stream_0__`) are excluded — those aren't real HA entities
+ * and would only pollute hass.states watch-lists.
+ */
+export function getLiveCameraEntityIds(
+  config: CameraGalleryCardConfig | null | undefined
+): string[] {
+  const out: string[] = [];
+  for (const c of getCanonicalLiveCameras(config)) {
+    const entity = typeof c?.entity === "string" ? c.entity.trim() : "";
+    if (entity && !entity.startsWith(STREAM_ID_PREFIX)) out.push(entity);
+  }
+  return out;
 }
 
 /**

@@ -968,7 +968,7 @@ export const cardStyles = css`
   .live-pills-right {
     display: flex;
     flex-direction: row;
-    gap: 6px;
+    gap: 2px;
     align-items: center;
   }
   .live-hamburger-wrap {
@@ -1056,14 +1056,148 @@ export const cardStyles = css`
     text-overflow: ellipsis;
     letter-spacing: 0.01em;
   }
+  /* Custom video progress bar — bottom-anchored, scrub via pointer.
+   * Track tint mirrors the pill glass look (::after holds the bg-var +
+   * bar-opacity); ::before stays as the extended touch hit-area. The
+   * white fill sits above both. */
+  .vid-progress {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 5px;
+    background: transparent;
+    cursor: pointer;
+    z-index: 9;
+    touch-action: none;
+    opacity: 0;
+    transition: opacity 0.25s ease;
+    pointer-events: none;
+  }
+  .vid-progress.visible {
+    opacity: 1;
+    pointer-events: auto;
+  }
+  .vid-progress::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: -10px;
+    bottom: -2px;
+  }
+  .vid-progress::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: var(--cgc-pill-bg);
+    opacity: calc(var(--cgc-bar-opacity, 30) / 100);
+    pointer-events: none;
+  }
+  .vid-progress-fill {
+    position: relative;
+    z-index: 1;
+    height: 100%;
+    background: #fff;
+    pointer-events: none;
+  }
+
+  /* Big centered play/pause button for the gallery video preview.
+   * Glass look matches the pill row (--cgc-pill-bg + --cgc-bar-opacity
+   * via ::before, same blur amount), just at a larger diameter. */
+  .vid-bigplay {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    width: 50px;
+    height: 50px;
+    border-radius: 999px;
+    border: none;
+    background: transparent;
+    backdrop-filter: blur(16px) saturate(160%);
+    -webkit-backdrop-filter: blur(16px) saturate(160%);
+    color: var(--cgc-tsbar-txt, #fff);
+    display: grid;
+    place-items: center;
+    cursor: pointer;
+    z-index: 11;
+    opacity: 0;
+    transition:
+      opacity 0.25s ease,
+      transform 0.15s ease;
+    pointer-events: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .vid-bigplay::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    background: var(--cgc-pill-bg);
+    opacity: calc(var(--cgc-bar-opacity, 30) / 100);
+    pointer-events: none;
+  }
+  .vid-bigplay.visible {
+    opacity: 1;
+    pointer-events: auto;
+  }
+  .vid-bigplay:active {
+    transform: translate(-50%, -50%) scale(0.94);
+  }
+  .vid-bigplay ha-icon {
+    position: relative;
+    z-index: 1;
+    --mdc-icon-size: 26px;
+  }
+
+  /* Bottom-right time read-out — same glass treatment as the pill row
+   * for visual consistency. */
+  .vid-time {
+    position: absolute;
+    right: 8px;
+    bottom: 9px;
+    z-index: 10;
+    padding: 3px 7px;
+    border-radius: 999px;
+    background: transparent;
+    backdrop-filter: blur(16px) saturate(160%);
+    -webkit-backdrop-filter: blur(16px) saturate(160%);
+    color: var(--cgc-tsbar-txt, #fff);
+    font-size: 11px;
+    font-weight: 600;
+    line-height: 1;
+    letter-spacing: 0.02em;
+    font-variant-numeric: tabular-nums;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.25s ease;
+  }
+  .vid-time::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    background: var(--cgc-pill-bg);
+    opacity: calc(var(--cgc-bar-opacity, 30) / 100);
+    pointer-events: none;
+  }
+  .vid-time span {
+    position: relative;
+    z-index: 1;
+  }
+  .vid-time.visible {
+    opacity: 1;
+  }
+
   .gallery-pills {
     position: absolute;
     left: 8px;
     right: 8px;
     display: flex;
     flex-direction: row;
-    justify-content: space-between;
     align-items: center;
+    gap: 6px;
     opacity: 0;
     transition: opacity 0.25s ease;
     pointer-events: none;
@@ -1082,40 +1216,38 @@ export const cardStyles = css`
     &.bottom {
       bottom: 8px;
     }
-  }
-  .gallery-pills-left,
-  .gallery-pills-right {
-    display: flex;
-    flex-direction: row;
-    align-items: center;
-    gap: 6px;
-    flex: 1;
-  }
-  .gallery-pills-right {
-    justify-content: flex-end;
-  }
-  .gallery-pills-center {
-    display: flex;
-    flex-direction: row;
-    align-items: center;
-    gap: 6px;
+    &.align-left {
+      justify-content: flex-start;
+    }
+    &.align-center {
+      justify-content: center;
+    }
+    &.align-right {
+      justify-content: flex-end;
+    }
   }
   .gallery-pill {
     display: flex;
     align-items: center;
     justify-content: center;
     gap: calc(var(--cgc-pill-size, 14px) * 0.28);
-    padding: calc(var(--cgc-pill-size, 14px) * 0.3) calc(var(--cgc-pill-size, 14px) * 0.65);
+    /* Fixed square footprint → perfectly circular regardless of icon vs
+     * short-text content. Fixed-mode resizes them back to a stretched
+     * row via the .controls-bar-fixed override below. */
+    width: calc(var(--cgc-pill-size, 14px) * 2);
+    height: calc(var(--cgc-pill-size, 14px) * 2);
+    padding: 0;
+    flex: 0 0 auto;
+    box-sizing: border-box;
     color: var(--cgc-tsbar-txt, #fff);
     font-size: var(--cgc-pill-size, 14px);
     font-weight: 700;
-    border-radius: 999px;
+    border-radius: 50%;
     line-height: 1;
     position: relative;
     white-space: nowrap;
     backdrop-filter: blur(16px) saturate(160%);
     -webkit-backdrop-filter: blur(16px) saturate(160%);
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14);
 
     &::before {
       content: "";
@@ -1162,6 +1294,35 @@ export const cardStyles = css`
   .live-pill-btn.active {
     background: rgba(255, 80, 80, 0.85);
     border-radius: 50%;
+  }
+
+  /* Compact label inside a pill — used by the playback-speed pill
+   * which shows "½×" / "1×" / "2×" instead of an icon. Tabular-nums
+   * stops the width from wobbling between speeds. */
+  .vid-speed-label {
+    font-size: calc(var(--cgc-pill-size, 14px) * 0.85);
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    line-height: 1;
+    padding: 0;
+  }
+
+  /* Wide text pill — escape hatch from the round default. The camera
+   * name in live view needs to grow with the label, so it falls back to
+   * a capsule shape with horizontal padding. Applied alongside the
+   * regular .gallery-pill base. */
+  .gallery-pill--wide {
+    width: auto;
+    min-width: calc(var(--cgc-pill-size, 14px) * 2);
+    padding: 0 calc(var(--cgc-pill-size, 14px) * 0.7);
+    border-radius: 999px;
+  }
+
+  /* Info-only pills — visually identical to action pills but not
+     clickable (object indicator, index counter, camera name). */
+  .gallery-pill--info {
+    cursor: default;
+    pointer-events: none;
   }
 
   /* Mic error toast — sits inside live-controls-bar so layout doesn't
@@ -1391,7 +1552,7 @@ export const cardStyles = css`
     scroll-snap-align: start;
     -webkit-touch-callout: none;
     user-select: none;
-    opacity: 0.3;
+    opacity: calc(var(--cgc-thumb-off-opacity, 30) / 100);
     transform: scale(0.94);
     transition: none;
 

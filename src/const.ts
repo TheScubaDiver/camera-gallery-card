@@ -21,6 +21,9 @@ export const CONTROLS_MODES = ["overlay", "fixed"] as const;
 export const ASPECT_RATIOS = ["16:9", "4:3", "1:1"] as const;
 export const LIVE_LAYOUTS = ["single", "grid"] as const;
 export const MIC_MODES = ["toggle", "ptt"] as const;
+export const PTZ_TYPES = ["ezviz", "reolink", "frigate", "onvif"] as const;
+export const PTZ_DIRECTIONS = ["up", "down", "left", "right"] as const;
+export const PTZ_POSITIONS = ["bottom-left", "bottom-right", "top-left", "top-right"] as const;
 
 export type SourceMode = (typeof SOURCE_MODES)[number];
 export type PreviewPosition = (typeof PREVIEW_POSITIONS)[number];
@@ -34,6 +37,9 @@ export type ControlsMode = (typeof CONTROLS_MODES)[number];
 export type AspectRatio = (typeof ASPECT_RATIOS)[number];
 export type LiveLayout = (typeof LIVE_LAYOUTS)[number];
 export type MicMode = (typeof MIC_MODES)[number];
+export type PtzType = (typeof PTZ_TYPES)[number];
+export type PtzDirection = (typeof PTZ_DIRECTIONS)[number];
+export type PtzPosition = (typeof PTZ_POSITIONS)[number];
 
 /** Public CSS-variable namespace — every styling API key is `--cgc-*`. */
 export type CssVarKey = `--cgc-${string}`;
@@ -239,6 +245,7 @@ export const DEFAULT_AUTOMUTED = true;
 export const DEFAULT_AUTOPLAY = false;
 export const DEFAULT_ASPECT_RATIO = "16:9" satisfies AspectRatio;
 export const DEFAULT_BAR_OPACITY = 30;
+export const DEFAULT_THUMB_OFF_OPACITY = 30;
 export const DEFAULT_BAR_POSITION = "top" satisfies BarPosition;
 export const DEFAULT_FRIGATE_THUMB_BBOX = false;
 export const DEFAULT_FRIGATE_EVENT_CLUSTER = false;
@@ -293,6 +300,19 @@ export const DEFAULT_LIVE_MIC_MODE = "toggle" satisfies MicMode;
 export const DEFAULT_LIVE_MIC_ECHO_CANCELLATION = true;
 export const DEFAULT_LIVE_MIC_NOISE_SUPPRESSION = true;
 export const DEFAULT_LIVE_MIC_AUTO_GAIN_CONTROL = true;
+
+// -------- PTZ (pan/tilt) --------
+//
+// Speed range exists for the dispatchers that honour it (ONVIF maps it to
+// a 0–1 float). EZVIZ button entities ignore the value — each press is a
+// fixed-duration pulse — but the range still drives `resolveSpeed`'s
+// clamping so a malformed config can't push out-of-range numbers over
+// the wire.
+export const PTZ_SPEED_MIN = 1;
+export const PTZ_SPEED_MAX = 9;
+export const PTZ_SPEED_DEFAULT = 5;
+export const DEFAULT_LIVE_PTZ_ENABLED = false;
+export const DEFAULT_LIVE_PTZ_POSITION = "bottom-left" satisfies PtzPosition;
 export const DEFAULT_MAX_MEDIA = 50;
 export const DEFAULT_OBJECT_FIT = "cover" satisfies ObjectFit;
 export const DEFAULT_PREVIEW_CLOSE_ON_TAP_WHEN_GATED = true;

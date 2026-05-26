@@ -12,7 +12,7 @@
 import { FRESH_FETCH_WINDOW_MS } from "../const";
 import type { CameraGalleryCardConfig } from "../config/normalize";
 import type { HomeAssistant } from "../types/hass";
-import { hasAnyMicStream } from "./live-config";
+import { getLiveCameraEntityIds, hasAnyMicStream } from "./live-config";
 import type { MicError, MicStats } from "./webrtc-mic";
 
 /** Visual severity of a row's "value" half. `null` (or missing) = neutral. */
@@ -118,7 +118,7 @@ function buildLiveCameraRows(
   hass: HomeAssistant | null | undefined,
   cameraResolutions: Readonly<Record<string, CameraResolutionState | undefined>>
 ): DiagRow[] {
-  const cams = Array.isArray(config?.live_camera_entities) ? config.live_camera_entities : [];
+  const cams = getLiveCameraEntityIds(config);
   if (!cams.length) return [["(no cameras configured)", "—"]];
 
   const rows: DiagRow[] = [];
@@ -260,7 +260,7 @@ export function buildDiagnostics(opts: BuildDiagnosticsOptions): DiagSection[] {
         ["media_sources", String((cfg?.media_sources ?? []).length)],
         ["entities (sensor)", String((cfg?.entities ?? []).length)],
         ["live_enabled", cfg?.live_enabled ? "yes" : "no", cfg?.live_enabled ? "ok" : null],
-        ["live_camera_entities", String((cfg?.live_camera_entities ?? []).length)],
+        ["live_camera_entities", String(getLiveCameraEntityIds(cfg).length)],
         ["live_layout", cfg?.live_layout || "single"],
       ],
     },
