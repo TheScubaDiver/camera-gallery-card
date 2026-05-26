@@ -27,6 +27,7 @@ import { create, StructError } from "superstruct";
 import type { Infer } from "superstruct";
 
 import { KNOWN_FILTERS } from "../data/object-filters";
+import { getStreamEntries } from "../data/live-config";
 import { FRIGATE_URI_PREFIX, hasFrigateConfig } from "../util/frigate";
 import { cameraGalleryCardConfigStruct, type CameraGalleryCardConfigStruct } from "./structs";
 
@@ -795,10 +796,37 @@ function applyDeleteGating(config: CameraGalleryCardConfig): CameraGalleryCardCo
 }
 
 /**
+ * True when `live_enabled` is on and at least one live camera or stream is
+ * wired up, with no sensor/media source configured. Used by
+ * `assertRequiredFields` to allow a kiosk-style live-only card without
+ * tripping the per-source-mode required-field checks (issue #169).
+ *
+ * Inline `live_cameras` check rather than calling `getAllLiveCameraEntities`,
+ * which needs hass state that normalize doesn't have.
+ */
+function isLiveOnlyConfig(config: CameraGalleryCardConfig): boolean {
+  if (config.live_enabled !== true) return false;
+  if (config.entities.length > 0) return false;
+  if (config.media_sources.length > 0) return false;
+  if (getStreamEntries(config).length > 0) return true;
+  const liveCams = Array.isArray(config.live_cameras) ? config.live_cameras : [];
+  return liveCams.some((c) => {
+    if (!c || typeof c !== "object") return false;
+    const entity = typeof c.entity === "string" ? c.entity.trim() : "";
+    const url = typeof c.url === "string" ? c.url.trim() : "";
+    return entity.length > 0 || url.length > 0;
+  });
+}
+
+/**
  * Mode-specific required-field checks. Throws a descriptive Error so the
  * card error overlay surfaces the user's mistake.
  */
 function assertRequiredFields(config: CameraGalleryCardConfig): void {
+  // Live-only kiosk configs (issue #169) skip both the per-source-mode
+  // checks and the path_datetime_format requirement — nothing to group.
+  if (isLiveOnlyConfig(config)) return;
+
   const { source_mode, entities, media_sources } = config;
 
   if (source_mode === "sensor" && !entities.length) {

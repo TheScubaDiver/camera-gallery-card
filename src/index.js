@@ -5068,7 +5068,14 @@ class CameraGalleryCard extends LitElement {
     const rawItems = base.rawItems;
     const visibleObjectFilters = this._getVisibleObjectFilters();
 
-    if (!rawItems.length) {
+    // Live-only mode (issue #169): no gallery items but a live camera is
+    // configured. We fall through to the normal render so the live view
+    // stays visible — the downstream paths all guard on `filtered.length`
+    // and the live pipeline is independent of `rawItems`. Used again below
+    // to suppress the now-empty toolbar / thumbs strip / filter chips.
+    const liveOnlyView = !rawItems.length && this._hasLiveConfig();
+
+    if (!rawItems.length && !liveOnlyView) {
       if (usingMediaSource && this._mediaClient.isLoading()) {
         return html`<div class="empty">Loading media…</div>`;
       }
@@ -5167,10 +5174,12 @@ class CameraGalleryCard extends LitElement {
     const useDatePicker = showTypeFilter && navigator.maxTouchPoints > 0;
     const isVerticalThumbs = this._isThumbLayoutVertical();
 
-    // DIT IS DE BELANGRIJKE LOGICA: 
-    // showGalleryControls is TRUE als we de gallery/navigatie MOETEN zien.
-    // showGalleryControls is FALSE als click_to_open aan staat én de preview open is, of als live actief is.
-    const showGalleryControls = !this.config?.clean_mode || (!this._previewOpen && !isLive);
+    // Gallery chrome (top toolbar, filter chips, thumbs strip) renders when
+    // it's actually useful:
+    //   - clean_mode + preview/live open → user wants minimal UI
+    //   - live-only view (issue #169)    → no items at all, nothing to do
+    // The live overlay pills sit inside `#live-card-host` and stay either way.
+    const showGalleryControls = !liveOnlyView && (!this.config?.clean_mode || (!this._previewOpen && !isLive));
 
     const rootVars = `
       --cgc-card-radius:10px;
