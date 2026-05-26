@@ -10858,7 +10858,7 @@ details summary { user-select: none; }
           display: flex; align-items: flex-start; gap: 6px;
         }
         .cgc-inline-warn .cgc-svg-icon { flex-shrink: 0; margin-top: 1px; }
-
+      </style>
 
       <div class="wrap v2" style="${rootVars}">
 
