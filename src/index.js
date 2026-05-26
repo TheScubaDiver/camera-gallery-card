@@ -7946,6 +7946,26 @@ class CameraGalleryCardEditor extends HTMLElement {
             </div>
           </div>
         </div>
+        <div class="row">
+          <div class="row-head">
+            <div>
+              <div class="lbl">Cluster near-adjacent events</div>
+              <div class="desc">Collapse multiple Frigate events for the same camera + label within a short time window into one representative thumb. Tap the count badge in the gallery to expand the cluster inline.</div>
+            </div>
+            <div class="togrow">
+              <label class="cgc-switch"><input type="checkbox" id="frigate-event-cluster" ${this._config.frigate_event_cluster ? "checked" : ""}><span class="cgc-track"></span></label>
+            </div>
+          </div>
+        </div>
+        ${this._config.frigate_event_cluster ? `
+        <div class="row">
+          <div class="lbl">Cluster gap <span style="font-weight:400;color:var(--ed-text2);font-size:0.85em;">(seconds)</span></div>
+          <div class="desc">Events less than this many seconds apart get merged. Start with 30 — increase if you still see duplicate bezorger / cleaner / dog-loose thumbs.</div>
+          <div class="field">
+            <input type="number" class="ed-input" id="frigate-event-cluster-gap-sec" min="1" max="600" step="1" value="${this._config.frigate_event_cluster_gap_sec ?? 30}" />
+          </div>
+        </div>
+        ` : ""}
       `;
 
       const showFrigate = mediaModeOn || combinedModeOn;
@@ -11357,6 +11377,17 @@ details summary { user-select: none; }
 
     $("frigate-thumb-bbox")?.addEventListener("change", (e) => {
       this._set("frigate_thumb_bbox", !!e.target.checked);
+    });
+
+    $("frigate-event-cluster")?.addEventListener("change", (e) => {
+      this._set("frigate_event_cluster", !!e.target.checked);
+    });
+
+    $("frigate-event-cluster-gap-sec")?.addEventListener("change", (e) => {
+      const raw = Number(e.target.value);
+      const clamped = Number.isFinite(raw) ? Math.min(600, Math.max(1, Math.round(raw))) : 30;
+      e.target.value = clamped;
+      this._set("frigate_event_cluster_gap_sec", clamped);
     });
 
     $("persistentcontrols")?.addEventListener("change", (e) => {
