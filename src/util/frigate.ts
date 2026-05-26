@@ -97,8 +97,13 @@ export function frigateEventIdFromSrc(src: string | null | undefined): string | 
 export interface FrigateEvent {
   readonly id?: string | null;
   readonly start_time?: number | null;
+  readonly end_time?: number | null;
   readonly label?: string | null;
   readonly camera?: string | null;
+  /** Highest detection confidence reached during the event (0–1).
+   * Used by the cluster pass to pick the representative event. */
+  readonly top_score?: number | null;
+  readonly score?: number | null;
 }
 
 /** The card-shaped media item built from a Frigate event. */

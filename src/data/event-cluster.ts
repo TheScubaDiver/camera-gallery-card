@@ -1,0 +1,124 @@
+/**
+ * Optional pre-pass over Frigate event lists that collapses near-adjacent
+ * events for the same camera + label into a single representative event.
+ *
+ * Frigate often fires several short events for one continuous presence
+ * (delivery driver walks up → event 1 → steps back → event 2 → leaves →
+ * event 3). Without clustering the gallery shows three near-duplicate
+ * thumbs. With clustering the user sees the strongest one and skips the
+ * noise.
+ *
+ * "Near-adjacent" = `(next.start_time - prev.start_time) <= gapSec`,
+ * comparing start_time deltas only (end_time isn't always present on the
+ * WS event payload). Same camera + same label is required — different
+ * objects on the same camera are not merged.
+ *
+ * Representative pick: highest `top_score` (falls back to `score`, then
+ * to the first event in document order if neither score is present).
+ *
+ * Events without a camera or label pass through unchanged; without
+ * start_time they pass through too (we have no basis for adjacency).
+ */
+
+import type { FrigateEvent } from "../util/frigate";
+
+/**
+ * One cluster of events. `members` always includes the rep itself, so
+ * `members.length >= 1` and a single-event cluster has `members[0] === rep`.
+ */
+export interface EventCluster {
+  rep: FrigateEvent;
+  members: FrigateEvent[];
+}
+
+const evScore = (ev: FrigateEvent): number => Number(ev?.top_score ?? ev?.score ?? 0);
+
+const evKey = (ev: FrigateEvent): string | null => {
+  const camera = String(ev?.camera ?? "");
+  const label = String(ev?.label ?? "");
+  return camera && label ? `${camera} ${label}` : null;
+};
+
+/**
+ * Cluster events into `{ rep, members }` groups. Use this when the caller
+ * needs to preserve member info (e.g. for the gallery's "expand cluster"
+ * UI). For the flat representative-only list use {@link clusterFrigateEvents}.
+ */
+export function clusterFrigateEventsGrouped(
+  events: readonly FrigateEvent[],
+  gapSec: number
+): EventCluster[] {
+  if (!Number.isFinite(gapSec) || gapSec <= 0 || events.length < 2) {
+    return events.map((ev) => ({ rep: ev, members: [ev] }));
+  }
+
+  // Sort by start_time ascending so consecutive events are adjacent.
+  // Events without a usable start_time get pushed to the end and pass
+  // through individually.
+  const withStart: FrigateEvent[] = [];
+  const passthrough: FrigateEvent[] = [];
+  for (const ev of events) {
+    const start = Number(ev?.start_time ?? 0);
+    if (start > 0 && evKey(ev) !== null) {
+      withStart.push(ev);
+    } else {
+      passthrough.push(ev);
+    }
+  }
+  withStart.sort((a, b) => Number(a?.start_time ?? 0) - Number(b?.start_time ?? 0));
+
+  const result: EventCluster[] = [];
+  let bucket: FrigateEvent[] = [];
+  let bucketKey: string | null = null;
+
+  const flush = (): void => {
+    if (bucket.length === 0) return;
+    let rep = bucket[0]!;
+    let bestScore = evScore(rep);
+    for (let i = 1; i < bucket.length; i++) {
+      const s = evScore(bucket[i]!);
+      if (s > bestScore) {
+        bestScore = s;
+        rep = bucket[i]!;
+      }
+    }
+    result.push({ rep, members: bucket });
+    bucket = [];
+    bucketKey = null;
+  };
+
+  for (const ev of withStart) {
+    const key = evKey(ev)!;
+    const start = Number(ev?.start_time ?? 0);
+
+    if (bucket.length > 0 && bucketKey === key) {
+      const prevStart = Number(bucket[bucket.length - 1]?.start_time ?? 0);
+      if (start - prevStart <= gapSec) {
+        bucket.push(ev);
+        continue;
+      }
+    }
+    flush();
+    bucket.push(ev);
+    bucketKey = key;
+  }
+  flush();
+
+  // Passthrough events each become a single-member cluster — same shape so
+  // callers can treat the whole result uniformly.
+  for (const ev of passthrough) {
+    result.push({ rep: ev, members: [ev] });
+  }
+  return result;
+}
+
+/**
+ * Flat list of representatives only. Convenience wrapper around
+ * {@link clusterFrigateEventsGrouped} for callers that don't need member info.
+ */
+export function clusterFrigateEvents(
+  events: readonly FrigateEvent[],
+  gapSec: number
+): FrigateEvent[] {
+  return clusterFrigateEventsGrouped(events, gapSec).map((c) => c.rep);
+}

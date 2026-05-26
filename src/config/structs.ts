@@ -42,6 +42,10 @@ import {
   DEFAULT_BAR_OPACITY,
   DEFAULT_BAR_POSITION,
   DEFAULT_FRIGATE_THUMB_BBOX,
+  DEFAULT_FRIGATE_EVENT_CLUSTER,
+  DEFAULT_FRIGATE_EVENT_CLUSTER_GAP_SEC,
+  FRIGATE_EVENT_CLUSTER_GAP_SEC_MAX,
+  FRIGATE_EVENT_CLUSTER_GAP_SEC_MIN,
   DEFAULT_CONTROLS_MODE,
   DEFAULT_DELETE_CONFIRM,
   DEFAULT_DELETE_SERVICE,
@@ -185,6 +189,11 @@ export const cameraGalleryCardConfigStruct = type({
   media_sources: defaulted(array(string()), []),
   frigate_url: optional(string()),
   frigate_thumb_bbox: defaulted(boolean(), DEFAULT_FRIGATE_THUMB_BBOX),
+  frigate_event_cluster: defaulted(boolean(), DEFAULT_FRIGATE_EVENT_CLUSTER),
+  frigate_event_cluster_gap_sec: defaulted(
+    intInRange(FRIGATE_EVENT_CLUSTER_GAP_SEC_MIN, FRIGATE_EVENT_CLUSTER_GAP_SEC_MAX),
+    DEFAULT_FRIGATE_EVENT_CLUSTER_GAP_SEC
+  ),
 
   // ─── Datetime parsing ──────────────────────────────────────
   // Single format that matches the path tail. `/`-separated segments map

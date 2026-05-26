@@ -1667,6 +1667,49 @@ export const cardStyles = css`
     color: gold;
   }
 
+  /* Cluster count badge — sits in the bottom-right of a Frigate-cluster
+   * representative thumb. Tap toggles inline expansion of the mini-strip
+   * of underlying member events. */
+  .cluster-badge {
+    position: absolute;
+    bottom: 4px;
+    right: 4px;
+    background: var(--accent-color, #ff9f43);
+    color: #1a1a1a;
+    font-size: 10px;
+    font-weight: 700;
+    padding: 2px 6px;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    z-index: 3;
+    filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.5));
+    transition: transform 0.12s ease;
+  }
+  .cluster-badge:hover {
+    transform: scale(1.08);
+  }
+  .cluster-badge.open {
+    background: #fff;
+  }
+
+  /* Expanded cluster members render at a smaller scale + an accent
+   * frame so the rep on the left visually "owns" the set that follows.
+   * Stays smaller in both selected and non-selected states. */
+  .tthumb.cluster-member {
+    transform: scale(0.9);
+    box-shadow: 0 0 0 2px var(--accent-color, #ff9f43);
+  }
+  .tthumb.cluster-member.on {
+    transform: scale(0.94);
+  }
+  .tthumb.cluster-member:active {
+    transform: scale(0.88);
+  }
+  .tthumb.cluster-member.on:active {
+    transform: scale(0.92);
+  }
+
   .selOverlay {
     position: absolute;
     inset: 0;
