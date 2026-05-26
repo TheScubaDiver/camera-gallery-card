@@ -1894,6 +1894,11 @@ class CameraGalleryCard extends LitElement {
   }
 
   _getLiveCropStyle() {
+    // Crop is a single-camera feature — in grid layout the host wraps
+    // multiple ha-camera-stream tiles and the transform would smear over
+    // all of them. Bail out so the host doesn't pick up the .has-crop
+    // class in grid mode.
+    if (isGridLayout(this.config, this._liveLayoutOverride)) return "";
     const cams = Array.isArray(this.config?.live_cameras) ? this.config.live_cameras : [];
     if (!cams.length) return "";
     const active = this._getEffectiveLiveCamera();
@@ -6808,218 +6813,224 @@ class CameraGalleryCardEditor extends HTMLElement {
   // ─── Live-camera crop editor (visual tool) ───────────────────────
 
   /**
-   * Render the per-camera "Open crop tool" row inside a livecam-row body.
-   * Extracted from an inline IIFE so the surrounding map() template literal
-   * stays at a sane nesting depth.
+   * Render the per-camera inline crop tool inside a livecam-row body.
+   *
+   * No modal: the editor lives directly in the row so the user edits in
+   * place. State is read from the saved config; user interactions
+   * (drag, aspect change, reset) commit straight back via `_set`. The
+   * source aspect ratio is detected from the snapshot's natural dimensions
+   * the first time the img loads — re-rendering picks up the persisted
+   * `source_ar` so detection only runs once per camera.
    */
-  _renderLivecamCropButton(cameraId) {
+  _renderLivecamCropInline(cameraId) {
     const cams = Array.isArray(this._config?.live_cameras) ? this._config.live_cameras : [];
     const entry = cams.find((c) => c?.entity === cameraId);
-    const crop = entry?.crop;
-    const cropOn = !!(crop && ((crop.w !== undefined && crop.w < 100) || (crop.h !== undefined && crop.h < 100) || crop.x || crop.y));
-    const label = cropOn
-      ? (crop.w ?? 100) + "x" + (crop.h ?? 100) + " %"
-      : "Open crop tool";
-    return `
-      <button type="button" class="livecam-crop-btn ${cropOn ? "set" : ""}" data-cropcam="${cameraId}">
-        ${svgIcon('mdi:crop', 14)}<span>${label}</span>
+    const crop = entry?.crop || {};
+    const x = Number.isFinite(Number(crop.x)) ? Number(crop.x) : 0;
+    const y = Number.isFinite(Number(crop.y)) ? Number(crop.y) : 0;
+    const w = Number.isFinite(Number(crop.w)) && crop.w > 0 ? Number(crop.w) : 100;
+    const h = Number.isFinite(Number(crop.h)) && crop.h > 0 ? Number(crop.h) : 100;
+    const cropOn = !(x === 0 && y === 0 && w === 100 && h === 100);
+    const isOpen = this._livecamCropOpen?.has?.(cameraId) === true;
+    const status = cropOn
+      ? `${Math.round(w)} × ${Math.round(h)} %`
+      : "Off";
+    const header = `
+      <button type="button" class="livecam-crop-toggle ${cropOn ? "set" : ""}" data-cropcam-toggle="${cameraId}">
+        ${svgIcon('mdi:crop', 14)}
+        <span class="livecam-crop-toggle-label">Crop view</span>
+        <span class="livecam-crop-toggle-status">${status}</span>
+        <span class="livecam-crop-toggle-chev">${isOpen ? "▾" : "▸"}</span>
       </button>
+    `;
+    if (!isOpen) {
+      return `<div class="livecam-crop-section" data-cropcam-section="${cameraId}">${header}</div>`;
+    }
+    // Prefer the persisted source_ar; fall back to whatever the editor
+    // detected from the snapshot during this session. Without this fallback
+    // a Reset (which deletes the crop entirely) would lose the 4:3 label
+    // until the user opens the row again.
+    const sourceAR = String(
+      crop.source_ar || this._livecamCropDetectedAR?.get(cameraId) || "16/9"
+    );
+    const camState = this._hass?.states?.[cameraId];
+    const sig = String(camState?.attributes?.entity_picture || "");
+    // Stable cache key — only changes when the camera state actually
+    // updates (new frame, new auth signature). Re-renders triggered by
+    // editor saves keep the same URL so the browser uses the cached
+    // image instead of refetching and flickering.
+    const cacheKey = String(camState?.last_changed || "")
+      .replace(/[^0-9]/g, "")
+      .slice(0, 14);
+    const imgUrl = sig
+      ? sig + (sig.includes("?") ? "&" : "?") + "k=" + cacheKey
+      : "";
+    const aspectLock = this._livecamCropAspect?.get(cameraId) || "source";
+    const srcLabel = sourceAR.replace("/", ":");
+    return `
+      <div class="livecam-crop-section open" data-cropcam-section="${cameraId}">
+        ${header}
+        <div class="livecam-crop-inline" data-cropcam-root="${cameraId}">
+          <div class="livecam-crop-head">
+            <select class="livecam-crop-aspect" data-cropcam-aspect="${cameraId}">
+            <option value="source" ${aspectLock === "source" ? "selected" : ""}>${srcLabel} (Source)</option>
+            <option value="16/9"   ${aspectLock === "16/9"   ? "selected" : ""}>16:9</option>
+            <option value="4/3"    ${aspectLock === "4/3"    ? "selected" : ""}>4:3</option>
+            <option value="1/1"    ${aspectLock === "1/1"    ? "selected" : ""}>1:1</option>
+            <option value="9/16"   ${aspectLock === "9/16"   ? "selected" : ""}>9:16</option>
+            <option value="3/4"    ${aspectLock === "3/4"    ? "selected" : ""}>3:4</option>
+            <option value="free"   ${aspectLock === "free"   ? "selected" : ""}>Free</option>
+          </select>
+          <button type="button" class="livecam-crop-reset" data-cropcam-reset="${cameraId}" title="Reset to full frame">
+            ${svgIcon('mdi:fullscreen', 12)}<span>Reset</span>
+          </button>
+        </div>
+        <div class="livecam-crop-stage" data-cropcam-stage="${cameraId}">
+          ${imgUrl
+            ? `<img class="livecam-crop-img" data-cropcam-img="${cameraId}" src="${imgUrl}" alt="" draggable="false" />`
+            : `<div class="livecam-crop-empty">Camera snapshot unavailable</div>`}
+          <div class="livecam-crop-rect" data-cropcam-rect="${cameraId}"
+               style="left:${x}%;top:${y}%;width:${w}%;height:${h}%;">
+            <div class="livecam-crop-handle h-tl" data-handle="tl"></div>
+            <div class="livecam-crop-handle h-tr" data-handle="tr"></div>
+            <div class="livecam-crop-handle h-bl" data-handle="bl"></div>
+            <div class="livecam-crop-handle h-br" data-handle="br"></div>
+          </div>
+          <div class="livecam-crop-mask top"    style="height:${y}%;"></div>
+          <div class="livecam-crop-mask bottom" style="top:${y + h}%;"></div>
+          <div class="livecam-crop-mask left"   style="top:${y}%;width:${x}%;height:${h}%;"></div>
+          <div class="livecam-crop-mask right"  style="top:${y}%;left:${x + w}%;height:${h}%;"></div>
+        </div>
+        <div class="livecam-crop-info" data-cropcam-info="${cameraId}">
+          x: <strong>${Math.round(x)}%</strong> · y: <strong>${Math.round(y)}%</strong> ·
+          w: <strong>${Math.round(w)}%</strong> · h: <strong>${Math.round(h)}%</strong>
+        </div>
+        </div>
+      </div>
     `;
   }
 
-  _openCropEditor(cameraId) {
+  /**
+   * Persist a crop update for one camera. Full-frame writes delete the
+   * `crop` key so the YAML stays clean; otherwise the rounded percentage
+   * box + the detected source aspect are stored.
+   */
+  _saveCropForCamera(cameraId, next) {
     if (!cameraId) return;
-    const cams = Array.isArray(this._config.live_cameras) ? this._config.live_cameras : [];
-    const entry = cams.find((c) => c?.entity === cameraId);
-    const existing = entry?.crop;
-    this._cropEdit = {
-      cameraId,
-      x: Number(existing?.x ?? 0),
-      y: Number(existing?.y ?? 0),
-      w: Number(existing?.w ?? 100),
-      h: Number(existing?.h ?? 100),
-      // Source aspect detected when the camera image loads (e.g. "4/3"
-      // for a doorbell, "16/9" for most cams). Pre-existing crops carry
-      // this in their config; fresh ones learn it after img.onload fires.
-      sourceAR: existing?.source_ar || "16/9",
-      // Aspect-ratio lock for handle-drag. "source" = use sourceAR.
-      // "free" = no constraint. Stage takes sourceAR as its aspect-ratio
-      // so the crop %-coords are in the same coordinate system as the
-      // displayed source image — locked ratios are computed against
-      // sourceAR at runtime.
-      aspect: "source",
-      dragging: null, // null | "move" | "tl" | "tr" | "bl" | "br"
-      startPx: null,
-      startRect: null,
-    };
-    if (this._cropEdit.w === 0) this._cropEdit.w = 100;
-    if (this._cropEdit.h === 0) this._cropEdit.h = 100;
-    this._lockPageScroll();
-    this._scheduleRender();
-  }
-
-  _closeCropEditor() {
-    this._cropEdit = null;
-    this._unlockPageScroll();
-    this._scheduleRender();
-  }
-
-  _resetCropEditor() {
-    if (!this._cropEdit) return;
-    this._cropEdit.x = 0;
-    this._cropEdit.y = 0;
-    this._cropEdit.w = 100;
-    this._cropEdit.h = 100;
-    this._scheduleRender();
-  }
-
-  _saveCropEditor() {
-    const ce = this._cropEdit;
-    if (!ce) return;
     const cams = Array.isArray(this._config.live_cameras) ? [...this._config.live_cameras] : [];
-    const idx = cams.findIndex((c) => c?.entity === ce.cameraId);
-    const fullFrame = ce.x === 0 && ce.y === 0 && ce.w === 100 && ce.h === 100;
-    const baseEntry = idx >= 0 ? { ...cams[idx] } : { entity: ce.cameraId, name: "" };
+    const idx = cams.findIndex((c) => c?.entity === cameraId);
+    const baseEntry = idx >= 0 ? { ...cams[idx] } : { entity: cameraId, name: "" };
+    const fullFrame = next.x === 0 && next.y === 0 && next.w === 100 && next.h === 100;
     if (fullFrame) {
       delete baseEntry.crop;
     } else {
       const cropOut = {
-        x: Math.round(ce.x),
-        y: Math.round(ce.y),
-        w: Math.round(ce.w),
-        h: Math.round(ce.h),
+        x: Math.round(next.x),
+        y: Math.round(next.y),
+        w: Math.round(next.w),
+        h: Math.round(next.h),
       };
-      // Persist the detected source aspect so the live container can
-      // reshape itself accurately at runtime (otherwise we'd have to
-      // re-detect on every render).
-      if (ce.sourceAR && ce.sourceAR !== "16/9") {
-        cropOut.source_ar = ce.sourceAR;
+      if (next.source_ar && next.source_ar !== "16/9") {
+        cropOut.source_ar = next.source_ar;
       }
       baseEntry.crop = cropOut;
     }
     if (idx >= 0) cams[idx] = baseEntry;
     else cams.push(baseEntry);
     this._set("live_cameras", cams);
-    this._closeCropEditor();
+  }
+
+  _resetCropForCamera(cameraId) {
+    this._saveCropForCamera(cameraId, { x: 0, y: 0, w: 100, h: 100 });
   }
 
   /**
-   * Render the crop-editor modal. Returns empty when no editor is open so
-   * the editor's DOM stays clean.
-   */
-  /**
-   * Wire pointer interactions for the visual crop editor. Idempotent —
-   * called from `_render()` after the modal markup is inserted; bails out
-   * when no editor is open. Handles:
+   * Wire pointer + select interactions for every inline crop tool rendered
+   * in the editor. Called once per editor render. State during drag lives
+   * in closure variables; pointer-up writes the final rectangle straight
+   * to config, which re-renders the row with the new values.
    *
+   * For each camera stage:
    *  - Pointer-down on a corner handle → resize that corner
    *  - Pointer-down on the rect body → move whole rect
-   *  - Pointer-down outside the rect on the stage → draw a fresh rect
-   *  - Reset / Cancel / Save / Close buttons
-   *  - Backdrop click → cancel (same as close)
-   *  - Esc key → cancel
+   *  - Aspect select → snap rect to the chosen ratio + persist
+   *  - Reset → write full-frame back to config
+   *  - img.onload → detect source aspect ratio + update the "Source" label
    */
-  _wireCropEditor() {
-    if (!this._cropEdit) return;
+  _wireLivecamCropInline() {
     const root = this.shadowRoot;
     if (!root) return;
-    const stage = root.getElementById("crop-stage");
-    if (!stage) return;
+    if (!this._livecamCropAspect) this._livecamCropAspect = new Map();
+    if (!this._livecamCropDetectedAR) this._livecamCropDetectedAR = new Map();
+    if (!this._livecamCropOpen) this._livecamCropOpen = new Set();
 
-    const close = () => this._closeCropEditor();
-    root.getElementById("crop-close")?.addEventListener("click", close);
-    root.getElementById("crop-cancel")?.addEventListener("click", close);
-    root.getElementById("crop-reset")?.addEventListener("click", () => this._resetCropEditor());
-    root.getElementById("crop-save")?.addEventListener("click", () => this._saveCropEditor());
-    root.getElementById("crop-aspect")?.addEventListener("change", (e) => {
-      const ce2 = this._cropEdit;
-      if (!ce2) return;
-      ce2.aspect = e.target.value;
-      // Snap the current rect to the new ratio, anchored at top-left.
-      const r = aspectStageRatio(ce2.aspect);
-      if (r != null) {
-        let w = ce2.w;
-        let h = w / r;
-        if (ce2.y + h > 100) {
-          h = 100 - ce2.y;
-          w = h * r;
-        }
-        if (ce2.x + w > 100) {
-          w = 100 - ce2.x;
-          h = w / r;
-        }
-        ce2.w = w;
-        ce2.h = h;
-        applyRect();
-      }
+    // Toggle the collapsible per camera. Clicking the header swaps the
+    // section between collapsed (just the row) and expanded (full tool).
+    root.querySelectorAll("[data-cropcam-toggle]").forEach((btn) => {
+      if (btn.dataset.cropcamWiredToggle === "1") return;
+      btn.dataset.cropcamWiredToggle = "1";
+      btn.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const id = btn.dataset.cropcamToggle;
+        if (!id) return;
+        if (this._livecamCropOpen.has(id)) this._livecamCropOpen.delete(id);
+        else this._livecamCropOpen.add(id);
+        this._scheduleRender();
+      });
     });
-    // Note: no click-to-close on the backdrop. Dragging a corner past
-    // the modal edge fires a click on the backdrop at pointer-up — that
-    // surprised users by closing the editor mid-drag. The explicit
-    // close (X), Cancel button, and Esc all still work.
-    // Esc to close (one-shot listener tied to current modal instance)
-    const escHandler = (e) => {
-      if (e.key === "Escape" && this._cropEdit) {
-        close();
-        document.removeEventListener("keydown", escHandler);
-      }
-    };
-    document.addEventListener("keydown", escHandler);
 
-    // Detect the actual source aspect from the loaded snapshot. The stage
-    // starts at the cached sourceAR (16/9 by default, or the value saved
-    // with an existing crop); when the img loads we read naturalWidth /
-    // naturalHeight, update the stage's aspect-ratio in place, and refresh
-    // sourceAR so the ratio dropdown's "source" option means the actual
-    // camera ratio rather than a guess.
-    const imgEl = root.getElementById("crop-img");
-    if (imgEl) {
-      const applyDetected = () => {
-        const ce2 = this._cropEdit;
-        if (!ce2) return;
-        const w = imgEl.naturalWidth;
-        const h = imgEl.naturalHeight;
-        if (!w || !h) return;
-        // Reduce fraction to a clean integer ratio for common cases
-        // (16:9, 4:3, 1:1, 9:16). Fallback to the raw pixel ratio.
-        const gcd = (a, b) => (b ? gcd(b, a % b) : a);
-        const g = gcd(w, h);
-        const detected = `${w / g}/${h / g}`;
-        if (detected === ce2.sourceAR) return;
-        ce2.sourceAR = detected;
-        // Refresh the "(Source)" option's label so the user sees the
-        // actual detected ratio instead of the placeholder. No need to
-        // touch the stage's aspect-ratio — the stage now hugs the img's
-        // intrinsic ratio via `height: auto`, so any mismatch (and the
-        // resulting black band) is impossible.
-        const sel = root.getElementById("crop-aspect");
-        const srcOpt = sel?.querySelector('option[value="source"]');
-        if (srcOpt) srcOpt.textContent = `${detected.replace("/", ":")} (Source)`;
-      };
-      if (imgEl.complete && imgEl.naturalWidth) {
-        applyDetected();
-      } else {
-        imgEl.addEventListener("load", applyDetected, { once: true });
-      }
-    }
+    root.querySelectorAll("[data-cropcam-stage]").forEach((stage) => {
+      const cameraId = stage.dataset.cropcamStage;
+      if (!cameraId || stage.dataset.cropcamWired === "1") return;
+      stage.dataset.cropcamWired = "1";
+      this._wireOneInlineCropStage(stage, cameraId);
+    });
+  }
 
-    const ce = this._cropEdit;
-    const rectFromPointer = (e) => {
-      const r = stage.getBoundingClientRect();
-      const px = ((e.clientX - r.left) / r.width) * 100;
-      const py = ((e.clientY - r.top) / r.height) * 100;
-      return { px: Math.max(0, Math.min(100, px)), py: Math.max(0, Math.min(100, py)) };
+  _wireOneInlineCropStage(stage, cameraId) {
+    const root = this.shadowRoot;
+    if (!root) return;
+
+    // Refs scoped to this stage so the multi-row case stays clean.
+    const rectEl = stage.querySelector(`[data-cropcam-rect="${cameraId}"]`);
+    const maskTop = stage.querySelector(".livecam-crop-mask.top");
+    const maskBottom = stage.querySelector(".livecam-crop-mask.bottom");
+    const maskLeft = stage.querySelector(".livecam-crop-mask.left");
+    const maskRight = stage.querySelector(".livecam-crop-mask.right");
+    const infoEl = root.querySelector(`[data-cropcam-info="${cameraId}"]`);
+    const aspectSel = root.querySelector(`[data-cropcam-aspect="${cameraId}"]`);
+    const resetBtn = root.querySelector(`[data-cropcam-reset="${cameraId}"]`);
+    const imgEl = stage.querySelector(`[data-cropcam-img="${cameraId}"]`);
+
+    if (!rectEl) return;
+
+    // Read current crop from the rect's inline style (single source of
+    // truth during drag) so closure state stays in sync with the DOM.
+    const readRect = () => ({
+      x: parseFloat(rectEl.style.left) || 0,
+      y: parseFloat(rectEl.style.top) || 0,
+      w: parseFloat(rectEl.style.width) || 100,
+      h: parseFloat(rectEl.style.height) || 100,
+    });
+
+    const getSavedSourceAR = () => {
+      const cams = Array.isArray(this._config?.live_cameras) ? this._config.live_cameras : [];
+      const entry = cams.find((c) => c?.entity === cameraId);
+      return String(entry?.crop?.source_ar || this._livecamCropDetectedAR.get(cameraId) || "16/9");
     };
-    // Aspect ratio in stage-percentage coordinates (w% / h%). The stage
-    // is sized to the source's detected aspect (ce.sourceAR), so a real
-    // 1:1 crop on a 4:3 stage means w%/h% = 1 / (4/3) = 0.75 — height
-    // takes a bigger percentage of the stage than width.
+
     const sourceARNum = () => {
-      const parts = String(ce.sourceAR || "16/9").split("/").map(Number);
+      const parts = getSavedSourceAR().split("/").map(Number);
       return parts.length === 2 && parts[0] > 0 && parts[1] > 0
         ? parts[0] / parts[1]
         : 16 / 9;
     };
+
+    // Aspect ratio in stage-%-coords (w% / h%) — same math as the modal
+    // version. The stage uses `height: auto` so its rendered ratio always
+    // equals the img's natural ratio; the lock-ratio is therefore
+    // (target / sourceAR).
     const aspectStageRatio = (aspect) => {
       if (!aspect || aspect === "free") return null;
       if (aspect === "source") return 1;
@@ -7028,195 +7039,187 @@ class CameraGalleryCardEditor extends HTMLElement {
       return (parts[0] / parts[1]) / sourceARNum();
     };
 
-    // Direct DOM refs so move-handler avoids a full re-render on each
-    // pointer event (re-rendering replaces the drag handle element,
-    // which then loses pointer capture → drag stalls).
-    const rectEl = root.getElementById("crop-rect");
-    const maskTop = stage.querySelector(".cgc-crop-mask-top");
-    const maskBottom = stage.querySelector(".cgc-crop-mask-bottom");
-    const maskLeft = stage.querySelector(".cgc-crop-mask-left");
-    const maskRight = stage.querySelector(".cgc-crop-mask-right");
-    const infoEl = root.querySelector(".cgc-crop-info");
-
-    const applyRect = () => {
-      if (rectEl) {
-        rectEl.style.left = ce.x + "%";
-        rectEl.style.top = ce.y + "%";
-        rectEl.style.width = ce.w + "%";
-        rectEl.style.height = ce.h + "%";
-      }
-      if (maskTop) maskTop.style.height = ce.y + "%";
-      if (maskBottom) maskBottom.style.top = (ce.y + ce.h) + "%";
+    const applyRect = (s) => {
+      rectEl.style.left = s.x + "%";
+      rectEl.style.top = s.y + "%";
+      rectEl.style.width = s.w + "%";
+      rectEl.style.height = s.h + "%";
+      if (maskTop) maskTop.style.height = s.y + "%";
+      if (maskBottom) maskBottom.style.top = (s.y + s.h) + "%";
       if (maskLeft) {
-        maskLeft.style.top = ce.y + "%";
-        maskLeft.style.width = ce.x + "%";
-        maskLeft.style.height = ce.h + "%";
+        maskLeft.style.top = s.y + "%";
+        maskLeft.style.width = s.x + "%";
+        maskLeft.style.height = s.h + "%";
       }
       if (maskRight) {
-        maskRight.style.top = ce.y + "%";
-        maskRight.style.left = (ce.x + ce.w) + "%";
-        maskRight.style.height = ce.h + "%";
+        maskRight.style.top = s.y + "%";
+        maskRight.style.left = (s.x + s.w) + "%";
+        maskRight.style.height = s.h + "%";
       }
       if (infoEl) {
         infoEl.innerHTML =
-          "x: <strong>" + Math.round(ce.x) + "%</strong> · " +
-          "y: <strong>" + Math.round(ce.y) + "%</strong> · " +
-          "w: <strong>" + Math.round(ce.w) + "%</strong> · " +
-          "h: <strong>" + Math.round(ce.h) + "%</strong>";
+          "x: <strong>" + Math.round(s.x) + "%</strong> · " +
+          "y: <strong>" + Math.round(s.y) + "%</strong> · " +
+          "w: <strong>" + Math.round(s.w) + "%</strong> · " +
+          "h: <strong>" + Math.round(s.h) + "%</strong>";
       }
     };
 
+    // Source aspect detection on first img load.
+    if (imgEl) {
+      const applyDetected = () => {
+        const w = imgEl.naturalWidth;
+        const h = imgEl.naturalHeight;
+        if (!w || !h) return;
+        const gcd = (a, b) => (b ? gcd(b, a % b) : a);
+        const g = gcd(w, h);
+        const detected = `${w / g}/${h / g}`;
+        if (this._livecamCropDetectedAR.get(cameraId) === detected) return;
+        this._livecamCropDetectedAR.set(cameraId, detected);
+        // Refresh the "(Source)" option label without re-rendering the
+        // whole editor (which would lose the user's drag in progress).
+        const sel = root.querySelector(`[data-cropcam-aspect="${cameraId}"]`);
+        const srcOpt = sel?.querySelector('option[value="source"]');
+        if (srcOpt) srcOpt.textContent = `${detected.replace("/", ":")} (Source)`;
+      };
+      if (imgEl.complete && imgEl.naturalWidth) applyDetected();
+      else imgEl.addEventListener("load", applyDetected, { once: true });
+    }
+
+    // Reset → full frame.
+    resetBtn?.addEventListener("click", (e) => {
+      e.preventDefault();
+      this._resetCropForCamera(cameraId);
+    });
+
+    // Aspect-lock change → snap current rect + persist.
+    aspectSel?.addEventListener("change", (e) => {
+      const next = e.target.value;
+      this._livecamCropAspect.set(cameraId, next);
+      const ratio = aspectStageRatio(next);
+      if (ratio == null) return;
+      const cur = readRect();
+      let w = cur.w;
+      let h = w / ratio;
+      if (cur.y + h > 100) {
+        h = 100 - cur.y;
+        w = h * ratio;
+      }
+      if (cur.x + w > 100) {
+        w = 100 - cur.x;
+        h = w / ratio;
+      }
+      const snapped = { x: cur.x, y: cur.y, w, h };
+      applyRect(snapped);
+      this._saveCropForCamera(cameraId, {
+        ...snapped,
+        source_ar: getSavedSourceAR(),
+      });
+    });
+
+    // Pointer-driven drag (move + resize).
+    const rectFromPointer = (e) => {
+      const r = stage.getBoundingClientRect();
+      const px = ((e.clientX - r.left) / r.width) * 100;
+      const py = ((e.clientY - r.top) / r.height) * 100;
+      return { px: Math.max(0, Math.min(100, px)), py: Math.max(0, Math.min(100, py)) };
+    };
+
+    let drag = null; // { mode, startPx, startRect }
+
     const onMove = (e) => {
-      if (!ce.dragging) return;
+      if (!drag) return;
       const { px, py } = rectFromPointer(e);
-      const start = ce.startRect;
-      if (ce.dragging === "move") {
-        const dx = px - ce.startPx.x;
-        const dy = py - ce.startPx.y;
-        ce.x = Math.max(0, Math.min(100 - start.w, start.x + dx));
-        ce.y = Math.max(0, Math.min(100 - start.h, start.y + dy));
+      const start = drag.startRect;
+      let next;
+      if (drag.mode === "move") {
+        const dx = px - drag.startPx.x;
+        const dy = py - drag.startPx.y;
+        next = {
+          x: Math.max(0, Math.min(100 - start.w, start.x + dx)),
+          y: Math.max(0, Math.min(100 - start.h, start.y + dy)),
+          w: start.w,
+          h: start.h,
+        };
       } else {
         const anchor = {
           tl: { x: start.x + start.w, y: start.y + start.h },
           tr: { x: start.x,           y: start.y + start.h },
           bl: { x: start.x + start.w, y: start.y },
           br: { x: start.x,           y: start.y },
-        }[ce.dragging];
+        }[drag.mode];
         let x1 = Math.min(anchor.x, px);
         let x2 = Math.max(anchor.x, px);
         let y1 = Math.min(anchor.y, py);
         let y2 = Math.max(anchor.y, py);
-        const ratio = aspectStageRatio(ce.aspect);
+        const lock = this._livecamCropAspect.get(cameraId) || "source";
+        const ratio = aspectStageRatio(lock);
         if (ratio != null) {
           let w = x2 - x1;
           let h = y2 - y1;
-          // Lead with whichever axis is "longer" relative to the ratio.
-          if (w / Math.max(h, 0.0001) > ratio) {
-            h = w / ratio;
-          } else {
-            w = h * ratio;
-          }
+          if (w / Math.max(h, 0.0001) > ratio) h = w / ratio;
+          else                                  w = h * ratio;
           const anchorRight  = anchor.x === start.x + start.w;
           const anchorBottom = anchor.y === start.y + start.h;
           if (anchorRight)  { x1 = anchor.x - w; x2 = anchor.x; }
           else              { x1 = anchor.x;     x2 = anchor.x + w; }
           if (anchorBottom) { y1 = anchor.y - h; y2 = anchor.y; }
           else              { y1 = anchor.y;     y2 = anchor.y + h; }
-          // Clamp to stage; if a wall is hit, the rect shrinks on the
-          // capped axis and the other axis follows the ratio.
-          if (x1 < 0)   { w = anchorRight ? anchor.x : x2;  h = w / ratio;
-                          if (anchorRight) { x1 = 0; x2 = anchor.x; } else { x1 = anchor.x; x2 = anchor.x + w; }
+          // Clamp + re-fit (preserves ratio if a wall is hit).
+          if (x1 < 0)   { w = anchorRight ? anchor.x : x2;          h = w / ratio;
+                          if (anchorRight)  { x1 = 0; x2 = anchor.x; } else { x1 = anchor.x; x2 = anchor.x + w; }
                           if (anchorBottom) { y1 = anchor.y - h; y2 = anchor.y; } else { y1 = anchor.y; y2 = anchor.y + h; } }
           if (x2 > 100) { w = anchorRight ? anchor.x : 100 - anchor.x; h = w / ratio;
-                          if (anchorRight) { x1 = anchor.x - w; x2 = anchor.x; } else { x1 = anchor.x; x2 = 100; }
+                          if (anchorRight)  { x1 = anchor.x - w; x2 = anchor.x; } else { x1 = anchor.x; x2 = 100; }
                           if (anchorBottom) { y1 = anchor.y - h; y2 = anchor.y; } else { y1 = anchor.y; y2 = anchor.y + h; } }
-          if (y1 < 0)   { h = anchorBottom ? anchor.y : y2;  w = h * ratio;
+          if (y1 < 0)   { h = anchorBottom ? anchor.y : y2;          w = h * ratio;
                           if (anchorBottom) { y1 = 0; y2 = anchor.y; } else { y1 = anchor.y; y2 = anchor.y + h; }
-                          if (anchorRight) { x1 = anchor.x - w; x2 = anchor.x; } else { x1 = anchor.x; x2 = anchor.x + w; } }
+                          if (anchorRight)  { x1 = anchor.x - w; x2 = anchor.x; } else { x1 = anchor.x; x2 = anchor.x + w; } }
           if (y2 > 100) { h = anchorBottom ? anchor.y : 100 - anchor.y; w = h * ratio;
                           if (anchorBottom) { y1 = anchor.y - h; y2 = anchor.y; } else { y1 = anchor.y; y2 = 100; }
-                          if (anchorRight) { x1 = anchor.x - w; x2 = anchor.x; } else { x1 = anchor.x; x2 = anchor.x + w; } }
+                          if (anchorRight)  { x1 = anchor.x - w; x2 = anchor.x; } else { x1 = anchor.x; x2 = anchor.x + w; } }
         }
         const minSize = 5;
         if (x2 - x1 < minSize || y2 - y1 < minSize) return;
-        ce.x = x1;
-        ce.y = y1;
-        ce.w = x2 - x1;
-        ce.h = y2 - y1;
+        next = { x: x1, y: y1, w: x2 - x1, h: y2 - y1 };
       }
-      applyRect();
+      applyRect(next);
     };
 
     const onUp = () => {
-      if (!ce.dragging) return;
-      ce.dragging = null;
-      ce.startPx = null;
-      ce.startRect = null;
+      if (!drag) return;
+      drag = null;
       document.removeEventListener("pointermove", onMove);
       document.removeEventListener("pointerup", onUp);
+      // Commit final rectangle. Re-render will re-apply the same values
+      // so there's no visual flicker.
+      const final = readRect();
+      this._saveCropForCamera(cameraId, {
+        ...final,
+        source_ar: getSavedSourceAR(),
+      });
     };
 
     const startDrag = (mode, e) => {
       e.preventDefault();
       e.stopPropagation();
       const { px, py } = rectFromPointer(e);
-      ce.dragging = mode;
-      ce.startPx = { x: px, y: py };
-      ce.startRect = { x: ce.x, y: ce.y, w: ce.w, h: ce.h };
+      drag = {
+        mode,
+        startPx: { x: px, y: py },
+        startRect: readRect(),
+      };
       document.addEventListener("pointermove", onMove);
       document.addEventListener("pointerup", onUp);
     };
 
-    root.querySelectorAll("[data-handle]").forEach((h) => {
+    stage.querySelectorAll("[data-handle]").forEach((h) => {
       h.addEventListener("pointerdown", (e) => startDrag(h.dataset.handle, e));
     });
-    root.getElementById("crop-rect")?.addEventListener("pointerdown", (e) => {
+    rectEl.addEventListener("pointerdown", (e) => {
       if (e.target.dataset.handle) return; // handle already handled it
       startDrag("move", e);
     });
-  }
-
-  _renderCropEditor() {
-    const ce = this._cropEdit;
-    if (!ce) return "";
-    const camera = ce.cameraId;
-    const camState = this._hass?.states?.[camera];
-    const friendly = String(camState?.attributes?.friendly_name || camera).trim();
-    // entity_picture is a pre-signed HA URL (already includes the
-    // authSig query param), so plain <img> can load it. The raw
-    // /api/camera_proxy path requires the bearer token in the request
-    // header — not possible from a <img>. Append a cache-buster.
-    const sig = String(camState?.attributes?.entity_picture || "");
-    const imgUrl = sig
-      ? sig + (sig.includes("?") ? "&" : "?") + "t=" + Date.now()
-      : "";
-    const x = ce.x, y = ce.y, w = ce.w, h = ce.h;
-    return `
-      <div class="cgc-crop-backdrop" id="crop-backdrop">
-        <div class="cgc-crop-modal">
-          <div class="cgc-crop-head">
-            <span>Crop &middot; ${friendly}</span>
-            <button type="button" class="cgc-crop-close" id="crop-close" title="Close">${svgIcon('mdi:close', 16)}</button>
-          </div>
-          <div class="cgc-crop-desc">Drag the corners to set the visible area. Anything outside the rectangle is cut off in the live view.</div>
-          <div class="cgc-crop-aspect-row">
-            <label for="crop-aspect">Aspect ratio:</label>
-            <select id="crop-aspect" class="cgc-crop-aspect">
-              <option value="source" ${ce.aspect === "source" ? "selected" : ""}>${(ce.sourceAR || "16/9").replace("/", ":")} (Source)</option>
-              <option value="16/9"   ${ce.aspect === "16/9"   ? "selected" : ""}>16:9</option>
-              <option value="4/3"    ${ce.aspect === "4/3"    ? "selected" : ""}>4:3</option>
-              <option value="1/1"    ${ce.aspect === "1/1"    ? "selected" : ""}>1:1</option>
-              <option value="9/16"   ${ce.aspect === "9/16"   ? "selected" : ""}>9:16</option>
-              <option value="3/4"    ${ce.aspect === "3/4"    ? "selected" : ""}>3:4</option>
-              <option value="free"   ${ce.aspect === "free"   ? "selected" : ""}>Free</option>
-            </select>
-          </div>
-          <div class="cgc-crop-stage" id="crop-stage">
-            <img class="cgc-crop-img" id="crop-img" src="${imgUrl}" alt="" draggable="false" />
-            <div class="cgc-crop-rect" id="crop-rect"
-                 style="left:${x}%;top:${y}%;width:${w}%;height:${h}%;">
-              <div class="cgc-crop-handle h-tl" data-handle="tl"></div>
-              <div class="cgc-crop-handle h-tr" data-handle="tr"></div>
-              <div class="cgc-crop-handle h-bl" data-handle="bl"></div>
-              <div class="cgc-crop-handle h-br" data-handle="br"></div>
-            </div>
-            <div class="cgc-crop-mask cgc-crop-mask-top"    style="height:${y}%;"></div>
-            <div class="cgc-crop-mask cgc-crop-mask-bottom" style="top:${y + h}%;"></div>
-            <div class="cgc-crop-mask cgc-crop-mask-left"   style="top:${y}%;width:${x}%;height:${h}%;"></div>
-            <div class="cgc-crop-mask cgc-crop-mask-right"  style="top:${y}%;left:${x + w}%;height:${h}%;"></div>
-          </div>
-          <div class="cgc-crop-info">
-            x: <strong>${Math.round(x)}%</strong> &middot; y: <strong>${Math.round(y)}%</strong> &middot; w: <strong>${Math.round(w)}%</strong> &middot; h: <strong>${Math.round(h)}%</strong>
-          </div>
-          <div class="cgc-crop-actions">
-            <button type="button" class="cgc-crop-btn outline" id="crop-reset">${svgIcon('mdi:fullscreen', 14)}<span>Reset to full frame</span></button>
-            <div style="flex:1;"></div>
-            <button type="button" class="cgc-crop-btn outline" id="crop-cancel">Cancel</button>
-            <button type="button" class="cgc-crop-btn primary" id="crop-save">Save</button>
-          </div>
-        </div>
-      </div>
-    `;
   }
 
   async _exportYamlConfig() {
@@ -8701,8 +8704,8 @@ class CameraGalleryCardEditor extends HTMLElement {
                         <label>Mic stream</label>
                         <input type="text" class="ed-input livecam-mic-input" data-mic-cam="${id}" value="${mic.replace(/"/g, "&quot;")}" placeholder="go2rtc stream (empty = no mic)" autocomplete="off" />
                       </div>
+                      ${this._renderLivecamCropInline(id)}
                       <div class="livecam-actions">
-                        ${this._renderLivecamCropButton(id)}
                         <button type="button" class="livecam-row-del" data-delcam="${id}">${svgIcon('mdi:delete-outline', 14)}<span>Remove camera</span></button>
                       </div>
                     </div>
@@ -10464,183 +10467,190 @@ class CameraGalleryCardEditor extends HTMLElement {
           border-color: var(--error-color, #d32f2f);
         }
 
-        /* ─── Per-camera crop button (in livecam row body) ─── */
-        .livecam-crop-btn {
+        /* ─── Inline crop tool (lives inside livecam-row) ─── */
+        .livecam-crop-section {
+          display: flex;
+          flex-direction: column;
+          gap: 8px;
+        }
+        .livecam-crop-toggle {
+          appearance: none;
+          background: rgba(0,0,0,0.18);
+          border: 1px solid var(--ed-input-border);
+          border-radius: 8px;
+          color: var(--ed-text);
+          padding: 8px 12px;
+          font-size: 12px;
+          cursor: pointer;
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          width: 100%;
+          text-align: left;
+        }
+        .livecam-crop-toggle:hover {
+          border-color: rgba(255,255,255,0.16);
+        }
+        .livecam-crop-toggle.set { color: var(--accent-color, #ff9f43); }
+        .livecam-crop-toggle.set .cgc-svg-icon { color: var(--accent-color, #ff9f43); }
+        .livecam-crop-toggle-label { flex: 1; }
+        .livecam-crop-toggle-status {
+          font-size: 11px;
+          color: var(--ed-text2);
+          font-family: ui-monospace, "SF Mono", monospace;
+        }
+        .livecam-crop-toggle-chev {
+          color: var(--ed-text2);
+          font-size: 11px;
+          width: 12px;
+          text-align: center;
+        }
+        .livecam-crop-inline {
+          display: flex;
+          flex-direction: column;
+          gap: 8px;
+          background: rgba(0,0,0,0.18);
+          border: 1px solid var(--ed-input-border);
+          border-radius: 8px;
+          padding: 10px;
+        }
+        .livecam-crop-head {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+        }
+        .livecam-crop-reset { margin-left: auto; }
+        .livecam-crop-aspect {
+          appearance: none;
+          background: var(--ed-input-bg);
+          color: var(--ed-text);
+          border: 1px solid var(--ed-input-border);
+          padding: 4px 22px 4px 8px;
+          border-radius: 6px;
+          font-size: 11px;
+          cursor: pointer;
+          background-image: linear-gradient(45deg, transparent 50%, currentColor 50%),
+                            linear-gradient(135deg, currentColor 50%, transparent 50%);
+          background-position: calc(100% - 11px) 50%, calc(100% - 7px) 50%;
+          background-size: 4px 4px, 4px 4px;
+          background-repeat: no-repeat;
+        }
+        .livecam-crop-reset {
           appearance: none;
           background: transparent;
           border: 1px solid var(--ed-input-border);
           color: var(--ed-text2);
-          padding: 6px 10px;
+          padding: 4px 8px;
           border-radius: 6px;
           font-size: 11px;
           cursor: pointer;
           display: inline-flex;
           align-items: center;
-          gap: 5px;
+          gap: 4px;
         }
-        .livecam-crop-btn:hover {
-          color: var(--accent-color, #ff9f43);
-          border-color: var(--accent-color, #ff9f43);
-        }
-        .livecam-crop-btn.set {
-          color: var(--accent-color, #ff9f43);
-          border-color: var(--accent-color, #ff9f43);
-          background: rgba(255, 159, 67, 0.08);
-        }
-
-        /* ─── Crop editor modal ─── */
-        .cgc-crop-backdrop {
-          position: fixed;
-          inset: 0;
-          background: rgba(0, 0, 0, 0.7);
-          backdrop-filter: blur(4px);
-          z-index: 100;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          padding: 24px;
-        }
-        .cgc-crop-modal {
-          background: var(--ed-card, #1c1f26);
-          border: 1px solid var(--ed-input-border);
-          border-radius: 12px;
-          padding: 20px;
-          max-width: 720px;
-          width: 100%;
-          max-height: 90vh;
-          display: flex;
-          flex-direction: column;
-          gap: 12px;
-          box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
-        }
-        .cgc-crop-head {
-          display: flex;
-          align-items: center;
-          gap: 10px;
-          font-size: 15px;
-          font-weight: 700;
+        .livecam-crop-reset:hover {
           color: var(--ed-text);
+          border-color: rgba(255,255,255,0.2);
         }
-        .cgc-crop-head span { flex: 1; }
-        .cgc-crop-close {
-          appearance: none;
-          background: transparent;
-          border: 0;
-          color: var(--ed-text2);
-          cursor: pointer;
-          padding: 4px;
-          display: inline-flex;
-          border-radius: 4px;
-        }
-        .cgc-crop-close:hover { color: var(--ed-text); background: rgba(255,255,255,0.05); }
-        .cgc-crop-desc {
-          font-size: 12.5px;
-          color: var(--ed-text2);
-          line-height: 1.45;
-        }
-        .cgc-crop-aspect-row {
-          display: flex;
-          align-items: center;
-          gap: 8px;
-          font-size: 12.5px;
-          color: var(--ed-text2);
-        }
-        .cgc-crop-aspect-row label {
-          flex: 0 0 auto;
-        }
-        .cgc-crop-aspect-row select.cgc-crop-aspect {
-          flex: 0 0 auto;
-          appearance: none;
-          background: var(--ed-input-bg);
-          color: var(--ed-text);
-          border: 1px solid var(--ed-input-border);
-          padding: 5px 24px 5px 9px;
-          border-radius: 6px;
-          font-size: 12px;
-          cursor: pointer;
-          background-image: linear-gradient(45deg, transparent 50%, currentColor 50%), linear-gradient(135deg, currentColor 50%, transparent 50%);
-          background-position: calc(100% - 12px) 50%, calc(100% - 8px) 50%;
-          background-size: 4px 4px, 4px 4px;
-          background-repeat: no-repeat;
-        }
-        .cgc-crop-stage {
+        .livecam-crop-stage {
           position: relative;
           width: 100%;
           background: #000;
-          border-radius: 8px;
+          border-radius: 6px;
           overflow: hidden;
           user-select: none;
           touch-action: none;
         }
-        .cgc-crop-img {
+        .livecam-crop-img {
           width: 100%;
           height: auto;
+          object-fit: cover;
           display: block;
           pointer-events: none;
           border-radius: inherit;
         }
-        .cgc-crop-mask {
+        .livecam-crop-empty {
+          aspect-ratio: 16 / 9;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          color: var(--ed-text2);
+          font-size: 12px;
+          font-style: italic;
+        }
+        .livecam-crop-mask {
           position: absolute;
           background: rgba(0, 0, 0, 0.55);
           pointer-events: none;
         }
-        .cgc-crop-mask-top    { top: 0;    left: 0; right: 0; }
-        .cgc-crop-mask-bottom { bottom: 0; left: 0; right: 0; }
-        .cgc-crop-mask-left   { left: 0; }
-        .cgc-crop-mask-right  { right: 0; }
-        .cgc-crop-rect {
+        .livecam-crop-mask.top    { top: 0;    left: 0; right: 0; }
+        .livecam-crop-mask.bottom { bottom: 0; left: 0; right: 0; }
+        .livecam-crop-mask.left   { left: 0; }
+        .livecam-crop-mask.right  { right: 0; }
+        .livecam-crop-rect {
           position: absolute;
           border: 2px solid var(--accent-color, #ff9f43);
           box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.5);
           cursor: move;
           box-sizing: border-box;
         }
-        .cgc-crop-handle {
+        /* Rule-of-thirds overlay — two thin lines on each axis dividing
+         * the crop rect in thirds. Helps frame the subject. Drawn via
+         * pseudo-elements so no extra DOM is needed; pointer-events:none
+         * keeps drag interactions on the parent rect untouched. */
+        .livecam-crop-rect::before,
+        .livecam-crop-rect::after {
+          content: "";
           position: absolute;
-          width: 14px;
-          height: 14px;
+          inset: 0;
+          pointer-events: none;
+          background-repeat: no-repeat;
+        }
+        .livecam-crop-rect::before {
+          background-image:
+            linear-gradient(to right,
+              transparent calc(33.333% - 0.5px),
+              rgba(255, 255, 255, 0.35) calc(33.333% - 0.5px),
+              rgba(255, 255, 255, 0.35) calc(33.333% + 0.5px),
+              transparent calc(33.333% + 0.5px),
+              transparent calc(66.666% - 0.5px),
+              rgba(255, 255, 255, 0.35) calc(66.666% - 0.5px),
+              rgba(255, 255, 255, 0.35) calc(66.666% + 0.5px),
+              transparent calc(66.666% + 0.5px));
+        }
+        .livecam-crop-rect::after {
+          background-image:
+            linear-gradient(to bottom,
+              transparent calc(33.333% - 0.5px),
+              rgba(255, 255, 255, 0.35) calc(33.333% - 0.5px),
+              rgba(255, 255, 255, 0.35) calc(33.333% + 0.5px),
+              transparent calc(33.333% + 0.5px),
+              transparent calc(66.666% - 0.5px),
+              rgba(255, 255, 255, 0.35) calc(66.666% - 0.5px),
+              rgba(255, 255, 255, 0.35) calc(66.666% + 0.5px),
+              transparent calc(66.666% + 0.5px));
+        }
+        .livecam-crop-handle {
+          position: absolute;
+          width: 12px;
+          height: 12px;
           background: var(--accent-color, #ff9f43);
           border: 2px solid #fff;
           border-radius: 50%;
+          box-shadow: 0 1px 3px rgba(0,0,0,0.4);
           touch-action: none;
         }
-        .cgc-crop-handle.h-tl { top: -7px;    left: -7px;    cursor: nwse-resize; }
-        .cgc-crop-handle.h-tr { top: -7px;    right: -7px;   cursor: nesw-resize; }
-        .cgc-crop-handle.h-bl { bottom: -7px; left: -7px;    cursor: nesw-resize; }
-        .cgc-crop-handle.h-br { bottom: -7px; right: -7px;   cursor: nwse-resize; }
-        .cgc-crop-info {
-          font-size: 12.5px;
+        .livecam-crop-handle.h-tl { top: -6px;    left: -6px;    cursor: nwse-resize; }
+        .livecam-crop-handle.h-tr { top: -6px;    right: -6px;   cursor: nesw-resize; }
+        .livecam-crop-handle.h-bl { bottom: -6px; left: -6px;    cursor: nesw-resize; }
+        .livecam-crop-handle.h-br { bottom: -6px; right: -6px;   cursor: nwse-resize; }
+        .livecam-crop-info {
+          font-size: 11px;
           color: var(--ed-text2);
-          font-family: ui-monospace, monospace;
+          font-family: ui-monospace, "SF Mono", monospace;
           text-align: center;
         }
-        .cgc-crop-info strong { color: var(--ed-text); font-weight: 700; }
-        .cgc-crop-actions {
-          display: flex;
-          gap: 8px;
-          align-items: center;
-        }
-        .cgc-crop-btn {
-          appearance: none;
-          border: 1px solid var(--ed-input-border);
-          background: transparent;
-          color: var(--ed-text);
-          padding: 8px 14px;
-          font-size: 12px;
-          font-weight: 600;
-          border-radius: 6px;
-          cursor: pointer;
-          display: inline-flex;
-          align-items: center;
-          gap: 6px;
-        }
-        .cgc-crop-btn.outline:hover { background: rgba(255,255,255,0.05); }
-        .cgc-crop-btn.primary {
-          background: var(--accent-color, #ff9f43);
-          border-color: var(--accent-color, #ff9f43);
-          color: #1a1a1a;
-        }
-        .cgc-crop-btn.primary:hover { filter: brightness(1.08); }
+        .livecam-crop-info strong { color: var(--ed-text); font-weight: 700; }
         .livecam-tag {
           display: flex;
           align-items: center;
@@ -11555,7 +11565,6 @@ details summary { user-select: none; }
       </div>
 
       <div id="cgc-browser-slot">${mediaBrowserHtml}</div>
-      <div id="cgc-crop-slot">${this._renderCropEditor()}</div>
     `;
     this.shadowRoot.querySelectorAll("[data-tab]").forEach((btn) => {
       btn.addEventListener("click", () => this._setActiveTab(btn.dataset.tab));
@@ -11601,15 +11610,6 @@ details summary { user-select: none; }
       const browserSlot = this.shadowRoot.getElementById("cgc-browser-slot");
       if (browserSlot) browserSlot.innerHTML = mediaBrowserHtml;
 
-      // Update crop-editor slot — same partial-render trick as the
-      // media browser. Without this, _openCropEditor's _scheduleRender
-      // re-runs the editor but never mounts the modal because the full
-      // render template is skipped on the partial-update path.
-      const cropSlot = this.shadowRoot.getElementById("cgc-crop-slot");
-      if (cropSlot) {
-        cropSlot.innerHTML = this._renderCropEditor();
-        this._wireCropEditor();
-      }
     }
 
     if (this._evtCtrl) this._evtCtrl.abort();
@@ -12817,19 +12817,16 @@ details summary { user-select: none; }
       });
     });
 
-    this.shadowRoot.querySelectorAll("[data-cropcam]").forEach((btn) => {
-      btn.addEventListener("click", (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        this._openCropEditor(btn.dataset.cropcam);
-      });
-    });
-
-    this._wireCropEditor();
+    this._wireLivecamCropInline();
 
     this.shadowRoot.querySelectorAll("[data-delcam]").forEach((btn) => {
       btn.addEventListener("click", () => {
         const id = btn.dataset.delcam;
+        // Clean up transient inline-crop state for the removed camera so
+        // the Maps/Sets don't keep growing across edits.
+        this._livecamCropAspect?.delete(id);
+        this._livecamCropDetectedAR?.delete(id);
+        this._livecamCropOpen?.delete(id);
         const liveCams = Array.isArray(this._config.live_cameras) ? this._config.live_cameras : null;
         if (liveCams && liveCams.length > 0) {
           const filtered = liveCams.filter(

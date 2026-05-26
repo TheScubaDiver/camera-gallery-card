@@ -264,21 +264,17 @@ export const cardStyles = css`
       height: 100% !important;
       object-fit: var(--cgc-object-fit, cover) !important;
     }
-    /* Per-camera crop — when the live entry has a crop: { x, y, w, h }
-     * config, the host element gets a .has-crop class + CSS vars. The
-     * video is upscaled and shifted so the cropped region exactly fills
-     * the container. object-fit becomes cover-of-the-source which we
-     * then crop via the wrapper overflow. */
+    /* Per-camera crop — when the live entry has a crop the host element
+     * picks up a .has-crop class plus --crop-x/--crop-y/--crop-w/--crop-h
+     * vars. HA's ha-camera-stream forces itself to width:100% via inline
+     * style so we can't resize the wrapper; a CSS transform is the only
+     * reliable lever. The container's aspect-ratio is set to the crop's
+     * real shape in _getPreviewAspectRatio (driven by the persisted
+     * source_ar), so the scale factors line up and the crop region fills
+     * the container without distortion. */
     &.has-crop {
       overflow: hidden !important;
     }
-    /* Crop = uniform scale (width-based) + translate. HA's ha-camera-stream
-     * forces itself to width:100% via inline style, so we can't resize the
-     * wrapper; transform is the only reliable lever. The .preview's aspect
-     * adapts to the crop's aspect (_getPreviewAspectRatio) so the wrapper
-     * starts at the crop's shape — for crops that match the source's 16:9
-     * ratio the scale becomes effectively uniform on both axes and the
-     * cropped region fills the container exactly without distortion. */
     &.has-crop > * {
       transform: scale(calc(100 / var(--crop-w, 100)), calc(100 / var(--crop-h, 100)))
         translate(calc(var(--crop-x, 0%) * -1), calc(var(--crop-y, 0%) * -1)) !important;
