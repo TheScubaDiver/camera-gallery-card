@@ -1,5 +1,34 @@
 # Changelog
 
+## [3.0.0](https://github.com/TheScubaDiver/camera-gallery-card/compare/v2.11.0...v3.0.0) (2026-05-26)
+
+
+### ⚠ BREAKING CHANGES
+
+* **editor:** replace v1 editor with v2 (drop v1 entirely) ([#156](https://github.com/TheScubaDiver/camera-gallery-card/issues/156))
+
+### Features
+
+* **editor:** replace v1 editor with v2 (drop v1 entirely) ([#156](https://github.com/TheScubaDiver/camera-gallery-card/issues/156)) ([9af6526](https://github.com/TheScubaDiver/camera-gallery-card/commit/9af65269bdcf0f4648fae5e6a359cb49e7afa298))
+* **favorites:** star-pop animation on tap ([#157](https://github.com/TheScubaDiver/camera-gallery-card/issues/157)) ([19ac405](https://github.com/TheScubaDiver/camera-gallery-card/commit/19ac40519fc827718563ec710f7e46af8f51e607))
+* **frigate:** event clustering + inline expand-on-tap ([#166](https://github.com/TheScubaDiver/camera-gallery-card/issues/166)) ([004a305](https://github.com/TheScubaDiver/camera-gallery-card/commit/004a305fb332f0f358617f87156ef7a61075e1c8))
+* **frigate:** optional bounding-box thumbs via snapshot endpoint ([#165](https://github.com/TheScubaDiver/camera-gallery-card/issues/165)) ([494b041](https://github.com/TheScubaDiver/camera-gallery-card/commit/494b041b9cfbc13baa65132257709ad682f0cc2d))
+* **reolink:** dedicated media engine + SVG placeholder ([#148](https://github.com/TheScubaDiver/camera-gallery-card/issues/148)) ([0205062](https://github.com/TheScubaDiver/camera-gallery-card/commit/02050624790cc9effa26637f92511d1cfbca7a8d))
+* **thumbs:** iOS-Photos-style scroll time pill ([#158](https://github.com/TheScubaDiver/camera-gallery-card/issues/158)) ([34ce59a](https://github.com/TheScubaDiver/camera-gallery-card/commit/34ce59ab35578688e059ad62b4e90a3a4f2adbb8))
+* **thumbs:** swipe-to-delete + silent Cancel on delete confirm ([#154](https://github.com/TheScubaDiver/camera-gallery-card/issues/154)) ([155eea3](https://github.com/TheScubaDiver/camera-gallery-card/commit/155eea39adbae9936fa9f209e85dd4be66ad4124))
+* **toolbar:** per-button visibility toggles for the gallery toolbar ([#150](https://github.com/TheScubaDiver/camera-gallery-card/issues/150)) ([0e965b3](https://github.com/TheScubaDiver/camera-gallery-card/commit/0e965b3763a895218f59cc664d78faf36c04f1a1))
+
+
+### Bug Fixes
+
+* don't render offline placeholder over grid layout ([#142](https://github.com/TheScubaDiver/camera-gallery-card/issues/142)) ([9088601](https://github.com/TheScubaDiver/camera-gallery-card/commit/9088601d3eeb3e7c8ecdb9718bf416ab132103b8))
+* **thumbs:** hide per-thumb star when show_favorite is off ([#153](https://github.com/TheScubaDiver/camera-gallery-card/issues/153)) ([4454359](https://github.com/TheScubaDiver/camera-gallery-card/commit/445435986c3585ae04e1b7b0296138cd5ae44ad9))
+
+
+### Documentation
+
+* **readme:** clarify timestamp parsing + add quick-start, troubleshooting and feature gaps ([#151](https://github.com/TheScubaDiver/camera-gallery-card/issues/151)) ([44817fd](https://github.com/TheScubaDiver/camera-gallery-card/commit/44817fd9491d4426bb4d459e70550d410fdfa10a))
+
 ## [2.11.0](https://github.com/TheScubaDiver/camera-gallery-card/compare/v2.10.0...v2.11.0) (2026-05-16)
 
 
