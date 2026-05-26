@@ -289,6 +289,49 @@ describe("Cross-field rules", () => {
   });
 });
 
+describe("Live-only mode (issue #169)", () => {
+  it("live_enabled + live_cameras and no source is accepted", () => {
+    const { config } = normalizeConfig({
+      live_enabled: true,
+      live_cameras: [{ entity: "camera.frontdoor" }],
+    });
+    expect(config.live_enabled).toBe(true);
+    expect(config.entities).toEqual([]);
+    expect(config.media_sources).toEqual([]);
+  });
+
+  it("live_enabled + legacy live_camera_entities and no source is accepted", () => {
+    const { config } = normalizeConfig({
+      live_enabled: true,
+      live_camera_entities: ["camera.frontdoor"],
+    });
+    expect(config.live_enabled).toBe(true);
+    // Legacy key is migrated into the canonical live_cameras array.
+    expect(config.live_cameras?.length ?? 0).toBeGreaterThan(0);
+  });
+
+  it("live-only mode does not require path_datetime_format", () => {
+    expect(() =>
+      normalizeConfig({
+        live_enabled: true,
+        live_cameras: [{ entity: "camera.frontdoor" }],
+      })
+    ).not.toThrow();
+  });
+
+  it("live_enabled without any live camera still throws (no kiosk fallback)", () => {
+    expect(() => normalizeConfig({ live_enabled: true })).toThrow(/required/);
+  });
+
+  it("live_enabled with a stream URL and no source is accepted", () => {
+    const { config } = normalizeConfig({
+      live_enabled: true,
+      live_stream_urls: [{ url: "rtsp://example/cam", name: "Cam" }],
+    });
+    expect(config.live_enabled).toBe(true);
+  });
+});
+
 describe("Delete gating", () => {
   it("media mode clears delete_service and forces bulk OFF", () => {
     const { config } = normalizeConfig({
