@@ -1,3 +1,5 @@
+<img width="1640" height="624" alt="B-leftaligned-dark" src="https://github.com/user-attachments/assets/c691413f-e475-4ff6-b636-352e420cef0b" />
+
 # Camera Gallery Card
 
 Custom **Home Assistant Lovelace card** for browsing camera media in a clean **timeline-style gallery** with preview player, object filters, optional live view, and a built-in visual editor.
