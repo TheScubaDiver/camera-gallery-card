@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.0.1](https://github.com/TheScubaDiver/camera-gallery-card/compare/v3.0.0...v3.0.1) (2026-05-26)
+
+
+### Bug Fixes
+
+* **editor:** restore missing &lt;/style&gt; closing tag — empty editor on v3.0.0 ([#167](https://github.com/TheScubaDiver/camera-gallery-card/issues/167)) ([11c174a](https://github.com/TheScubaDiver/camera-gallery-card/commit/11c174a296f198858da03e17967311d6c9627ca8))
+
 ## [3.0.0](https://github.com/TheScubaDiver/camera-gallery-card/compare/v2.11.0...v3.0.0) (2026-05-26)
 
 
