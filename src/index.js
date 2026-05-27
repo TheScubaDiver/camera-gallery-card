@@ -2232,7 +2232,7 @@ class CameraGalleryCard extends LitElement {
   _captureLiveSnapshot() {
     const video = this._findLiveVideo();
     if (!video || !video.videoWidth || !video.videoHeight) {
-      console.warn("[CGC] snapshot: live video element not ready");
+      this._showSnapshotToast({ kind: "error", text: "Camera not ready" });
       return;
     }
     try {
@@ -2240,25 +2240,91 @@ class CameraGalleryCard extends LitElement {
       canvas.width = video.videoWidth;
       canvas.height = video.videoHeight;
       const ctx = canvas.getContext("2d");
-      if (!ctx) return;
+      if (!ctx) {
+        this._showSnapshotToast({ kind: "error", text: "Snapshot failed (no canvas)" });
+        return;
+      }
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
       const cam = this._getEffectiveLiveCamera?.() || "camera";
       const safeName = String(cam).replace(/[^a-z0-9_.-]/gi, "_");
       const ts = new Date().toISOString().replace(/[:.]/g, "-");
+      const filename = `${safeName}_${ts}.jpg`;
       canvas.toBlob((blob) => {
-        if (!blob) return;
+        if (!blob) {
+          // toBlob returns null in two cases worth distinguishing:
+          //   1. canvas was tainted by a cross-origin video — most common
+          //      with go2rtc hosted outside HA's origin.
+          //   2. canvas was simply empty — caught above as "camera not ready".
+          // We can't tell which without a separate getImageData probe, so
+          // surface a generic security message + offer the same blob via
+          // an in-tab fallback (toDataURL works on tainted canvas in some
+          // browsers, but breaks in others — try it).
+          this._showSnapshotToast({
+            kind: "error",
+            text: "Snapshot blocked (cross-origin stream)",
+          });
+          return;
+        }
         const url = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = `${safeName}_${ts}.jpg`;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        setTimeout(() => URL.revokeObjectURL(url), 2000);
+        try {
+          const a = document.createElement("a");
+          a.href = url;
+          a.download = filename;
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          // No success toast — the download itself is the feedback.
+          setTimeout(() => URL.revokeObjectURL(url), 2000);
+        } catch (err) {
+          console.warn("[CGC] snapshot download failed:", err);
+          this._showSnapshotToast({
+            kind: "error",
+            text: "Download blocked — tap to open",
+            href: url,
+          });
+          // Keep the URL alive until the fallback toast hides.
+          setTimeout(() => URL.revokeObjectURL(url), 6000);
+        }
       }, "image/jpeg", 0.92);
     } catch (err) {
+      // SecurityError fires synchronously on tainted-canvas drawImage in
+      // some engines (Safari). Other engines defer to toBlob's null path.
+      const isSecurity = err && (err.name === "SecurityError" || /tainted|cross-origin/i.test(String(err.message || "")));
+      this._showSnapshotToast({
+        kind: "error",
+        text: isSecurity ? "Snapshot blocked (cross-origin stream)" : "Snapshot failed",
+      });
       console.warn("[CGC] snapshot failed:", err);
     }
+  }
+
+  /**
+   * Tiny in-card toast for snapshot feedback. Renders a chip near the
+   * top of the card that auto-hides after a couple of seconds. Reusable
+   * shape — `kind` drives the colour, `href` makes the toast tappable
+   * (used for the "open in tab" fallback when the download was blocked).
+   */
+  _showSnapshotToast(msg) {
+    this._snapshotToast = msg;
+    this.requestUpdate();
+    if (this._snapshotToastTimer) clearTimeout(this._snapshotToastTimer);
+    this._snapshotToastTimer = setTimeout(() => {
+      this._snapshotToast = null;
+      this.requestUpdate();
+    }, msg.kind === "ok" ? 2200 : 4500);
+  }
+
+  _renderSnapshotToast() {
+    const t = this._snapshotToast;
+    if (!t) return html``;
+    const body = html`<span class="snapshot-toast-text">${t.text}</span>`;
+    return html`
+      <div class="snapshot-toast snapshot-toast--${t.kind}" role="status" aria-live="polite">
+        ${t.href
+          ? html`<a class="snapshot-toast-link" href=${t.href} target="_blank" rel="noopener">${body}</a>`
+          : body}
+      </div>
+    `;
   }
 
   _openImageFullscreen() {
@@ -5417,7 +5483,7 @@ class CameraGalleryCard extends LitElement {
                   : selectedIsVideo
                     ? html`<div id="preview-video-host" class="preview-video-host"></div>`
                     : html`<img class="pimg" src=${selectedUrl} alt="" />`}
-            ${this._hasLiveConfig() ? html`<div id="live-card-host" class="live-card-host${isLive ? '' : ' live-host-hidden'}"></div>` : html``}
+            ${this._hasLiveConfig() ? html`<div id="live-card-host" class="live-card-host${isLive ? '' : ' live-host-hidden'}"></div>${this._renderSnapshotToast()}` : html``}
 
             ${!noResultsForFilter && !isLive && filtered.length > 1 && (this._pillsVisible || this.config?.persistent_controls) ? html`
               <div class="pnav">
