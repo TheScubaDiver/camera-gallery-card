@@ -361,6 +361,13 @@ export const cameraGalleryCardConfigStruct = type({
   // ─── Live preview ──────────────────────────────────────────
   live_enabled: defaulted(boolean(), DEFAULT_LIVE_ENABLED),
   live_auto_muted: defaulted(boolean(), DEFAULT_LIVE_AUTO_MUTED),
+  // Show the left/right chevron arrows that switch cameras when ≥2 are
+  // configured. Defaults to on. Disable for a clean kiosk look.
+  live_chevrons_enabled: defaulted(boolean(), true),
+  // Gallery preview navigation chevrons — left/right arrows that walk
+  // through the filtered clip list while the preview is open. Same
+  // default-on / kiosk-off pattern as the live chevrons.
+  gallery_chevrons_enabled: defaulted(boolean(), true),
   // Unified camera list (issue #137). When non-empty, this is the
   // canonical source of truth; the legacy keys below are populated by the
   // pre-migrate step from `live_cameras` (or vice-versa for old configs)
