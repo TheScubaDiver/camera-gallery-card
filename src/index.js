@@ -2217,6 +2217,50 @@ class CameraGalleryCard extends LitElement {
     this.requestUpdate();
   }
 
+  /**
+   * Capture the current live frame and trigger a download. Draws the
+   * `<video>` element onto an off-screen canvas at its native resolution
+   * and exports a JPG. Filename includes the camera entity + ISO
+   * timestamp so multiple snapshots stay distinct.
+   *
+   * Works through whatever transform the live host has applied (e.g. a
+   * crop transform), because canvas's drawImage(video) samples the
+   * decoded frame bytes — not the rendered DOM. So a cropped live view
+   * still produces a snapshot of the full source frame. If the user
+   * wants the *cropped* image, they should use the OS-level screenshot.
+   */
+  _captureLiveSnapshot() {
+    const video = this._findLiveVideo();
+    if (!video || !video.videoWidth || !video.videoHeight) {
+      console.warn("[CGC] snapshot: live video element not ready");
+      return;
+    }
+    try {
+      const canvas = document.createElement("canvas");
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return;
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      const cam = this._getEffectiveLiveCamera?.() || "camera";
+      const safeName = String(cam).replace(/[^a-z0-9_.-]/gi, "_");
+      const ts = new Date().toISOString().replace(/[:.]/g, "-");
+      canvas.toBlob((blob) => {
+        if (!blob) return;
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `${safeName}_${ts}.jpg`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setTimeout(() => URL.revokeObjectURL(url), 2000);
+      }, "image/jpeg", 0.92);
+    } catch (err) {
+      console.warn("[CGC] snapshot failed:", err);
+    }
+  }
+
   _openImageFullscreen() {
     this._imgFsOpen = true;
     try { this._previewVideoEl?.pause(); } catch (_) {}
@@ -3285,6 +3329,11 @@ class CameraGalleryCard extends LitElement {
       case "fullscreen":
         return html`<button class="gallery-pill live-pill-btn" @pointerdown=${(e) => e.stopPropagation()} @click=${(e) => { e.stopPropagation(); this._toggleLiveFullscreen(); }}>
           <ha-icon icon=${document.fullscreenElement || document.webkitFullscreenElement || this._liveFullscreen ? "mdi:fullscreen-exit" : "mdi:fullscreen"}></ha-icon>
+        </button>`;
+
+      case "snapshot":
+        return html`<button class="gallery-pill live-pill-btn" title="Snapshot" @pointerdown=${(e) => e.stopPropagation()} @click=${(e) => { e.stopPropagation(); this._captureLiveSnapshot(); }}>
+          <ha-icon icon="mdi:camera"></ha-icon>
         </button>`;
 
       case "refresh":
