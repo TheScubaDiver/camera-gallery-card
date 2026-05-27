@@ -824,6 +824,7 @@ class CameraGalleryCard extends LitElement {
     if (this._bulkHintTimer) clearTimeout(this._bulkHintTimer);
     if (this._scrollPillTimer) { clearTimeout(this._scrollPillTimer); this._scrollPillTimer = null; }
     this._scrollPillVisible = false;
+    if (this._snapshotToastTimer) { clearTimeout(this._snapshotToastTimer); this._snapshotToastTimer = null; }
     // Tear down the PTZ press-and-hold loop — if the card is removed mid-
     // press (camera card replaced, dashboard navigated away), the interval
     // would otherwise outlive the element and (for continuous types) leave
@@ -2232,16 +2233,20 @@ class CameraGalleryCard extends LitElement {
   _captureLiveSnapshot() {
     const video = this._findLiveVideo();
     if (!video || !video.videoWidth || !video.videoHeight) {
-      this._showSnapshotToast({ kind: "error", text: "Camera not ready" });
+      this._showSnapshotToast("Camera not ready");
       return;
     }
+    // Shared error string — re-used by the sync drawImage catch and the
+    // async toBlob === null path, both of which indicate the same root
+    // cause (canvas tainted by a cross-origin stream).
+    const TAINT_MSG = "Snapshot blocked (cross-origin stream)";
     try {
       const canvas = document.createElement("canvas");
       canvas.width = video.videoWidth;
       canvas.height = video.videoHeight;
       const ctx = canvas.getContext("2d");
       if (!ctx) {
-        this._showSnapshotToast({ kind: "error", text: "Snapshot failed (no canvas)" });
+        this._showSnapshotToast("Snapshot failed (no canvas)");
         return;
       }
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
@@ -2250,19 +2255,12 @@ class CameraGalleryCard extends LitElement {
       const ts = new Date().toISOString().replace(/[:.]/g, "-");
       const filename = `${safeName}_${ts}.jpg`;
       canvas.toBlob((blob) => {
+        // toBlob returns null when the canvas is tainted by a
+        // cross-origin video. The empty-frame case is caught earlier
+        // via the videoWidth check, so a null here is effectively
+        // always a taint.
         if (!blob) {
-          // toBlob returns null in two cases worth distinguishing:
-          //   1. canvas was tainted by a cross-origin video — most common
-          //      with go2rtc hosted outside HA's origin.
-          //   2. canvas was simply empty — caught above as "camera not ready".
-          // We can't tell which without a separate getImageData probe, so
-          // surface a generic security message + offer the same blob via
-          // an in-tab fallback (toDataURL works on tainted canvas in some
-          // browsers, but breaks in others — try it).
-          this._showSnapshotToast({
-            kind: "error",
-            text: "Snapshot blocked (cross-origin stream)",
-          });
+          this._showSnapshotToast(TAINT_MSG);
           return;
         }
         const url = URL.createObjectURL(blob);
@@ -2277,11 +2275,7 @@ class CameraGalleryCard extends LitElement {
           setTimeout(() => URL.revokeObjectURL(url), 2000);
         } catch (err) {
           console.warn("[CGC] snapshot download failed:", err);
-          this._showSnapshotToast({
-            kind: "error",
-            text: "Download blocked — tap to open",
-            href: url,
-          });
+          this._showSnapshotToast("Download blocked — tap to open", url);
           // Keep the URL alive until the fallback toast hides.
           setTimeout(() => URL.revokeObjectURL(url), 6000);
         }
@@ -2290,28 +2284,27 @@ class CameraGalleryCard extends LitElement {
       // SecurityError fires synchronously on tainted-canvas drawImage in
       // some engines (Safari). Other engines defer to toBlob's null path.
       const isSecurity = err && (err.name === "SecurityError" || /tainted|cross-origin/i.test(String(err.message || "")));
-      this._showSnapshotToast({
-        kind: "error",
-        text: isSecurity ? "Snapshot blocked (cross-origin stream)" : "Snapshot failed",
-      });
+      this._showSnapshotToast(isSecurity ? TAINT_MSG : "Snapshot failed");
       console.warn("[CGC] snapshot failed:", err);
     }
   }
 
   /**
-   * Tiny in-card toast for snapshot feedback. Renders a chip near the
-   * top of the card that auto-hides after a couple of seconds. Reusable
-   * shape — `kind` drives the colour, `href` makes the toast tappable
-   * (used for the "open in tab" fallback when the download was blocked).
+   * In-card error toast for snapshot failures. Auto-hides after 4.5s.
+   * The optional `href` argument makes the toast tappable — used for
+   * the "open in tab" fallback when the browser refused the programmatic
+   * download. Success cases never call this — the OS download is its
+   * own feedback.
    */
-  _showSnapshotToast(msg) {
-    this._snapshotToast = msg;
+  _showSnapshotToast(text, href) {
+    this._snapshotToast = href ? { text, href } : { text };
     this.requestUpdate();
     if (this._snapshotToastTimer) clearTimeout(this._snapshotToastTimer);
     this._snapshotToastTimer = setTimeout(() => {
       this._snapshotToast = null;
+      this._snapshotToastTimer = null;
       this.requestUpdate();
-    }, msg.kind === "ok" ? 2200 : 4500);
+    }, 4500);
   }
 
   _renderSnapshotToast() {
@@ -2319,7 +2312,7 @@ class CameraGalleryCard extends LitElement {
     if (!t) return html``;
     const body = html`<span class="snapshot-toast-text">${t.text}</span>`;
     return html`
-      <div class="snapshot-toast snapshot-toast--${t.kind}" role="status" aria-live="polite">
+      <div class="snapshot-toast snapshot-toast--error" role="status" aria-live="polite">
         ${t.href
           ? html`<a class="snapshot-toast-link" href=${t.href} target="_blank" rel="noopener">${body}</a>`
           : body}

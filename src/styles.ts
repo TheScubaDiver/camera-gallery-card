@@ -281,17 +281,18 @@ export const cardStyles = css`
     display: none !important;
   }
 
-  /* Snapshot feedback toast — sits at the top of the preview, fades in
-   * on capture, auto-hides after a couple of seconds. Tappable variant
-   * (anchor wrapped) for the "open in tab" fallback when download is
-   * blocked by the browser. */
+  /* Snapshot error toast — fades in at the top of the preview, auto-
+   * hides after 4.5s. Success cases never render a toast: the browser
+   * download is its own feedback. The tappable variant wraps the text
+   * in an <a> for the "open in tab" fallback when the download was
+   * refused by the browser. */
   .snapshot-toast {
     position: absolute;
     top: 12px;
     left: 50%;
     transform: translateX(-50%);
     z-index: 6;
-    background: rgba(0, 0, 0, 0.72);
+    background: rgba(180, 40, 40, 0.85);
     backdrop-filter: blur(8px);
     -webkit-backdrop-filter: blur(8px);
     color: #fff;
@@ -304,9 +305,6 @@ export const cardStyles = css`
     animation: snapshotToastIn 0.18s ease;
     max-width: 90%;
     text-align: center;
-  }
-  .snapshot-toast--error {
-    background: rgba(180, 40, 40, 0.85);
   }
   .snapshot-toast-link {
     color: inherit;
