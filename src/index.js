@@ -5478,7 +5478,7 @@ class CameraGalleryCard extends LitElement {
                     : html`<img class="pimg" src=${selectedUrl} alt="" />`}
             ${this._hasLiveConfig() ? html`<div id="live-card-host" class="live-card-host${isLive ? '' : ' live-host-hidden'}"></div>${this._renderSnapshotToast()}` : html``}
 
-            ${!noResultsForFilter && !isLive && filtered.length > 1 && (this._pillsVisible || this.config?.persistent_controls) ? html`
+            ${!noResultsForFilter && !isLive && this.config?.gallery_chevrons_enabled !== false && filtered.length > 1 && (this._pillsVisible || this.config?.persistent_controls) ? html`
               <div class="pnav">
                 <button class="pnavbtn left" ?disabled=${idx <= 0} @click=${(e) => { e.stopPropagation(); this._navPrev(); }}>
                   <ha-icon icon="mdi:chevron-left"></ha-icon>
@@ -5489,7 +5489,7 @@ class CameraGalleryCard extends LitElement {
               </div>
             ` : html``}
 
-            ${isLive && !isGridLayout(this.config, this._liveLayoutOverride) && this._getLiveCameraOptions().length > 1 && (this._pillsVisible || this.config?.persistent_controls) ? html`
+            ${isLive && this.config?.live_chevrons_enabled !== false && !isGridLayout(this.config, this._liveLayoutOverride) && this._getLiveCameraOptions().length > 1 && (this._pillsVisible || this.config?.persistent_controls) ? html`
               <div class="pnav">
                 <button class="pnavbtn left" @pointerdown=${(e) => e.stopPropagation()} @click=${(e) => { e.stopPropagation(); this._navLiveCamera(-1); }}>
                   <ha-icon icon="mdi:chevron-left"></ha-icon>
@@ -8098,6 +8098,26 @@ class CameraGalleryCardEditor extends HTMLElement {
       `;
     };
 
+    /**
+     * Toggle-row helper for the "Show chevrons" config flag in both
+     * Gallery and Live tabs. Same shape (row + row-head + label + desc
+     * + switch), only the id, label, and description differ — extracted
+     * so the two callers stay in sync if the row chrome ever changes.
+     */
+    const chevronToggleRow = (id, desc, checked) => `
+      <div class="row">
+        <div class="row-head">
+          <div>
+            <div class="lbl">Show chevrons</div>
+            <div class="desc">${desc}</div>
+          </div>
+          <div class="togrow">
+            <label class="cgc-switch"><input type="checkbox" id="${id}" ${checked ? "checked" : ""}><span class="cgc-track"></span></label>
+          </div>
+        </div>
+      </div>
+    `;
+
     const buildGalleryTabV2 = () => {
       const displayBody = `
         <div class="row">
@@ -8194,6 +8214,11 @@ class CameraGalleryCardEditor extends HTMLElement {
             ? " <em>Ignored in fixed mode</em> — pills always fill the bar."
             : "";
       const pillsBody = `
+        ${chevronToggleRow(
+          "gallerychevrons",
+          "Left/right arrows over the preview to walk through the filtered clip list. Auto-hidden when there's only one clip.",
+          c.gallery_chevrons_enabled !== false,
+        )}
         <div class="row">
           <div class="lbl">Mode</div>
           <div class="desc"><code>Overlay</code> floats pills over the preview; <code>Fixed</code> reserves a strip and stretches them across.</div>
@@ -8685,6 +8710,11 @@ class CameraGalleryCardEditor extends HTMLElement {
           );
         });
       const liveControlsBody = `
+        ${chevronToggleRow(
+          "livechevrons",
+          "Left/right arrows over the live view to flip between cameras. Auto-hidden if only one camera is configured.",
+          c.live_chevrons_enabled !== false,
+        )}
         <div class="row">
           <div class="desc">Camera name sits on the left, action pills on the right — layout is fixed. Drag <code>⠿</code> to reorder the action pills, switch one off to hide it.</div>
         </div>
@@ -11537,6 +11567,16 @@ details summary { user-select: none; }
       this._config = this._stripAlwaysTrueKeys(next);
       this._fire();
       this._scheduleRender();
+    });
+
+    $("livechevrons")?.addEventListener("change", (e) => {
+      // Default true at the struct level → drop the key when on, write
+      // false when off. Keeps YAML minimal.
+      this._set("live_chevrons_enabled", e.target.checked ? undefined : false);
+    });
+
+    $("gallerychevrons")?.addEventListener("change", (e) => {
+      this._set("gallery_chevrons_enabled", e.target.checked ? undefined : false);
     });
 
     // Toolbar buttons — switches map to the underlying show_* keys (BC),
