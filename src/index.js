@@ -8098,6 +8098,26 @@ class CameraGalleryCardEditor extends HTMLElement {
       `;
     };
 
+    /**
+     * Toggle-row helper for the "Show chevrons" config flag in both
+     * Gallery and Live tabs. Same shape (row + row-head + label + desc
+     * + switch), only the id, label, and description differ — extracted
+     * so the two callers stay in sync if the row chrome ever changes.
+     */
+    const chevronToggleRow = (id, desc, checked) => `
+      <div class="row">
+        <div class="row-head">
+          <div>
+            <div class="lbl">Show chevrons</div>
+            <div class="desc">${desc}</div>
+          </div>
+          <div class="togrow">
+            <label class="cgc-switch"><input type="checkbox" id="${id}" ${checked ? "checked" : ""}><span class="cgc-track"></span></label>
+          </div>
+        </div>
+      </div>
+    `;
+
     const buildGalleryTabV2 = () => {
       const displayBody = `
         <div class="row">
@@ -8194,17 +8214,11 @@ class CameraGalleryCardEditor extends HTMLElement {
             ? " <em>Ignored in fixed mode</em> — pills always fill the bar."
             : "";
       const pillsBody = `
-        <div class="row">
-          <div class="row-head">
-            <div>
-              <div class="lbl">Show chevrons</div>
-              <div class="desc">Left/right arrows over the preview to walk through the filtered clip list. Auto-hidden when there's only one clip.</div>
-            </div>
-            <div class="togrow">
-              <label class="cgc-switch"><input type="checkbox" id="gallerychevrons" ${c.gallery_chevrons_enabled !== false ? "checked" : ""}><span class="cgc-track"></span></label>
-            </div>
-          </div>
-        </div>
+        ${chevronToggleRow(
+          "gallerychevrons",
+          "Left/right arrows over the preview to walk through the filtered clip list. Auto-hidden when there's only one clip.",
+          c.gallery_chevrons_enabled !== false,
+        )}
         <div class="row">
           <div class="lbl">Mode</div>
           <div class="desc"><code>Overlay</code> floats pills over the preview; <code>Fixed</code> reserves a strip and stretches them across.</div>
@@ -8696,17 +8710,11 @@ class CameraGalleryCardEditor extends HTMLElement {
           );
         });
       const liveControlsBody = `
-        <div class="row">
-          <div class="row-head">
-            <div>
-              <div class="lbl">Show chevrons</div>
-              <div class="desc">Left/right arrows over the live view to flip between cameras. Auto-hidden if only one camera is configured.</div>
-            </div>
-            <div class="togrow">
-              <label class="cgc-switch"><input type="checkbox" id="livechevrons" ${c.live_chevrons_enabled !== false ? "checked" : ""}><span class="cgc-track"></span></label>
-            </div>
-          </div>
-        </div>
+        ${chevronToggleRow(
+          "livechevrons",
+          "Left/right arrows over the live view to flip between cameras. Auto-hidden if only one camera is configured.",
+          c.live_chevrons_enabled !== false,
+        )}
         <div class="row">
           <div class="desc">Camera name sits on the left, action pills on the right — layout is fixed. Drag <code>⠿</code> to reorder the action pills, switch one off to hide it.</div>
         </div>
