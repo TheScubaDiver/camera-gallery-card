@@ -81,6 +81,7 @@ export const LIVE_PILL_CATALOG: readonly PillCatalogEntry[] = [
     icon: "mdi:picture-in-picture-bottom-right",
   },
   { id: "fullscreen", label: "Fullscreen", defaultOrder: 30, icon: "mdi:fullscreen" },
+  { id: "snapshot", label: "Snapshot", defaultOrder: 35, icon: "mdi:camera" },
   { id: "refresh", label: "Refresh stream", defaultOrder: 40, icon: "mdi:refresh" },
 ];
 

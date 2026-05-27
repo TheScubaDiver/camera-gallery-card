@@ -281,6 +281,47 @@ export const cardStyles = css`
     display: none !important;
   }
 
+  /* Snapshot error toast — fades in at the top of the preview, auto-
+   * hides after 4.5s. Success cases never render a toast: the browser
+   * download is its own feedback. The tappable variant wraps the text
+   * in an <a> for the "open in tab" fallback when the download was
+   * refused by the browser. */
+  .snapshot-toast {
+    position: absolute;
+    top: 12px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 6;
+    background: rgba(180, 40, 40, 0.85);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    color: #fff;
+    font-size: 12px;
+    font-weight: 500;
+    padding: 7px 14px;
+    border-radius: 14px;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+    pointer-events: none;
+    animation: snapshotToastIn 0.18s ease;
+    max-width: 90%;
+    text-align: center;
+  }
+  .snapshot-toast-link {
+    color: inherit;
+    text-decoration: underline;
+    pointer-events: auto;
+  }
+  @keyframes snapshotToastIn {
+    from {
+      opacity: 0;
+      transform: translate(-50%, -8px);
+    }
+    to {
+      opacity: 1;
+      transform: translate(-50%, 0);
+    }
+  }
+
   .live-grid-tile {
     position: relative;
     background: #000;

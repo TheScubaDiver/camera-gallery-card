@@ -824,6 +824,7 @@ class CameraGalleryCard extends LitElement {
     if (this._bulkHintTimer) clearTimeout(this._bulkHintTimer);
     if (this._scrollPillTimer) { clearTimeout(this._scrollPillTimer); this._scrollPillTimer = null; }
     this._scrollPillVisible = false;
+    if (this._snapshotToastTimer) { clearTimeout(this._snapshotToastTimer); this._snapshotToastTimer = null; }
     // Tear down the PTZ press-and-hold loop — if the card is removed mid-
     // press (camera card replaced, dashboard navigated away), the interval
     // would otherwise outlive the element and (for continuous types) leave
@@ -2217,6 +2218,108 @@ class CameraGalleryCard extends LitElement {
     this.requestUpdate();
   }
 
+  /**
+   * Capture the current live frame and trigger a download. Draws the
+   * `<video>` element onto an off-screen canvas at its native resolution
+   * and exports a JPG. Filename includes the camera entity + ISO
+   * timestamp so multiple snapshots stay distinct.
+   *
+   * Works through whatever transform the live host has applied (e.g. a
+   * crop transform), because canvas's drawImage(video) samples the
+   * decoded frame bytes — not the rendered DOM. So a cropped live view
+   * still produces a snapshot of the full source frame. If the user
+   * wants the *cropped* image, they should use the OS-level screenshot.
+   */
+  _captureLiveSnapshot() {
+    const video = this._findLiveVideo();
+    if (!video || !video.videoWidth || !video.videoHeight) {
+      this._showSnapshotToast("Camera not ready");
+      return;
+    }
+    // Shared error string — re-used by the sync drawImage catch and the
+    // async toBlob === null path, both of which indicate the same root
+    // cause (canvas tainted by a cross-origin stream).
+    const TAINT_MSG = "Snapshot blocked (cross-origin stream)";
+    try {
+      const canvas = document.createElement("canvas");
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) {
+        this._showSnapshotToast("Snapshot failed (no canvas)");
+        return;
+      }
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      const cam = this._getEffectiveLiveCamera?.() || "camera";
+      const safeName = String(cam).replace(/[^a-z0-9_.-]/gi, "_");
+      const ts = new Date().toISOString().replace(/[:.]/g, "-");
+      const filename = `${safeName}_${ts}.jpg`;
+      canvas.toBlob((blob) => {
+        // toBlob returns null when the canvas is tainted by a
+        // cross-origin video. The empty-frame case is caught earlier
+        // via the videoWidth check, so a null here is effectively
+        // always a taint.
+        if (!blob) {
+          this._showSnapshotToast(TAINT_MSG);
+          return;
+        }
+        const url = URL.createObjectURL(blob);
+        try {
+          const a = document.createElement("a");
+          a.href = url;
+          a.download = filename;
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          // No success toast — the download itself is the feedback.
+          setTimeout(() => URL.revokeObjectURL(url), 2000);
+        } catch (err) {
+          console.warn("[CGC] snapshot download failed:", err);
+          this._showSnapshotToast("Download blocked — tap to open", url);
+          // Keep the URL alive until the fallback toast hides.
+          setTimeout(() => URL.revokeObjectURL(url), 6000);
+        }
+      }, "image/jpeg", 0.92);
+    } catch (err) {
+      // SecurityError fires synchronously on tainted-canvas drawImage in
+      // some engines (Safari). Other engines defer to toBlob's null path.
+      const isSecurity = err && (err.name === "SecurityError" || /tainted|cross-origin/i.test(String(err.message || "")));
+      this._showSnapshotToast(isSecurity ? TAINT_MSG : "Snapshot failed");
+      console.warn("[CGC] snapshot failed:", err);
+    }
+  }
+
+  /**
+   * In-card error toast for snapshot failures. Auto-hides after 4.5s.
+   * The optional `href` argument makes the toast tappable — used for
+   * the "open in tab" fallback when the browser refused the programmatic
+   * download. Success cases never call this — the OS download is its
+   * own feedback.
+   */
+  _showSnapshotToast(text, href) {
+    this._snapshotToast = href ? { text, href } : { text };
+    this.requestUpdate();
+    if (this._snapshotToastTimer) clearTimeout(this._snapshotToastTimer);
+    this._snapshotToastTimer = setTimeout(() => {
+      this._snapshotToast = null;
+      this._snapshotToastTimer = null;
+      this.requestUpdate();
+    }, 4500);
+  }
+
+  _renderSnapshotToast() {
+    const t = this._snapshotToast;
+    if (!t) return html``;
+    const body = html`<span class="snapshot-toast-text">${t.text}</span>`;
+    return html`
+      <div class="snapshot-toast snapshot-toast--error" role="status" aria-live="polite">
+        ${t.href
+          ? html`<a class="snapshot-toast-link" href=${t.href} target="_blank" rel="noopener">${body}</a>`
+          : body}
+      </div>
+    `;
+  }
+
   _openImageFullscreen() {
     this._imgFsOpen = true;
     try { this._previewVideoEl?.pause(); } catch (_) {}
@@ -3285,6 +3388,11 @@ class CameraGalleryCard extends LitElement {
       case "fullscreen":
         return html`<button class="gallery-pill live-pill-btn" @pointerdown=${(e) => e.stopPropagation()} @click=${(e) => { e.stopPropagation(); this._toggleLiveFullscreen(); }}>
           <ha-icon icon=${document.fullscreenElement || document.webkitFullscreenElement || this._liveFullscreen ? "mdi:fullscreen-exit" : "mdi:fullscreen"}></ha-icon>
+        </button>`;
+
+      case "snapshot":
+        return html`<button class="gallery-pill live-pill-btn" title="Snapshot" @pointerdown=${(e) => e.stopPropagation()} @click=${(e) => { e.stopPropagation(); this._captureLiveSnapshot(); }}>
+          <ha-icon icon="mdi:camera"></ha-icon>
         </button>`;
 
       case "refresh":
@@ -5368,7 +5476,7 @@ class CameraGalleryCard extends LitElement {
                   : selectedIsVideo
                     ? html`<div id="preview-video-host" class="preview-video-host"></div>`
                     : html`<img class="pimg" src=${selectedUrl} alt="" />`}
-            ${this._hasLiveConfig() ? html`<div id="live-card-host" class="live-card-host${isLive ? '' : ' live-host-hidden'}"></div>` : html``}
+            ${this._hasLiveConfig() ? html`<div id="live-card-host" class="live-card-host${isLive ? '' : ' live-host-hidden'}"></div>${this._renderSnapshotToast()}` : html``}
 
             ${!noResultsForFilter && !isLive && filtered.length > 1 && (this._pillsVisible || this.config?.persistent_controls) ? html`
               <div class="pnav">
