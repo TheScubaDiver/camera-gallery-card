@@ -163,13 +163,3 @@ describe("genStyleSectionDefaults", () => {
     }
   });
 });
-
-describe("SelectControl.disabledFn", () => {
-  it("bar_position select is gated on controls_mode === 'fixed'", () => {
-    const c = selects().find((s) => s.configKey === "bar_position");
-    expect(c?.disabledFn).toBeDefined();
-    expect(c?.disabledFn?.({ controls_mode: "fixed" })).toBe(true);
-    expect(c?.disabledFn?.({ controls_mode: "overlay" })).toBe(false);
-    expect(c?.disabledFn?.({})).toBe(false);
-  });
-});

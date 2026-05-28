@@ -198,7 +198,8 @@ describe("detectPtzType", () => {
   it("picks frigate only when the camera itself is Frigate-managed AND the service exists", () => {
     expect(
       detectPtzType("camera.x", {
-        states: { "camera.x": { attributes: { frigate_camera_name: "x" } } },
+        // Frigate's camera entity exposes camera_name + client_id.
+        states: { "camera.x": { attributes: { camera_name: "x", client_id: "frigate" } } },
         services: { frigate: { ptz: {} } },
       })
     ).toBe("frigate");
@@ -227,7 +228,7 @@ describe("detectPtzType", () => {
       detectPtzType("camera.x", {
         states: {
           "button.x_ptz_stop": {},
-          "camera.x": { attributes: { frigate_camera_name: "x" } },
+          "camera.x": { attributes: { camera_name: "x", client_id: "frigate" } },
         },
         services: { frigate: { ptz: {} } },
       })
