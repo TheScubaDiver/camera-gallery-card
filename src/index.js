@@ -11375,6 +11375,13 @@ class CameraGalleryCardEditor extends HTMLElement {
           overflow: hidden;
           background: var(--ed-row-bg);
         }
+        /* An open search dropdown (.suggestions) is absolutely positioned and
+         * floats below its input — the section's overflow:hidden (there to clip
+         * rounded corners) would cut it off. Lift the clip only while a
+         * dropdown is open so it can spill over the next section. */
+        .style-section:has(.suggestions:not([hidden])) {
+          overflow: visible;
+        }
 
         .style-section-head {
           display: flex;
