@@ -1,5 +1,21 @@
 # Changelog
 
+## [3.1.0](https://github.com/TheScubaDiver/camera-gallery-card/compare/v3.0.1...v3.1.0) (2026-05-28)
+
+
+### Features
+
+* allow live-only configuration without a source ([#172](https://github.com/TheScubaDiver/camera-gallery-card/issues/172)) ([4b71767](https://github.com/TheScubaDiver/camera-gallery-card/commit/4b7176792bba506cf985660a612d0ba46119212e))
+* **controls:** toggles to hide live + gallery chevrons ([#177](https://github.com/TheScubaDiver/camera-gallery-card/issues/177)) ([99e2a5b](https://github.com/TheScubaDiver/camera-gallery-card/commit/99e2a5bfe0a0460a9e8e6025389063ebaa0dd70f))
+* **live:** per-camera crop tool with inline editor ([#175](https://github.com/TheScubaDiver/camera-gallery-card/issues/175)) ([9061684](https://github.com/TheScubaDiver/camera-gallery-card/commit/90616842d7d3e117f7e40d07b9f7d88faa946eb1))
+* **live:** snapshot pill — capture current frame as JPG ([#176](https://github.com/TheScubaDiver/camera-gallery-card/issues/176)) ([9b3dbb1](https://github.com/TheScubaDiver/camera-gallery-card/commit/9b3dbb14e80726416bf44c3e0f7fff153490f15e))
+* **ptz:** manual-first per-button entity config + dispatcher fixes ([#178](https://github.com/TheScubaDiver/camera-gallery-card/issues/178)) ([88f65b3](https://github.com/TheScubaDiver/camera-gallery-card/commit/88f65b3b1089746d4ad0d932336c96ba1d0dc332))
+
+
+### Documentation
+
+* add banner image to README ([#173](https://github.com/TheScubaDiver/camera-gallery-card/issues/173)) ([576fc22](https://github.com/TheScubaDiver/camera-gallery-card/commit/576fc2210f8c075e1de5a254481717503bae36cd))
+
 ## [3.0.1](https://github.com/TheScubaDiver/camera-gallery-card/compare/v3.0.0...v3.0.1) (2026-05-26)
 
 
