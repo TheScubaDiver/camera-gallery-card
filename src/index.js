@@ -3582,19 +3582,7 @@ class CameraGalleryCard extends LitElement {
         @click=${() => this._closeLivePicker()}
       ></div>
 
-      <div class="live-picker" @click=${(e) => e.stopPropagation()}>
-        <div class="live-picker-head">
-          <div class="live-picker-title">Select camera</div>
-          <button
-            class="live-picker-close"
-            @click=${() => this._closeLivePicker()}
-            title="Close"
-            aria-label="Close"
-          >
-            <ha-icon icon="mdi:close"></ha-icon>
-          </button>
-        </div>
-
+      <div class="live-picker cam-picker" @click=${(e) => e.stopPropagation()}>
         <div class="live-picker-list">
           ${cams.map((cam) => {
             const isOn = cam === activeCam;
