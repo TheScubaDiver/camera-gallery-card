@@ -76,6 +76,7 @@ import {
 import { WebRtcMicClient } from "./data/webrtc-mic";
 import {
   detectPtzType,
+  detectPtzButtons,
   dispatchAction as ptzDispatchAction,
   dispatchPan as ptzDispatchPan,
   getPtzConfig,
@@ -9121,10 +9122,18 @@ class CameraGalleryCardEditor extends HTMLElement {
               <span>Show all cameras (manual selection for ONVIF / non-detected setups)</span>
             </div>
           `;
+          // Autocomplete pools for the manual per-button pickers: only the
+          // PTZ-relevant entities, so reboot/SD/siren buttons don't clutter.
+          const ptzAllEntities = this._hass?.states ? Object.keys(this._hass.states) : [];
+          const ptzButtonOpts = ptzAllEntities.filter((e) => /^button\..*_ptz_/.test(e)).sort();
+          const ptzSelectOpts = ptzAllEntities.filter((e) => /^select\..*_ptz_preset$/.test(e)).sort();
+          const ptzDatalists =
+            `<datalist id="ptz-button-list">${ptzButtonOpts.map((o) => `<option value="${o.replace(/"/g, "&quot;")}"></option>`).join("")}</datalist>` +
+            `<datalist id="ptz-select-list">${ptzSelectOpts.map((o) => `<option value="${o.replace(/"/g, "&quot;")}"></option>`).join("")}</datalist>`;
           if (visibleCams.length === 0) {
             return `<div class="desc" style="margin-top:10px;font-style:italic;opacity:0.7;">No PTZ-capable cameras detected. Add a camera that exposes PTZ button entities (EZVIZ, Reolink) or that supports frigate.ptz, and it'll show up here. Or flip the toggle below to pick a type manually.</div>${showAllToggle}`;
           }
-          return `<div style="display:flex;flex-direction:column;gap:10px;margin-top:10px;">
+          return ptzDatalists + `<div style="display:flex;flex-direction:column;gap:10px;margin-top:10px;">
             ${visibleCams.map((entId) => {
               const friendly = String(this._hass?.states?.[entId]?.attributes?.friendly_name || entId).trim();
               const cfgEntry = ptzMap[entId];
@@ -9146,6 +9155,18 @@ class CameraGalleryCardEditor extends HTMLElement {
                       <option value="frigate" ${cfgEntry.type === "frigate" ? "selected" : ""}>Frigate — continuous</option>
                       <option value="onvif" ${cfgEntry.type === "onvif" ? "selected" : ""}>ONVIF — continuous</option>
                     </select>
+                    ${((cfgEntry.type || "ezviz") === "ezviz" || cfgEntry.type === "reolink") ? `
+                    <button type="button" class="actionbtn ptz-detect-btn" data-ptz-cam="${entId.replace(/"/g,"&quot;")}" style="align-self:flex-start;margin-top:2px;">Detect buttons</button>
+                    ${[["up","Up","mdi:arrow-up"],["down","Down","mdi:arrow-down"],["left","Left","mdi:arrow-left"],["right","Right","mdi:arrow-right"],["zoom_in","Zoom in","mdi:magnify-plus-outline"],["zoom_out","Zoom out","mdi:magnify-minus-outline"],["stop","Stop","mdi:stop"],["home","Home","mdi:home-outline"]].map(([bk,blbl,bicon]) => {
+                      const bval = (cfgEntry.buttons && typeof cfgEntry.buttons === "object" && typeof cfgEntry.buttons[bk] === "string") ? cfgEntry.buttons[bk] : "";
+                      const blist = bk === "home" ? "ptz-select-list" : "ptz-button-list";
+                      return `<div style="display:flex;align-items:center;gap:8px;" title="${blbl}">
+                        <ha-icon icon="${bicon}" aria-label="${blbl}" style="--mdc-icon-size:18px;width:18px;height:18px;flex:none;opacity:0.7;"></ha-icon>
+                        <input type="text" class="ed-input ptz-cam-button" data-ptz-cam="${entId.replace(/"/g,"&quot;")}" data-ptz-key="${bk}" list="${blist}" value="${bval.replace(/"/g,"&quot;")}" placeholder="auto" autocomplete="off" spellcheck="false" style="flex:1;min-width:0;font-size:0.82em;" />
+                      </div>`;
+                    }).join("")}
+                    <div class="desc" style="margin-top:2px;">Leave blank to auto-detect. Pick from the list — only PTZ buttons are suggested (Home picks a <code>select…_ptz_preset</code>).</div>
+                    ` : `<div class="desc" style="margin-top:2px;">Service-based type — no buttons needed.</div>`}
                   </div>
                   ` : ""}
                 </div>
@@ -12771,6 +12792,42 @@ details summary { user-select: none; }
           ...(cur || { presets: [] }),
           type,
         }));
+      });
+    });
+
+    // Manual per-button entity pickers. `change` (not `input`) so the
+    // re-render fires on blur/commit, not on every keystroke — keeps the
+    // cursor put while typing. Blank clears the key (→ auto-derivation).
+    const _mergeButtons = (cur, patch) => {
+      const entry = { ...(cur || { type: "ezviz" }) };
+      const buttons = {
+        ...(entry.buttons && typeof entry.buttons === "object" ? entry.buttons : {}),
+        ...patch,
+      };
+      for (const k of Object.keys(buttons)) {
+        if (typeof buttons[k] !== "string" || buttons[k].trim() === "") delete buttons[k];
+        else buttons[k] = buttons[k].trim();
+      }
+      if (Object.keys(buttons).length > 0) entry.buttons = buttons;
+      else delete entry.buttons;
+      return entry;
+    };
+
+    this.shadowRoot.querySelectorAll(".ptz-cam-button").forEach((el) => {
+      el.addEventListener("change", (e) => {
+        const camId = el.dataset.ptzCam;
+        const key = el.dataset.ptzKey;
+        if (!camId || !key) return;
+        _setPtzCameraEntry(camId, (cur) => _mergeButtons(cur, { [key]: String(e.target.value || "") }));
+      });
+    });
+
+    this.shadowRoot.querySelectorAll(".ptz-detect-btn").forEach((el) => {
+      el.addEventListener("click", () => {
+        const camId = el.dataset.ptzCam;
+        if (!camId || !this._hass) return;
+        const found = detectPtzButtons(camId, { states: this._hass.states });
+        _setPtzCameraEntry(camId, (cur) => _mergeButtons(cur, found));
       });
     });
 

@@ -255,6 +255,27 @@ const ptzActions = object({
 });
 
 /**
+ * Per-camera manual button map (the "manual-first" path). Each value is the
+ * full entity id the dispatcher should drive for that action — a `button.*`
+ * for pan/zoom/stop, a `select.*_ptz_preset` for home. Set by the editor's
+ * per-button pickers; an empty/absent key falls back to auto-derivation.
+ *
+ * This is the simple cousin of `actions`: `buttons` is "press this entity",
+ * `actions` is "call this arbitrary service". `actions` still wins when both
+ * are set for the same key.
+ */
+const ptzButtons = object({
+  up: optional(string()),
+  down: optional(string()),
+  left: optional(string()),
+  right: optional(string()),
+  zoom_in: optional(string()),
+  zoom_out: optional(string()),
+  stop: optional(string()),
+  home: optional(string()),
+});
+
+/**
  * Per-camera PTZ config. `type` selects the command dispatcher.
  * `speed` is optional: when absent the dispatcher falls back to the
  * global `live_ptz_speed`. Range is clamped to [1, 9] (the EZVIZ
@@ -283,6 +304,7 @@ const ptzCamera = type({
   button_prefix: optional(string()),
   speed: optional(intInRange(PTZ_SPEED_MIN, PTZ_SPEED_MAX)),
   actions: optional(ptzActions),
+  buttons: optional(ptzButtons),
 });
 
 /** Menu button entry — same strictness rationale as `liveStreamUrlEntry`. */

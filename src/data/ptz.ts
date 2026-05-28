@@ -122,6 +122,24 @@ export interface PtzActions {
   home?: { start: PtzServiceCall };
 }
 
+/**
+ * Manual per-action entity map (the "manual-first" path). Each value is the
+ * exact entity the dispatcher drives: a `button.*` for pan/zoom/stop, a
+ * `select.*_ptz_preset` for home. Filled by the editor's per-button pickers
+ * (and its Detect helper). An absent key falls back to auto-derivation;
+ * `actions` (free-form service call) still wins over this.
+ */
+export interface PtzButtons {
+  up?: string;
+  down?: string;
+  left?: string;
+  right?: string;
+  zoom_in?: string;
+  zoom_out?: string;
+  stop?: string;
+  home?: string;
+}
+
 /** Resolved per-camera PTZ config (struct-narrowed shape). */
 export interface PtzCameraConfig {
   type: PtzType;
@@ -146,6 +164,11 @@ export interface PtzCameraConfig {
    * types don't cover (Foscam, Tapo without ONVIF, custom scripts).
    */
   actions?: PtzActions;
+  /**
+   * Manual per-action entity map. Pressed/selected directly when set,
+   * before any auto-derivation. `actions` still takes precedence.
+   */
+  buttons?: PtzButtons;
 }
 
 /** Minimal hass surface — only what `dispatchPan` uses. */
@@ -195,6 +218,18 @@ const EZVIZ_DIRECTION_SUFFIXES: Record<PtzDirection, readonly string[]> = {
   right: ["right", "rechts", "naar_rechts", "derecha", "droite", "destra", "hoyre", "dreapta"],
 };
 
+/** All keys of `PtzButtons`, used for safe iteration over untyped config. */
+const PTZ_BUTTON_KEYS = [
+  "up",
+  "down",
+  "left",
+  "right",
+  "zoom_in",
+  "zoom_out",
+  "stop",
+  "home",
+] as const;
+
 /**
  * Return the per-camera PTZ entry, or `null` when:
  *   - the global `live_ptz_enabled` is off,
@@ -225,6 +260,17 @@ export function getPtzConfig(
     // pass through. `exactOptionalPropertyTypes`-safe because callers
     // only read keys that are present.
     out.actions = entry.actions as PtzActions;
+  }
+  if (entry.buttons && typeof entry.buttons === "object") {
+    // Keep only non-empty, trimmed entity ids so a blank field left behind
+    // by the editor doesn't shadow auto-derivation with an empty string.
+    const src = entry.buttons as Record<string, unknown>;
+    const buttons: PtzButtons = {};
+    for (const key of PTZ_BUTTON_KEYS) {
+      const v = src[key];
+      if (typeof v === "string" && v.trim() !== "") buttons[key] = v.trim();
+    }
+    if (Object.keys(buttons).length > 0) out.buttons = buttons;
   }
   return out;
 }
@@ -263,6 +309,17 @@ function getActionOverride(
   key: PtzNamedAction
 ): { start: PtzServiceCall; stop?: PtzServiceCall } | null {
   return ptz.actions?.[key] ?? null;
+}
+
+/**
+ * The user-set entity for one action from the manual `buttons` map, or
+ * `undefined` when unset/blank — caller then falls through to built-in
+ * auto-derivation. `getPtzConfig` already trims/drops blanks, but we
+ * re-guard here so direct callers (tests, future paths) stay safe.
+ */
+function explicitButton(ptz: PtzCameraConfig, key: keyof PtzButtons): string | undefined {
+  const v = ptz.buttons?.[key];
+  return typeof v === "string" && v.trim() !== "" ? v.trim() : undefined;
 }
 
 /**
@@ -424,14 +481,16 @@ export function detectPtzType(
   // in the editor just because Frigate-the-integration is installed.
   //
   // Frigate: only when the camera entity itself is a Frigate-managed
-  //   camera (attribute `frigate_camera_name`) AND `frigate.ptz` exists.
+  //   camera AND `frigate.ptz` exists. The Frigate integration's camera
+  //   entity exposes `camera_name` + `client_id` attributes (there is no
+  //   `frigate_camera_name`); the pair together is the Frigate signature.
   // ONVIF: cannot be reliably detected from `hass.states` alone (the
   //   camera entity attributes don't expose PTZ capability), so we skip
   //   auto-detect and require the user to pick "ONVIF" manually.
-  const camState = hass.states?.[cameraEntityId] as
-    | { attributes?: Record<string, unknown> }
-    | undefined;
-  const isFrigate = !!camState?.attributes && "frigate_camera_name" in camState.attributes;
+  const attrs = (
+    hass.states?.[cameraEntityId] as { attributes?: Record<string, unknown> } | undefined
+  )?.attributes;
+  const isFrigate = !!attrs && "camera_name" in attrs && "client_id" in attrs;
   if (isFrigate && hass.services?.["frigate"] && "ptz" in hass.services["frigate"]) {
     return "frigate";
   }
@@ -461,6 +520,116 @@ function reolinkStopEntity(
   // direction helpers: if nothing exists, surface a recognisable
   // "entity not found" error.
   return `${prefixes[0]}_ptz_stop`;
+}
+
+/**
+ * Resolve the Reolink zoom button (`_ptz_zoom_in` / `_ptz_zoom_out`). Probes
+ * each candidate prefix against hass.states so substream / NVR cameras whose
+ * buttons live on a stripped slug resolve correctly — the direction helpers
+ * already do this; zoom historically didn't and targeted the unstripped
+ * prefix. Falls back to the canonical prefix when nothing matches. Zoom
+ * button names aren't localised by the integration the way directions are,
+ * so there's no per-language probing here — non-English installs use the
+ * manual `buttons` map instead.
+ */
+function zoomButtonEntity(
+  cameraEntityId: string,
+  buttonPrefix: string | undefined,
+  hassStates: Readonly<Record<string, unknown>> | undefined,
+  action: PtzZoom
+): string {
+  const prefixes = candidateButtonPrefixes(cameraEntityId, buttonPrefix);
+  if (hassStates) {
+    for (const p of prefixes) {
+      const cand = `${p}_ptz_${action}`;
+      if (cand in hassStates) return cand;
+    }
+  }
+  return `${prefixes[0]}_ptz_${action}`;
+}
+
+/**
+ * Stream-quality tokens the Reolink integration appends to camera entity ids
+ * (localised at entity creation) which the PTZ *button* entities do NOT
+ * carry. Used to recover the button stem from a camera id regardless of UI
+ * language or stream/lens position.
+ */
+const STREAM_QUALITY_TOKENS = [
+  "sub",
+  "main",
+  "clear",
+  "fluent",
+  "balanced",
+  "vloeiend",
+  "helder",
+  "gebalanceerd", // nl
+  "klar",
+  "fluessig",
+  "fluid", // de
+  "clair",
+  "fluide",
+  "equilibre", // fr
+  "claro",
+  "fluido",
+  "equilibrado", // es
+] as const;
+
+/**
+ * Best-effort recovery of the `button.<stem>` slug a camera's PTZ buttons
+ * live on. Tries the camera base as-is, then with each known stream-quality
+ * token removed (anywhere in the slug — covers `_vloeiend` mid-string in
+ * dual-lens ids). Returns the first stem under which any `_ptz_*` button
+ * actually exists, else `null`.
+ */
+function detectButtonStem(
+  cameraEntityId: string,
+  states: Readonly<Record<string, unknown>>
+): string | null {
+  const base = cameraEntityId.replace(/^camera\./, "");
+  const candidates = [base];
+  for (const t of STREAM_QUALITY_TOKENS) {
+    const re = new RegExp(`_${t}(?=_|$)`);
+    if (re.test(base)) candidates.push(base.replace(re, ""));
+  }
+  const keys = Object.keys(states);
+  for (const c of candidates) {
+    const pre = `button.${c}`;
+    if (keys.some((k) => k.startsWith(`${pre}_ptz_`))) return pre;
+  }
+  return null;
+}
+
+/**
+ * Resolve the concrete PTZ entities for a camera by probing hass.states —
+ * the engine behind the editor's "Detect buttons" action. Returns only
+ * entities that actually exist, so the editor can pre-fill the manual
+ * `buttons` map and leave the rest blank for the user to pick. Handles
+ * localised direction / stop names and stream-suffixed / dual-lens camera
+ * ids. Zoom is matched on the English slug only (the integration doesn't
+ * localise it), so a non-English zoom button stays unfilled by design.
+ */
+export function detectPtzButtons(
+  cameraEntityId: string,
+  hass: { states?: Readonly<Record<string, unknown>> }
+): PtzButtons {
+  const states = hass?.states;
+  if (!states) return {};
+  const stem = detectButtonStem(cameraEntityId, states);
+  if (!stem) return {};
+  const out: PtzButtons = {};
+  for (const dir of PTZ_DIRECTIONS) {
+    const e = ezvizButtonEntity(cameraEntityId, dir, stem, states);
+    if (e in states) out[dir] = e;
+  }
+  const stop = reolinkStopEntity(cameraEntityId, stem, states);
+  if (stop && stop in states) out.stop = stop;
+  for (const z of ["zoom_in", "zoom_out"] as const) {
+    const e = `${stem}_ptz_${z}`;
+    if (e in states) out[z] = e;
+  }
+  const sel = `select.${stem.replace(/^button\./, "")}_ptz_preset`;
+  if (sel in states) out.home = sel;
+  return out;
 }
 
 /** What `joystickResolve` returns per pointer frame. */
@@ -615,7 +784,9 @@ export function dispatchPan(
     // no-op at the service layer; the card-side interval clearing handles
     // the actual "stop pulsing" behaviour.
     if (phase === "stop") return Promise.resolve(undefined);
-    const entityId = ezvizButtonEntity(cameraEntityId, direction, ptz.button_prefix, hass.states);
+    const entityId =
+      explicitButton(ptz, direction) ??
+      ezvizButtonEntity(cameraEntityId, direction, ptz.button_prefix, hass.states);
     // `target.entity_id` is the modern HA shape; the button-based EZVIZ
     // integration was added in the same generation that made `target` canonical.
     return hass.callService("button", "press", {}, { entity_id: entityId });
@@ -627,13 +798,17 @@ export function dispatchPan(
     // (start) or Stop (stop) under the hood, so this card just needs to
     // press the right button per phase.
     if (phase === "stop") {
-      const stopId = reolinkStopEntity(cameraEntityId, ptz.button_prefix, hass.states);
+      const stopId =
+        explicitButton(ptz, "stop") ??
+        reolinkStopEntity(cameraEntityId, ptz.button_prefix, hass.states);
       if (!stopId) return Promise.resolve(undefined);
       return hass.callService("button", "press", {}, { entity_id: stopId });
     }
     // Reolink direction buttons share the same naming pattern as EZVIZ,
-    // so we lean on the same suffix-probing helper.
-    const entityId = ezvizButtonEntity(cameraEntityId, direction, ptz.button_prefix, hass.states);
+    // so we lean on the same suffix-probing helper (unless explicitly set).
+    const entityId =
+      explicitButton(ptz, direction) ??
+      ezvizButtonEntity(cameraEntityId, direction, ptz.button_prefix, hass.states);
     return hass.callService("button", "press", {}, { entity_id: entityId });
   }
 
@@ -722,7 +897,9 @@ export function dispatchAction(
       // Prefer an option literally named "Home" (case-insensitive); else
       // fall back to the first option in the list — that's the standard
       // home slot in PTZ firmware.
-      const selectEntity = `select.${cameraBaseSlug(cameraEntityId, ptz.button_prefix)}_ptz_preset`;
+      const selectEntity =
+        explicitButton(ptz, "home") ??
+        `select.${cameraBaseSlug(cameraEntityId, ptz.button_prefix)}_ptz_preset`;
       const state = hass.states?.[selectEntity] as
         | { attributes?: { options?: unknown } }
         | undefined;
@@ -767,12 +944,16 @@ export function dispatchAction(
     // Reolink exposes button.<base>_ptz_zoom_in / _zoom_out alongside the
     // direction buttons. Stop = same shared ptz_stop button.
     if (phase === "stop") {
-      const stopId = reolinkStopEntity(cameraEntityId, ptz.button_prefix, hass.states);
+      const stopId =
+        explicitButton(ptz, "stop") ??
+        reolinkStopEntity(cameraEntityId, ptz.button_prefix, hass.states);
       if (!stopId) return Promise.resolve(undefined);
       return hass.callService("button", "press", {}, { entity_id: stopId });
     }
-    const prefix = candidateButtonPrefixes(cameraEntityId, ptz.button_prefix)[0];
-    return hass.callService("button", "press", {}, { entity_id: `${prefix}_ptz_${action}` });
+    const entityId =
+      explicitButton(ptz, action) ??
+      zoomButtonEntity(cameraEntityId, ptz.button_prefix, hass.states, action);
+    return hass.callService("button", "press", {}, { entity_id: entityId });
   }
   if (ptz.type === "frigate") {
     if (phase === "stop") {
