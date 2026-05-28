@@ -716,11 +716,6 @@ export const cardStyles = css`
         }
       }
     }
-    & .live-picker-item-entity {
-      font-size: 11px;
-      font-weight: 500;
-      opacity: 0.55;
-    }
     & .live-picker-check {
       --ha-icon-size: 22px;
       --mdc-icon-size: var(--ha-icon-size);
@@ -728,6 +723,40 @@ export const cardStyles = css`
       height: var(--ha-icon-size);
       color: var(--primary-color, #4da3ff);
       flex: 0 0 auto;
+    }
+  }
+
+  /* Compact camera switcher (variant A): no header, no entity-id subtitle,
+     tighter rows. Scoped to .cam-picker so the shared date picker
+     (.live-picker.date-picker, which keeps its header) is unaffected. */
+  .live-picker.cam-picker {
+    width: min(74%, 320px);
+    grid-template-rows: minmax(0, 1fr);
+
+    & .live-picker-item {
+      padding: 11px 14px;
+    }
+    & .live-picker-item-left ha-icon {
+      --ha-icon-size: 18px;
+    }
+    /* Name + entity id inline on one row; name keeps its width, the
+       small grey entity id truncates first if the row runs out of space. */
+    & .live-picker-item-name {
+      flex-direction: row;
+      align-items: baseline;
+      gap: 8px;
+    }
+    & .live-picker-item-name span:first-child {
+      font-size: 14px;
+      font-weight: 700;
+      flex: 0 0 auto;
+    }
+    & .live-picker-item-entity {
+      font-size: 11px;
+      font-weight: 500;
+      opacity: 0.5;
+      flex: 0 1 auto;
+      min-width: 0;
     }
   }
 
