@@ -1,4 +1,4 @@
-<img width="1640" height="624" alt="B-leftaligned-dark" src="https://github.com/user-attachments/assets/c691413f-e475-4ff6-b636-352e420cef0b" />
+![Camera Gallery Card](https://github.com/user-attachments/assets/c691413f-e475-4ff6-b636-352e420cef0b)
 
 # Camera Gallery Card
 
