@@ -264,6 +264,22 @@ export const cardStyles = css`
       height: 100% !important;
       object-fit: var(--cgc-object-fit, cover) !important;
     }
+    /* Per-camera crop — when the live entry has a crop the host element
+     * picks up a .has-crop class plus --crop-x/--crop-y/--crop-w/--crop-h
+     * vars. HA's ha-camera-stream forces itself to width:100% via inline
+     * style so we can't resize the wrapper; a CSS transform is the only
+     * reliable lever. The container's aspect-ratio is set to the crop's
+     * real shape in _getPreviewAspectRatio (driven by the persisted
+     * source_ar), so the scale factors line up and the crop region fills
+     * the container without distortion. */
+    &.has-crop {
+      overflow: hidden !important;
+    }
+    &.has-crop > * {
+      transform: scale(calc(100 / var(--crop-w, 100)), calc(100 / var(--crop-h, 100)))
+        translate(calc(var(--crop-x, 0%) * -1), calc(var(--crop-y, 0%) * -1)) !important;
+      transform-origin: 0 0 !important;
+    }
     /* Multi-camera grid layout (live_layout: grid). Disable pinch-zoom and
      * double-tap-zoom on the grid surface via touch-action. */
     &.live-grid-host {
