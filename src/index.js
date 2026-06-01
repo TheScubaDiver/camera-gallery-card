@@ -8976,8 +8976,8 @@ class CameraGalleryCardEditor extends HTMLElement {
               ${segShape("button", "Button")}
             </div>
             ${shape === "button" ? `
-            <div style="margin-top:10px;">
-              <div class="lbl">Button position</div>
+            <div style="margin-top:14px;">
+              <div class="lbl" style="margin-bottom:8px;">Button position</div>
               <div class="segwrap">
                 ${segPos("left",   "Left")}
                 ${segPos("center", "Center")}
