@@ -449,6 +449,11 @@ export const cameraGalleryCardConfigStruct = type({
   // presets; style and opacity are hard-coded for a consistent look.
   live_mic_waveform_enabled: defaulted(boolean(), true),
   live_mic_waveform_sensitivity: defaulted(enums(["low", "medium", "high"]), "medium"),
+  // Talkback shape: full-width `bar` (default, key omitted) or a compact
+  // round `button`. `live_mic_button_position` only applies to the button
+  // shape; `center` is the default and is dropped by the editor.
+  live_mic_shape: optional(enums(["bar", "button"])),
+  live_mic_button_position: optional(enums(["left", "center", "right"])),
 
   // ─── Live PTZ (pan/tilt + presets) ─────────────────────────
   // Per-camera map keyed by camera entity id; values configure the
