@@ -2781,22 +2781,64 @@ class CameraGalleryCard extends LitElement {
       this.config?.bar_position === "bottom"
         ? "top:12px;bottom:auto"
         : "bottom:12px;top:auto";
+
+    // Shape: full-width bar (default) or compact round button. The button
+    // shares the bar's tint, blur and state colors so themes carry over;
+    // only the geometry and visible label differ.
+    const shape = this.config?.live_mic_shape === "button" ? "button" : "bar";
+    const isButton = shape === "button";
+
+    let position;
+    if (isButton) {
+      const pos = this.config?.live_mic_button_position;
+      if (pos === "left") position = "left:12px;right:auto;transform:none";
+      else if (pos === "right") position = "left:auto;right:12px;transform:none";
+      else position = "left:50%;right:auto;transform:translateX(-50%)";
+    } else {
+      position = "left:12px;right:12px";
+    }
+
+    const sizeStyle = isButton
+      ? "width:44px;height:44px;padding:0;border-radius:50%;gap:0;"
+      : "min-height:38px;height:38px;padding:0 16px;border-radius:14px;gap:10px;";
+
+    const ariaLabel = isButton
+      ? `${label} (${state})`
+      : `Push-to-talk (${state})`;
+
+    // Round button uses expanding radar rings (not the bar's waveform) as the
+    // "talking" indicator — they emanate past the user's fingertip during
+    // push-to-talk, so feedback stays visible while the button is pressed.
+    // Needs overflow:visible so the rings aren't clipped to the 44px circle;
+    // they paint before the tint so the on-button portion reads as a glow.
+    const overflow = isButton ? "visible" : "hidden";
+    const radarRings =
+      isButton && state === "active"
+        ? html`
+            <span class="mic-talkback-ring" aria-hidden="true"></span>
+            <span class="mic-talkback-ring" aria-hidden="true" style="animation-delay:0.66s;"></span>
+            <span class="mic-talkback-ring" aria-hidden="true" style="animation-delay:1.33s;"></span>
+          `
+        : html``;
+
     return html`
       <div
-        class="mic-talkback-bar ${cls}"
+        class="mic-talkback-bar mic-talkback-${shape} ${cls}"
         role="button"
         tabindex="0"
-        aria-label=${`Push-to-talk (${state})`}
-        style="position:absolute;left:12px;right:12px;${placement};min-height:38px;height:38px;padding:0 16px;font-size:14px;display:flex;align-items:center;justify-content:center;gap:10px;border-radius:14px;color:#fff;font-weight:600;letter-spacing:0.02em;background:${bg};box-shadow:inset 0 1px 0 rgba(255,255,255,0.14);user-select:none;-webkit-user-select:none;touch-action:none;z-index:5;backdrop-filter:blur(16px) saturate(160%);-webkit-backdrop-filter:blur(16px) saturate(160%);text-shadow:0 1px 2px rgba(0,0,0,0.5);overflow:hidden;"
+        aria-label=${ariaLabel}
+        title=${isButton ? label : ""}
+        style="position:absolute;${position};${placement};${sizeStyle}font-size:14px;display:flex;align-items:center;justify-content:center;color:#fff;font-weight:600;letter-spacing:0.02em;background:${bg};box-shadow:inset 0 1px 0 rgba(255,255,255,0.14);user-select:none;-webkit-user-select:none;touch-action:none;z-index:5;backdrop-filter:blur(16px) saturate(160%);-webkit-backdrop-filter:blur(16px) saturate(160%);text-shadow:0 1px 2px rgba(0,0,0,0.5);overflow:${overflow};"
         @pointerdown=${this._onMicPointerDown}
         @pointerup=${this._onMicPointerUp}
         @pointercancel=${this._onMicPointerUp}
         @pointerleave=${this._onMicPointerUp}
       >
+        ${radarRings}
         <span class="mic-talkback-tint" aria-hidden="true" style="position:absolute;inset:0;border-radius:inherit;background:var(--cgc-talkback-bg, var(--cgc-pill-bg, #000));opacity:calc(var(--cgc-talkback-opacity, var(--cgc-bar-opacity, 30)) / 100);pointer-events:none;"></span>
-        ${this.config?.live_mic_waveform_enabled === false ? html`` : html`<canvas class="mic-wave" aria-hidden="true" style="position:absolute;inset:0;width:100%;height:100%;opacity:${state === "active" ? 1 : 0};transition:opacity 150ms ease-out;pointer-events:none;z-index:1;"></canvas>`}
-        <ha-icon icon=${icon} style="--mdc-icon-size:18px;width:18px;height:18px;display:inline-flex;align-items:center;justify-content:center;line-height:1;position:relative;z-index:2;"></ha-icon>
-        <span style="position:relative;z-index:2;">${label}</span>
+        ${isButton || this.config?.live_mic_waveform_enabled === false ? html`` : html`<canvas class="mic-wave" aria-hidden="true" style="position:absolute;inset:0;width:100%;height:100%;opacity:${state === "active" ? 1 : 0};transition:opacity 150ms ease-out;pointer-events:none;z-index:1;"></canvas>`}
+        <ha-icon icon=${icon} style="--mdc-icon-size:${isButton ? 22 : 18}px;width:${isButton ? 22 : 18}px;height:${isButton ? 22 : 18}px;display:inline-flex;align-items:center;justify-content:center;line-height:1;position:relative;z-index:2;"></ha-icon>
+        ${isButton ? html`` : html`<span style="position:relative;z-index:2;">${label}</span>`}
       </div>
     `;
   }
@@ -6218,6 +6260,7 @@ const CGC_CONFIG_KEY_ORDER = [
   "live_enabled", "live_auto_muted", "live_cameras", "live_layout",
   "live_grid_labels", "live_stream_urls", "live_go2rtc_url",
   "live_mic_mode", "live_mic_audio_processing",
+  "live_mic_shape", "live_mic_button_position",
   "live_mic_waveform_enabled", "live_mic_waveform_sensitivity",
   "live_mic_ice_servers", "live_mic_force_relay",
   "live_ptz_enabled", "live_ptz_position", "live_ptz_speed", "live_ptz_cameras",
@@ -8932,6 +8975,33 @@ class CameraGalleryCardEditor extends HTMLElement {
             <button class="seg ${(this._config.live_mic_mode || "toggle") === "toggle" ? "on" : ""}" data-livemicmode="toggle">Toggle</button>
             <button class="seg ${this._config.live_mic_mode === "ptt" ? "on" : ""}" data-livemicmode="ptt">Push-to-talk</button>
           </div>
+        </div>
+        <div class="row">
+          ${(() => {
+            const shape = this._config.live_mic_shape === "button" ? "button" : "bar";
+            const pos = this._config.live_mic_button_position || "center";
+            const segShape = (val, label) =>
+              `<button class="seg ${shape === val ? "on" : ""}" data-livemicshape="${val}">${label}</button>`;
+            const segPos = (val, label) =>
+              `<button class="seg ${pos === val ? "on" : ""}" data-livemicbtnpos="${val}">${label}</button>`;
+            return `
+            <div class="lbl">Shape</div>
+            <div class="desc"><code>Bar</code> spans the full preview width. <code>Button</code> shows a compact round mic button.</div>
+            <div class="segwrap">
+              ${segShape("bar",    "Bar")}
+              ${segShape("button", "Button")}
+            </div>
+            ${shape === "button" ? `
+            <div style="margin-top:14px;">
+              <div class="lbl" style="margin-bottom:8px;">Button position</div>
+              <div class="segwrap">
+                ${segPos("left",   "Left")}
+                ${segPos("center", "Center")}
+                ${segPos("right",  "Right")}
+              </div>
+            </div>
+            ` : ``}`;
+          })()}
         </div>
         <div class="row">
           <div class="lbl">Audio processing</div>
@@ -12676,6 +12746,39 @@ details summary { user-select: none; }
           delete n.live_mic_mode;
           this._config = this._stripAlwaysTrueKeys(n);
           this._fire();
+        }
+        this._scheduleRender();
+      });
+    });
+
+    // Talkback shape (bar vs round button). "bar" is the default and not
+    // persisted; switching to "button" stores both shape and position so
+    // the YAML stays minimal until the user opts into the round shape.
+    this.shadowRoot.querySelectorAll("[data-livemicshape]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const shape = btn.dataset.livemicshape;
+        if (shape === "button") {
+          this._set("live_mic_shape", "button");
+        } else {
+          const n = { ...this._config };
+          delete n.live_mic_shape;
+          delete n.live_mic_button_position;
+          this._config = this._stripAlwaysTrueKeys(n);
+          this._fire();
+        }
+        this._scheduleRender();
+      });
+    });
+    this.shadowRoot.querySelectorAll("[data-livemicbtnpos]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const pos = btn.dataset.livemicbtnpos;
+        if (pos === "center") {
+          const n = { ...this._config };
+          delete n.live_mic_button_position;
+          this._config = this._stripAlwaysTrueKeys(n);
+          this._fire();
+        } else {
+          this._set("live_mic_button_position", pos);
         }
         this._scheduleRender();
       });
