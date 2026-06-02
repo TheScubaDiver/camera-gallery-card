@@ -413,6 +413,35 @@ export const cardStyles = css`
     }
   }
 
+  /* Round talk button "talking" indicator: expanding radar rings that
+     emanate past the button edge (overflow:visible on the button), so the
+     feedback stays visible past the user's fingertip during push-to-talk.
+     Three staggered rings; per-ring animation-delay is set inline. */
+  .mic-talkback-ring {
+    position: absolute;
+    inset: 0;
+    border-radius: 50%;
+    border: 2px solid rgba(220, 38, 38, 0.85);
+    pointer-events: none;
+    animation: cgc-mic-radar 2s ease-out infinite;
+  }
+  @keyframes cgc-mic-radar {
+    0% {
+      transform: scale(1);
+      opacity: 0.8;
+    }
+    100% {
+      transform: scale(1.9);
+      opacity: 0;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .mic-talkback-ring {
+      animation: none;
+      opacity: 0;
+    }
+  }
+
   .live-picker-backdrop {
     position: absolute;
     inset: 0;

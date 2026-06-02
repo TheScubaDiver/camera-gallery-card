@@ -2806,6 +2806,21 @@ class CameraGalleryCard extends LitElement {
       ? `${label} (${state})`
       : `Push-to-talk (${state})`;
 
+    // Round button uses expanding radar rings (not the bar's waveform) as the
+    // "talking" indicator — they emanate past the user's fingertip during
+    // push-to-talk, so feedback stays visible while the button is pressed.
+    // Needs overflow:visible so the rings aren't clipped to the 44px circle;
+    // they paint before the tint so the on-button portion reads as a glow.
+    const overflow = isButton ? "visible" : "hidden";
+    const radarRings =
+      isButton && state === "active"
+        ? html`
+            <span class="mic-talkback-ring" aria-hidden="true"></span>
+            <span class="mic-talkback-ring" aria-hidden="true" style="animation-delay:0.66s;"></span>
+            <span class="mic-talkback-ring" aria-hidden="true" style="animation-delay:1.33s;"></span>
+          `
+        : html``;
+
     return html`
       <div
         class="mic-talkback-bar mic-talkback-${shape} ${cls}"
@@ -2813,14 +2828,15 @@ class CameraGalleryCard extends LitElement {
         tabindex="0"
         aria-label=${ariaLabel}
         title=${isButton ? label : ""}
-        style="position:absolute;${position};${placement};${sizeStyle}font-size:14px;display:flex;align-items:center;justify-content:center;color:#fff;font-weight:600;letter-spacing:0.02em;background:${bg};box-shadow:inset 0 1px 0 rgba(255,255,255,0.14);user-select:none;-webkit-user-select:none;touch-action:none;z-index:5;backdrop-filter:blur(16px) saturate(160%);-webkit-backdrop-filter:blur(16px) saturate(160%);text-shadow:0 1px 2px rgba(0,0,0,0.5);overflow:hidden;"
+        style="position:absolute;${position};${placement};${sizeStyle}font-size:14px;display:flex;align-items:center;justify-content:center;color:#fff;font-weight:600;letter-spacing:0.02em;background:${bg};box-shadow:inset 0 1px 0 rgba(255,255,255,0.14);user-select:none;-webkit-user-select:none;touch-action:none;z-index:5;backdrop-filter:blur(16px) saturate(160%);-webkit-backdrop-filter:blur(16px) saturate(160%);text-shadow:0 1px 2px rgba(0,0,0,0.5);overflow:${overflow};"
         @pointerdown=${this._onMicPointerDown}
         @pointerup=${this._onMicPointerUp}
         @pointercancel=${this._onMicPointerUp}
         @pointerleave=${this._onMicPointerUp}
       >
+        ${radarRings}
         <span class="mic-talkback-tint" aria-hidden="true" style="position:absolute;inset:0;border-radius:inherit;background:var(--cgc-talkback-bg, var(--cgc-pill-bg, #000));opacity:calc(var(--cgc-talkback-opacity, var(--cgc-bar-opacity, 30)) / 100);pointer-events:none;"></span>
-        ${this.config?.live_mic_waveform_enabled === false ? html`` : html`<canvas class="mic-wave" aria-hidden="true" style="position:absolute;inset:0;width:100%;height:100%;opacity:${state === "active" ? 1 : 0};transition:opacity 150ms ease-out;pointer-events:none;z-index:1;"></canvas>`}
+        ${isButton || this.config?.live_mic_waveform_enabled === false ? html`` : html`<canvas class="mic-wave" aria-hidden="true" style="position:absolute;inset:0;width:100%;height:100%;opacity:${state === "active" ? 1 : 0};transition:opacity 150ms ease-out;pointer-events:none;z-index:1;"></canvas>`}
         <ha-icon icon=${icon} style="--mdc-icon-size:${isButton ? 22 : 18}px;width:${isButton ? 22 : 18}px;height:${isButton ? 22 : 18}px;display:inline-flex;align-items:center;justify-content:center;line-height:1;position:relative;z-index:2;"></ha-icon>
         ${isButton ? html`` : html`<span style="position:relative;z-index:2;">${label}</span>`}
       </div>
