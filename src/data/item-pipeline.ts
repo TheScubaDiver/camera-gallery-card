@@ -258,7 +258,15 @@ export class ItemPipelineClient {
     const allWithDay = sortItemsByTime(rawItems, sortOrder);
     const days = this.getAllDays(allWithDay);
     const newestDay = days[0] ?? null;
-    const activeDay = selectedDay ?? newestDay;
+    // Default to the newest day that actually has loaded items rather than the
+    // newest calendar day. A discovered-but-empty leading day (e.g. a freshly
+    // created current-day folder with no recordings yet — issue #191) would
+    // otherwise strand the gallery on a "No media for this day" screen. An
+    // explicit user selection is always honoured.
+    const daysWithItems = new Set<string>();
+    for (const x of allWithDay) if (x.dayKey) daysWithItems.add(x.dayKey);
+    const newestWithItems = days.find((d) => daysWithItems.has(d)) ?? newestDay;
+    const activeDay = selectedDay ?? newestWithItems;
 
     const dayFiltered: BaseListEntry[] = !activeDay
       ? allWithDay

@@ -281,6 +281,27 @@ describe("ItemPipelineClient.getBaseList", () => {
     expect(pipeline.getBaseList().activeDay).toBe("2026-05-12");
   });
 
+  it("active day skips an empty leading calendar day (issue #191)", () => {
+    const dt = (y: number, m: number, d: number): number => new Date(y, m - 1, d).getTime();
+    // Items only on the 12th and 10th; the media calendar also lists the 13th
+    // — a freshly-created current-day folder with no recordings yet. The
+    // gallery must default to the newest day that holds media, not the empty
+    // calendar-newest day.
+    const sensor = makeSensorClient([{ src: "/a" }, { src: "/b" }]);
+    const media = makeMediaClient([], { "/a": dt(2026, 5, 10), "/b": dt(2026, 5, 12) }, [
+      "2026-05-13",
+      "2026-05-12",
+      "2026-05-10",
+    ]);
+    const pipeline = new ItemPipelineClient(
+      defaultOpts({ sensorClient: sensor, mediaClient: media })
+    );
+    const base = pipeline.getBaseList();
+    expect(base.newestDay).toBe("2026-05-13"); // calendar newest (empty)
+    expect(base.activeDay).toBe("2026-05-12"); // newest day WITH items
+    expect(base.dayFiltered.map((x) => x.src)).toEqual(["/b"]);
+  });
+
   it("re-sorts when getSortOrder() flips", () => {
     // Same day so the day filter doesn't trim — we're testing sort direction.
     const dt = (y: number, m: number, d: number, h: number): number =>
