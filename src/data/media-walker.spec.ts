@@ -569,6 +569,56 @@ describe("MediaSourceClient.ensureLoaded", () => {
     expect(items[0]?.id).toBe(`${root}/20260502/120030.mp4`);
   });
 
+  it("prunes a discovered-but-empty day folder from the calendar (issue #191)", async () => {
+    // A freshly-created current-day folder is discovered but holds no media.
+    // It must not survive in the calendar (navigation / picker would land on a
+    // "No media for this day" dead-end); the gallery loads the older day that
+    // actually has media instead.
+    const root = "media-source://x";
+    const dir = (id: string, title: string, children: unknown[]): unknown => ({
+      title,
+      media_class: "directory",
+      media_content_type: "directory",
+      media_content_id: id,
+      can_play: false,
+      can_expand: true,
+      thumbnail: null,
+      children,
+    });
+    const file = (id: string, title: string): unknown => ({
+      title,
+      media_class: "video",
+      media_content_type: "video/mp4",
+      media_content_id: id,
+      can_play: true,
+      can_expand: false,
+      thumbnail: null,
+      children: [],
+    });
+    hass.registerWs("media_source/browse_media", (p) => {
+      const id = String(p["media_content_id"]);
+      if (id === root) {
+        return dir(root, "x", [
+          dir(`${root}/20260603`, "20260603", []), // empty current-day folder
+          dir(`${root}/20260601`, "20260601", []),
+        ]);
+      }
+      if (id === `${root}/20260603`) return dir(id, "20260603", []); // browses empty
+      if (id === `${root}/20260601`) {
+        return dir(id, "20260601", [file(`${root}/20260601/120030.mp4`, "120030.mp4")]);
+      }
+      return null;
+    });
+
+    client.load(baseConfig({ media_sources: [root], path_datetime_format: "YYYYMMDD/HHmmss.mp4" }));
+    await client.ensureLoaded();
+
+    // The empty 2026-06-03 folder is gone; only the day with media remains.
+    expect(client.getDays()).toEqual(["2026-06-01"]);
+    expect(client.state.dayCache.has("2026-06-03")).toBe(false);
+    expect((client.state.dayCache.get("2026-06-01") ?? []).length).toBe(1);
+  });
+
   it("clears the calendar + day caches when media_sources changes (review A1)", () => {
     const a = "media-source://media_source/local/a";
     const b = "media-source://media_source/local/b";

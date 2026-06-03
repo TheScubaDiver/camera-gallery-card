@@ -5350,7 +5350,10 @@ class CameraGalleryCard extends LitElement {
     const dayIdx = currentForNav ? days.indexOf(currentForNav) : -1;
     const canPrev = dayIdx >= 0 && dayIdx < days.length - 1;
     const canNext = dayIdx > 0;
-    const isToday = currentForNav === newestDay;
+    // Highlight "Today" only when the active day is the literal current date,
+    // not merely the newest day with media (issue #191: with empty current-day
+    // folders pruned, the newest day is often an earlier date).
+    const isToday = currentForNav === dayKeyFromMs(Date.now());
 
     const sp = parseServiceParts(this.config?.delete_service);
     const fsp = parseServiceParts(this.config?.frigate_delete_service);

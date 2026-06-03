@@ -1150,14 +1150,25 @@ export class MediaSourceClient {
         this.state.dayCache = byDayItems;
         this._refreshList();
       } else {
-        // Layouts B/C — lazy. Auto-load the most-recent day so the gallery
-        // isn't empty on first render. Older days load on user navigation.
-        const newest = discovery.calendar.days[0];
-        if (newest) {
-          // Snapshot the calendar so a concurrent config change can't make
-          // _loadDayInternal write empty results for a day from the OLD
-          // calendar (review finding A6).
-          await this._loadDayInternal(newest, discovery.calendar, fmt, browseFn, gen);
+        // Layouts B/C — lazy. Auto-load the most-recent day that actually has
+        // media so the gallery isn't empty on first render. A freshly-created
+        // current-day folder is discovered as the newest calendar day but holds
+        // no recordings yet (issue #191) — keeping it would let navigation / the
+        // date picker land on a "No media for this day" dead-end. _loadDayInternal
+        // prunes any probed day that browses to no media, so leading empty days
+        // drop out of the calendar as we look for the newest one that holds
+        // media; they reappear once a later discovery finds media in them.
+        // Capped so a pathological all-empty tree can't browse forever. Older
+        // days load lazily on navigation.
+        const cal = discovery.calendar;
+        const MAX_EMPTY_SKIP = 10;
+        for (let i = 0; i < cal.days.length && i < MAX_EMPTY_SKIP; i++) {
+          const day = cal.days[i];
+          if (!day) continue;
+          await this._loadDayInternal(day, cal, fmt, browseFn, gen);
+          if (this._isStale(gen)) return;
+          const loaded = this.state.dayCache.get(day);
+          if (loaded && loaded.length > 0) break;
         }
         if (this._isStale(gen)) return;
         this._refreshList();
@@ -1285,14 +1296,40 @@ export class MediaSourceClient {
     if (this._isStale(gen)) return;
     this._sortDayItemsInPlace(items);
     this.state.dayCache.set(dayKey, items);
-    // Defer the (potentially hundreds of KB) JSON.stringify off the
-    // render-critical path. The user-visible state is already updated; the
-    // localStorage write only matters for the *next* page load. `ric` runs
-    // in browser idle time after paint; `setTimeout` is the fallback for
-    // hosts (older Safari) without rIC.
-    if (cacheKey) deferLsWrite(cacheKey, items);
+    if (items.length === 0) {
+      // Issue #191: a discovered day folder that browses to no media is an
+      // empty day. Drop it from the calendar so the picker / day-stepper never
+      // surface a "No media for this day" dead-end. Prune-as-you-go — this runs
+      // for the active day and its prefetched neighbours, so empty days vanish
+      // a step ahead of navigation without browsing the whole tree up front.
+      // (In combined mode a day with sensor items survives: the pipeline
+      // re-derives it from item dayKeys via mergeKnownDays.)
+      this._dropDayFromCalendar(dayKey);
+    } else if (cacheKey) {
+      // Defer the (potentially hundreds of KB) JSON.stringify off the
+      // render-critical path. The user-visible state is already updated; the
+      // localStorage write only matters for the *next* page load. `ric` runs
+      // in browser idle time after paint; `setTimeout` is the fallback for
+      // hosts (older Safari) without rIC.
+      deferLsWrite(cacheKey, items);
+    }
     this._refreshList();
     this._fireChange();
+  }
+
+  /** Remove a now-known-empty day from the calendar so navigation and the date
+   *  picker never offer it (issue #191). No-op when the day isn't present. */
+  private _dropDayFromCalendar(dayKey: string): void {
+    const cal = this.state.calendar;
+    if (!cal.days.includes(dayKey) && !cal.byDay.has(dayKey)) return;
+    const byDay = new Map<string, readonly CalendarEntry[]>();
+    for (const [d, v] of cal.byDay) if (d !== dayKey) byDay.set(d, v);
+    this.state.calendar = { byDay, days: cal.days.filter((d) => d !== dayKey) };
+    this.state.dayCache.delete(dayKey);
+    const fmt = this._getCompiledPathFormat();
+    const calCacheKey =
+      fmt && fmt.directoryDepth >= 1 ? this._calendarCacheKey(this.state.roots, fmt) : null;
+    if (calCacheKey) saveCalendarToStorage(calCacheKey, this.state.calendar);
   }
 
   /** Canonical signature of a path-format. Both `_dayCacheKey` and
