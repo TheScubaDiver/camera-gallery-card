@@ -1618,6 +1618,13 @@ export const cardStyles = css`
       gap: var(--cgc-thumb-gap, 12px);
       margin-top: 0;
       margin-bottom: 0;
+      /* Bug #185: under custom:grid-layout an auto-sized column sizes the card
+       * to its max-content, and the strip's full width would blow the card out.
+       * width:0 zeroes the max-content contribution so the column is driven by
+       * the preview instead; min-width:100% stretches the strip back to the
+       * column at layout time, leaving overflow-x to scroll. */
+      width: 0;
+      min-width: 100%;
       overflow-x: auto;
       overflow-y: hidden;
       -webkit-overflow-scrolling: touch;
