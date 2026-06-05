@@ -1606,18 +1606,20 @@ export const cardStyles = css`
 
   .tthumbs {
     min-width: 0;
+    /* Shared by both orientations. */
+    gap: var(--cgc-thumb-gap, 12px);
+    margin-top: 0;
+    margin-bottom: 0;
 
     /* Hide the scrollbar on both orientations — gallery uses snap-points and
      * inertia instead of an explicit scrollbar. */
+    scrollbar-width: none;
     &::-webkit-scrollbar {
       display: none;
     }
     &.horizontal {
       display: flex;
       align-items: center;
-      gap: var(--cgc-thumb-gap, 12px);
-      margin-top: 0;
-      margin-bottom: 0;
       /* Bug #185: under custom:grid-layout an auto-sized column sizes the card
        * to its max-content, and the strip's full width would blow the card out.
        * width:0 zeroes the max-content contribution so the column is driven by
@@ -1631,15 +1633,11 @@ export const cardStyles = css`
       padding-bottom: 2px;
       overscroll-behavior-x: contain;
       overscroll-behavior-y: none;
-      scrollbar-width: none;
     }
     &.vertical {
       display: grid;
       grid-template-columns: repeat(3, minmax(0, 1fr));
       align-items: start;
-      gap: var(--cgc-thumb-gap, 12px);
-      margin-top: 0;
-      margin-bottom: 0;
       width: 100%;
       max-height: var(--cgc-thumbs-max-h, 320px);
       overflow-y: auto;
@@ -1647,7 +1645,6 @@ export const cardStyles = css`
       overscroll-behavior-y: contain;
       overscroll-behavior-x: none;
       padding-right: 2px;
-      scrollbar-width: none;
 
       & .tthumb {
         width: 100%;
