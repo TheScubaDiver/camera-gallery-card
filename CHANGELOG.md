@@ -1,5 +1,29 @@
 # Changelog
 
+## [3.2.0](https://github.com/TheScubaDiver/camera-gallery-card/compare/v3.1.0...v3.2.0) (2026-06-25)
+
+
+### Features
+
+* **live:** configurable talk button shape + radar talking indicator ([#190](https://github.com/TheScubaDiver/camera-gallery-card/issues/190)) ([78fae79](https://github.com/TheScubaDiver/camera-gallery-card/commit/78fae79dbf9ef0043df196a6c1e596bb4e72c0e6))
+
+
+### Bug Fixes
+
+* **editor:** stop section overflow clipping search dropdowns ([#183](https://github.com/TheScubaDiver/camera-gallery-card/issues/183)) ([0b85bee](https://github.com/TheScubaDiver/camera-gallery-card/commit/0b85bee34fceddca822915458caca87a0b02ba0d))
+* **media:** hide empty day folders so the gallery never strands on an empty day ([#191](https://github.com/TheScubaDiver/camera-gallery-card/issues/191)) ([#192](https://github.com/TheScubaDiver/camera-gallery-card/issues/192)) ([ebc8f4a](https://github.com/TheScubaDiver/camera-gallery-card/commit/ebc8f4a8a225ea79400e9d93f1f466ddc781a05f))
+* **thumbnails:** keep card width stable under grid-layout ([#185](https://github.com/TheScubaDiver/camera-gallery-card/issues/185)) ([#193](https://github.com/TheScubaDiver/camera-gallery-card/issues/193)) ([335db96](https://github.com/TheScubaDiver/camera-gallery-card/commit/335db9676e321a4266a4318d7f650d1091966ed5))
+
+
+### Documentation
+
+* fix README banner distortion on mobile/HACS ([#179](https://github.com/TheScubaDiver/camera-gallery-card/issues/179)) ([59f6a92](https://github.com/TheScubaDiver/camera-gallery-card/commit/59f6a9211665b77d8de1e5d99c6d442f9072a00a))
+
+
+### Code Refactoring
+
+* **live:** compact camera switcher ([#181](https://github.com/TheScubaDiver/camera-gallery-card/issues/181)) ([628b487](https://github.com/TheScubaDiver/camera-gallery-card/commit/628b48743b654af673eaf4d1e13b586b6c899e24))
+
 ## [3.1.0](https://github.com/TheScubaDiver/camera-gallery-card/compare/v3.0.1...v3.1.0) (2026-05-28)
 
 
