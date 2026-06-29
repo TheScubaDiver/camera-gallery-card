@@ -44,7 +44,7 @@
   "dependencies": {
     "custom-card-helpers": "^2.0.0",
     "home-assistant-js-websocket": "^9.6.0",
-    "js-yaml": "^4.2.0",
+    "js-yaml": "^5.2.0",
     "lit": "^3.3.3",
     "superstruct": "^2.0.2"
   },
