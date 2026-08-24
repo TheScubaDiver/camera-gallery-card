@@ -48,9 +48,7 @@ export type { PtzDirection, PtzPosition };
  */
 export function resolvePtzPosition(
   config:
-    | { live_ptz_position?: string; bar_position?: string; controls_mode?: string }
-    | null
-    | undefined
+    { live_ptz_position?: string; bar_position?: string; controls_mode?: string } | null | undefined
 ): PtzPosition {
   const desired = (config?.live_ptz_position ?? "bottom-left") as PtzPosition;
   if (config?.controls_mode === "fixed") return desired;
@@ -901,8 +899,7 @@ export function dispatchAction(
         explicitButton(ptz, "home") ??
         `select.${cameraBaseSlug(cameraEntityId, ptz.button_prefix)}_ptz_preset`;
       const state = hass.states?.[selectEntity] as
-        | { attributes?: { options?: unknown } }
-        | undefined;
+        { attributes?: { options?: unknown } } | undefined;
       const options = Array.isArray(state?.attributes?.options)
         ? (state.attributes.options as unknown[]).filter((o): o is string => typeof o === "string")
         : [];
