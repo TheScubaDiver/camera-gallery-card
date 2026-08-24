@@ -8,15 +8,7 @@
 import { YEAR_2DIGIT_PIVOT } from "../const";
 
 export type DateField =
-  | "year"
-  | "year2"
-  | "month"
-  | "day"
-  | "hour"
-  | "minute"
-  | "second"
-  | "epochSec"
-  | "epochMs";
+  "year" | "year2" | "month" | "day" | "hour" | "minute" | "second" | "epochSec" | "epochMs";
 
 export interface PartialDateFields {
   year?: number;

@@ -668,8 +668,8 @@ describe("fetch 404 clears mirror and hard-fails (image path)", () => {
     const client = new PosterCacheClient({
       inputs: makeInputs(),
       store: store as unknown as PosterStore,
-      capture: makeFakeCapture(
-        (): Promise<Blob> => Promise.reject(new Error("should not capture"))
+      capture: makeFakeCapture((): Promise<Blob> =>
+        Promise.reject(new Error("should not capture"))
       ),
       blobUrls: factory,
       fetchFn,
