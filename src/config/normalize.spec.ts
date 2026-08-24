@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   hasLegacyKeys,
+  migrateLegacyKeys,
   normalizeConfig,
   normalizeMediaRoot,
   normalizeMediaRoots,
@@ -526,6 +527,115 @@ describe("live_cameras unified shape (issue #137)", () => {
       live_mic_streams: { "camera.legacy": "legacy_2way" },
     });
     expect(config.live_cameras).toEqual([{ entity: "camera.explicit", name: "" }]);
+  });
+});
+
+describe("live_camera_entity pin migration (issue #224)", () => {
+  it("migrateLegacyKeys folds the pin into live_camera_entities and drops the key", () => {
+    const { migrated, hadLegacyKeys } = migrateLegacyKeys({
+      live_camera_entities: ["camera.balanced", "camera.clear", "camera.fluent"],
+      live_camera_entity: "camera.clear",
+    });
+    expect(migrated.live_camera_entities).toEqual([
+      "camera.clear",
+      "camera.balanced",
+      "camera.fluent",
+    ]);
+    expect("live_camera_entity" in migrated).toBe(false);
+    expect(hadLegacyKeys).toBe(true);
+  });
+
+  it("migrateLegacyKeys folds the pin into an explicit live_cameras array", () => {
+    const { migrated, hadLegacyKeys } = migrateLegacyKeys({
+      live_cameras: [
+        { entity: "camera.balanced", name: "" },
+        { entity: "camera.clear", name: "", mic: "clear_2way" },
+        { entity: "camera.fluent", name: "" },
+      ],
+      live_camera_entity: "camera.clear",
+    });
+    expect(migrated.live_cameras).toEqual([
+      { entity: "camera.clear", name: "", mic: "clear_2way" },
+      { entity: "camera.balanced", name: "" },
+      { entity: "camera.fluent", name: "" },
+    ]);
+    expect("live_camera_entity" in migrated).toBe(false);
+    expect(hadLegacyKeys).toBe(true);
+  });
+
+  it("prepends a bare entry when the pinned camera is not in the list", () => {
+    const { migrated } = migrateLegacyKeys({
+      live_cameras: [{ entity: "camera.other", name: "" }],
+      live_camera_entity: "camera.pinned",
+    });
+    expect(migrated.live_cameras).toEqual([
+      { entity: "camera.pinned", name: "" },
+      { entity: "camera.other", name: "" },
+    ]);
+  });
+
+  it("creates live_camera_entities when the pin is the only live key", () => {
+    const { migrated, hadLegacyKeys } = migrateLegacyKeys({
+      live_camera_entity: "camera.solo",
+    });
+    expect(migrated.live_camera_entities).toEqual(["camera.solo"]);
+    expect(hadLegacyKeys).toBe(true);
+  });
+
+  it("an empty pin is dropped without touching the list order", () => {
+    const { migrated, hadLegacyKeys } = migrateLegacyKeys({
+      live_camera_entities: ["camera.b", "camera.a"],
+      live_camera_entity: "  ",
+    });
+    expect(migrated.live_camera_entities).toEqual(["camera.b", "camera.a"]);
+    expect("live_camera_entity" in migrated).toBe(false);
+    expect(hadLegacyKeys).toBe(true);
+  });
+
+  it("a pin already at position 0 leaves the order unchanged", () => {
+    const { migrated } = migrateLegacyKeys({
+      live_cameras: [
+        { entity: "camera.first", name: "" },
+        { entity: "camera.second", name: "" },
+      ],
+      live_camera_entity: "camera.first",
+    });
+    expect(migrated.live_cameras).toEqual([
+      { entity: "camera.first", name: "" },
+      { entity: "camera.second", name: "" },
+    ]);
+  });
+
+  it("normalizeConfig (card path) applies the same pin, even on frozen input", () => {
+    const raw = Object.freeze({
+      ...minimalSensor,
+      live_camera_entities: Object.freeze(["camera.balanced", "camera.clear", "camera.fluent"]),
+      live_camera_entity: "camera.clear",
+    });
+    const { config } = normalizeConfig(raw);
+    expect(config.live_cameras).toEqual([
+      { entity: "camera.clear", name: "" },
+      { entity: "camera.balanced", name: "" },
+      { entity: "camera.fluent", name: "" },
+    ]);
+  });
+
+  it("without the pin key the user's order sticks (post-cleanup reorder)", () => {
+    // After the editor has stripped the stale key once, a drag-reorder
+    // must survive normalization untouched — the #224 regression.
+    const { config } = normalizeConfig({
+      ...minimalSensor,
+      live_cameras: [
+        { entity: "camera.balanced", name: "" },
+        { entity: "camera.clear", name: "" },
+        { entity: "camera.fluent", name: "" },
+      ],
+    });
+    expect(config.live_cameras?.map((c) => c.entity)).toEqual([
+      "camera.balanced",
+      "camera.clear",
+      "camera.fluent",
+    ]);
   });
 });
 

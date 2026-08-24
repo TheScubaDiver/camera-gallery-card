@@ -139,6 +139,7 @@ export interface InputConfig {
   live_enabled?: boolean;
   live_auto_muted?: boolean;
   live_camera_entities?: string[];
+  live_camera_entity?: string;
   live_cameras?: LiveCameraEntryInput[];
   live_layout?: string;
   live_grid_labels?: boolean;
@@ -459,6 +460,38 @@ export function migrateLegacyKeys(raw: unknown): MigratedConfig {
     hadLegacyKeys = true;
   }
 
+  // live_camera_entity (deprecated): a v2.x config pinned the default live
+  // camera via this key; position 0 of the live list is the default now.
+  // Fold the pin into whichever list shape the config carries, then drop
+  // the key. This must happen here — not in `preMigrateConfig` — because
+  // the editor's `setConfig` only runs `migrateLegacyKeys`: a stale key
+  // left in saved YAML would re-pin its camera to the front on every card
+  // render, silently overriding the drag-reorder the editor just saved
+  // (issue #224). Input arrays may be frozen by HA — rebuild, never splice
+  // in place.
+  const lce = typeof out.live_camera_entity === "string" ? out.live_camera_entity.trim() : "";
+  if (lce) {
+    const liveCams = Array.isArray(out.live_cameras) ? out.live_cameras : null;
+    if (liveCams && liveCams.length > 0) {
+      const idx = liveCams.findIndex(
+        (c) => c && typeof c.entity === "string" && c.entity.trim() === lce
+      );
+      if (idx > 0) {
+        out.live_cameras = [liveCams[idx]!, ...liveCams.slice(0, idx), ...liveCams.slice(idx + 1)];
+      } else if (idx < 0) {
+        out.live_cameras = [{ entity: lce, name: "" }, ...liveCams];
+      }
+    } else {
+      const ents = Array.isArray(out.live_camera_entities) ? out.live_camera_entities : [];
+      const rest = ents.filter((s) => !(typeof s === "string" && s.trim() === lce));
+      out.live_camera_entities = [lce, ...rest];
+    }
+  }
+  if ("live_camera_entity" in out) {
+    delete out.live_camera_entity;
+    hadLegacyKeys = true;
+  }
+
   // Editor-managed always-true keys that older YAML may carry. The struct's
   // top-level `type()` ignores unknowns, but stripping keeps the migrated
   // input tidy for downstream comparison.
@@ -699,32 +732,9 @@ function preMigrateConfig(input: InputConfig): PreMigrated {
     if (built.length > 0) outR["live_cameras"] = built;
   }
 
-  // live_camera_entity (deprecated): a v2.11 config could pin a default
-  // camera via this key. The first entry in `live_cameras` is now the
-  // default. Reorder so the pinned camera moves to position 0 (keeping
-  // existing users' default behaviour), then drop the key. If the pinned
-  // camera isn't in the list yet, prepend a bare entry so the card still
-  // boots on it.
-  const lceRaw = outR["live_camera_entity"];
-  const lce = typeof lceRaw === "string" ? lceRaw.trim() : "";
-  if (lce) {
-    const lceCams = Array.isArray(outR["live_cameras"])
-      ? [...(outR["live_cameras"] as Record<string, unknown>[])]
-      : [];
-    const idx = lceCams.findIndex(
-      (c) => c && typeof c["entity"] === "string" && (c["entity"] as string).trim() === lce
-    );
-    if (idx > 0) {
-      const moved = lceCams[idx]!;
-      lceCams.splice(idx, 1);
-      lceCams.unshift(moved);
-      outR["live_cameras"] = lceCams;
-    } else if (idx < 0) {
-      lceCams.unshift({ entity: lce, name: "" });
-      outR["live_cameras"] = lceCams;
-    }
-  }
-  delete outR["live_camera_entity"];
+  // live_camera_entity (deprecated) is folded into the list order — and
+  // dropped — by `migrateLegacyKeys` above, so both the card pipeline and
+  // the editor's setConfig see the same migration (issue #224).
 
   // Once `live_cameras` is populated, drop the other legacy keys whose
   // data has been folded into the unified shape. Keeping them around
