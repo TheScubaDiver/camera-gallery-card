@@ -3,7 +3,7 @@
  */
 
 import { LitElement, html } from "lit";
-import jsYaml from "js-yaml";
+import { dump as yamlDump } from "js-yaml";
 
 import { cardStyles } from "./styles";
 import { STYLE_SECTIONS } from "./config/styling-config";
@@ -7374,7 +7374,7 @@ class CameraGalleryCardEditor extends HTMLElement {
       setTimeout(() => { if (btn.isConnected) btn.innerHTML = orig; }, 1600);
     };
     try {
-      const yaml = jsYaml.dump(this._config || {}, { lineWidth: 100, noRefs: true });
+      const yaml = yamlDump(this._config || {}, { lineWidth: 100, noRefs: true });
       await navigator.clipboard.writeText(yaml);
       flash("Copied to clipboard");
     } catch (err) {
