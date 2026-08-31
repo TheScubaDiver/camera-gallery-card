@@ -317,6 +317,10 @@ Then in the card editor: **General → Delete services → Frigate** → pick `r
 | `live_mic_audio_processing` | Per-mic Web Audio constraints |
 | `live_mic_ice_servers` | Advanced. Override built-in STUN list with custom STUN/TURN |
 | `live_mic_force_relay` | Advanced. Force `iceTransportPolicy: "relay"` (TURN-only) |
+| `live_ptz_enabled` | Enable the PTZ joystick overlay |
+| `live_ptz_position` | PTZ overlay corner: `top-left`, `top-right`, `bottom-left`, or `bottom-right` |
+| `live_ptz_speed` | Global PTZ speed (1–9) for integrations that support it |
+| `live_ptz_cameras` | Per-camera PTZ configuration, including built-in and manual-service dispatchers. See [Manual service PTZ](#manual-service-ptz) |
 | **Filters** | |
 | `object_filters` | Filter buttons (built-in and custom) |
 | `object_colors` | Color per object filter |
@@ -357,6 +361,50 @@ live_mic_mode: ptt        # press-and-hold; omit for tap-to-toggle
 ```
 
 See [Two-way audio (advanced)](#two-way-audio-advanced) for prerequisites and TURN setup.
+
+### Manual service PTZ
+
+For cameras controlled by a script or another Home Assistant service, use `type: service`. The format mirrors the custom PTZ configuration in `custom:webrtc-camera`:
+
+```yaml
+type: custom:camera-gallery-card
+live_enabled: true
+live_camera_entities:
+  - camera.some_camera_with_ptz
+live_ptz_enabled: true
+live_ptz_cameras:
+  camera.some_camera_with_ptz:
+    type: service
+    service: script.camera_ptz
+    data_left:
+      direction: directionleft
+    data_right:
+      direction: directionright
+    data_up:
+      direction: directionup
+    data_down:
+      direction: directiondown
+```
+
+The card passes the selected `data_*` object unchanged to the configured service. The simple `data_left`/`data_right`/`data_up`/`data_down` form is pulse-based: a command is sent immediately and repeated while the joystick is held.
+
+For services that start continuous movement, use WebRTC Camera's press/release form instead. The card sends `data_start_*` once when pressed and the matching `data_end_*` once when released:
+
+```yaml
+live_ptz_cameras:
+  camera.some_camera_with_ptz:
+    type: service
+    service: icsee_ptz.move
+    data_start_left:
+      entity_id: binary_sensor.some_camera_motion_alarm
+      cmd: DirectionLeft
+    data_end_left:
+      entity_id: binary_sensor.some_camera_motion_alarm
+      cmd: Stop
+    # Repeat start/end entries for right, up, and down.
+```
+
+Optional `data_zoom_in` and `data_zoom_out` objects together enable the zoom control; `data_home` enables the Home control. Service data may contain strings, numbers, booleans, and nested values. The visual editor exposes these objects as JSON fields; YAML uses the normal mapping syntax shown above.
 
 ### Minimal — sensor mode
 

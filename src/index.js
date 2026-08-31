@@ -9215,6 +9215,7 @@ class CameraGalleryCardEditor extends HTMLElement {
                       <option value="reolink" ${cfgEntry.type === "reolink" ? "selected" : ""}>Reolink — continuous</option>
                       <option value="frigate" ${cfgEntry.type === "frigate" ? "selected" : ""}>Frigate — continuous</option>
                       <option value="onvif" ${cfgEntry.type === "onvif" ? "selected" : ""}>ONVIF — continuous</option>
+                      <option value="service" ${cfgEntry.type === "service" ? "selected" : ""}>Manual service</option>
                     </select>
                     ${((cfgEntry.type || "ezviz") === "ezviz" || cfgEntry.type === "reolink") ? `
                     <button type="button" class="actionbtn ptz-detect-btn" data-ptz-cam="${entId.replace(/"/g,"&quot;")}" style="align-self:flex-start;margin-top:2px;">Detect buttons</button>
@@ -9227,7 +9228,36 @@ class CameraGalleryCardEditor extends HTMLElement {
                       </div>`;
                     }).join("")}
                     <div class="desc" style="margin-top:2px;">Leave blank to auto-detect. Pick from the list — only PTZ buttons are suggested (Home picks a <code>select…_ptz_preset</code>).</div>
-                    ` : `<div class="desc" style="margin-top:2px;">Service-based type — no buttons needed.</div>`}
+                    ` : cfgEntry.type === "service" ? (() => {
+                      const escapeText = (value) => String(value ?? "")
+                        .replace(/&/g, "&amp;")
+                        .replace(/</g, "&lt;")
+                        .replace(/>/g, "&gt;");
+                      const escapeAttr = (value) => escapeText(value).replace(/"/g, "&quot;");
+                      const serviceData = [
+                        ["start_left", "Start left"], ["end_left", "End left"],
+                        ["start_right", "Start right"], ["end_right", "End right"],
+                        ["start_up", "Start up"], ["end_up", "End up"],
+                        ["start_down", "Start down"], ["end_down", "End down"],
+                        ["zoom_in", "Zoom in (optional)"], ["zoom_out", "Zoom out (optional)"],
+                        ["home", "Home (optional)"],
+                      ];
+                      return `
+                        <div>
+                          <div style="font-size:0.75em;opacity:0.65;margin-bottom:2px;">Home Assistant service</div>
+                          <input type="text" class="ed-input ptz-cam-service" data-ptz-cam="${entId.replace(/"/g,"&quot;")}" value="${escapeAttr(cfgEntry.service)}" placeholder="script.camera_ptz" autocomplete="off" spellcheck="false" style="width:100%;box-sizing:border-box;" />
+                        </div>
+                        ${serviceData.map(([key, label]) => {
+                          const value = cfgEntry[`data_${key}`];
+                          const json = value && typeof value === "object" ? JSON.stringify(value, null, 2) : "";
+                          return `<div>
+                            <div style="font-size:0.75em;opacity:0.65;margin-bottom:2px;">${label} service data (JSON)</div>
+                            <textarea class="ed-input ptz-cam-service-data" data-ptz-cam="${entId.replace(/"/g,"&quot;")}" data-ptz-key="data_${key}" placeholder='{"direction":"${key}"}' spellcheck="false" rows="2" style="width:100%;box-sizing:border-box;resize:vertical;font-family:monospace;font-size:0.78em;">${escapeText(json)}</textarea>
+                          </div>`;
+                        }).join("")}
+                        <div class="desc" style="margin-top:2px;">For continuous cameras, use the same <code>data_start_*</code> + <code>data_end_*</code> shape as <code>custom:webrtc-camera</code>. The end command runs when the joystick is released. Legacy one-shot <code>data_left</code>/<code>data_right</code>/<code>data_up</code>/<code>data_down</code> YAML remains supported.</div>
+                      `;
+                    })() : `<div class="desc" style="margin-top:2px;">Service-based type — no buttons needed.</div>`}
                   </div>
                   ` : ""}
                 </div>
@@ -12920,6 +12950,49 @@ details summary { user-select: none; }
         const key = el.dataset.ptzKey;
         if (!camId || !key) return;
         _setPtzCameraEntry(camId, (cur) => _mergeButtons(cur, { [key]: String(e.target.value || "") }));
+      });
+    });
+
+    this.shadowRoot.querySelectorAll(".ptz-cam-service").forEach((el) => {
+      el.addEventListener("change", (e) => {
+        const camId = el.dataset.ptzCam;
+        if (!camId) return;
+        const service = String(e.target.value || "").trim();
+        _setPtzCameraEntry(camId, (cur) => {
+          const entry = { ...(cur || { type: "service" }) };
+          if (service) entry.service = service;
+          else delete entry.service;
+          return entry;
+        });
+      });
+    });
+
+    this.shadowRoot.querySelectorAll(".ptz-cam-service-data").forEach((el) => {
+      el.addEventListener("input", () => el.setCustomValidity(""));
+      el.addEventListener("change", (e) => {
+        const camId = el.dataset.ptzCam;
+        const key = el.dataset.ptzKey;
+        if (!camId || !key) return;
+        const raw = String(e.target.value || "").trim();
+        let value;
+        if (raw) {
+          try {
+            value = JSON.parse(raw);
+            if (!value || typeof value !== "object" || Array.isArray(value)) {
+              throw new Error("Service data must be a JSON object");
+            }
+          } catch (err) {
+            el.setCustomValidity(err instanceof Error ? err.message : "Invalid JSON object");
+            el.reportValidity();
+            return;
+          }
+        }
+        _setPtzCameraEntry(camId, (cur) => {
+          const entry = { ...(cur || { type: "service" }) };
+          if (value) entry[key] = value;
+          else delete entry[key];
+          return entry;
+        });
       });
     });
 

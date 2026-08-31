@@ -95,7 +95,7 @@ export type PtzNamedAction = PtzZoom | "home";
 /** One free-form HA service call used as a per-direction override. */
 export interface PtzServiceCall {
   service: string;
-  data?: Record<string, string>;
+  data?: Record<string, unknown>;
   target?: { entity_id?: string | string[] };
 }
 
@@ -167,6 +167,23 @@ export interface PtzCameraConfig {
    * before any auto-derivation. `actions` still takes precedence.
    */
   buttons?: PtzButtons;
+  /** Shared HA service and per-command data, compatible with WebRTC Camera PTZ YAML. */
+  service?: string;
+  data_left?: Record<string, unknown>;
+  data_right?: Record<string, unknown>;
+  data_up?: Record<string, unknown>;
+  data_down?: Record<string, unknown>;
+  data_start_left?: Record<string, unknown>;
+  data_end_left?: Record<string, unknown>;
+  data_start_right?: Record<string, unknown>;
+  data_end_right?: Record<string, unknown>;
+  data_start_up?: Record<string, unknown>;
+  data_end_up?: Record<string, unknown>;
+  data_start_down?: Record<string, unknown>;
+  data_end_down?: Record<string, unknown>;
+  data_zoom_in?: Record<string, unknown>;
+  data_zoom_out?: Record<string, unknown>;
+  data_home?: Record<string, unknown>;
 }
 
 /** Minimal hass surface — only what `dispatchPan` uses. */
@@ -228,6 +245,24 @@ const PTZ_BUTTON_KEYS = [
   "home",
 ] as const;
 
+const PTZ_SERVICE_DATA_KEYS = [
+  "data_left",
+  "data_right",
+  "data_up",
+  "data_down",
+  "data_start_left",
+  "data_end_left",
+  "data_start_right",
+  "data_end_right",
+  "data_start_up",
+  "data_end_up",
+  "data_start_down",
+  "data_end_down",
+  "data_zoom_in",
+  "data_zoom_out",
+  "data_home",
+] as const;
+
 /**
  * Return the per-camera PTZ entry, or `null` when:
  *   - the global `live_ptz_enabled` is off,
@@ -270,6 +305,13 @@ export function getPtzConfig(
     }
     if (Object.keys(buttons).length > 0) out.buttons = buttons;
   }
+  if (typeof entry.service === "string" && entry.service.trim() !== "") {
+    out.service = entry.service.trim();
+  }
+  for (const key of PTZ_SERVICE_DATA_KEYS) {
+    const value = entry[key];
+    if (value && typeof value === "object" && !Array.isArray(value)) out[key] = value;
+  }
   return out;
 }
 
@@ -288,6 +330,22 @@ function callOverride(hass: HassLike, call: PtzServiceCall): Promise<unknown> {
   const domain = svc.slice(0, dot);
   const service = svc.slice(dot + 1);
   return hass.callService(domain, service, call.data ?? {}, call.target);
+}
+
+/** Dispatch a WebRTC Camera-style `service` + `data_<command>` entry. */
+function callConfiguredService(
+  hass: HassLike,
+  ptz: PtzCameraConfig,
+  data: Record<string, unknown> | undefined,
+  command: string
+): Promise<unknown> {
+  const svc = String(ptz.service ?? "").trim();
+  const dot = svc.indexOf(".");
+  if (dot <= 0 || dot === svc.length - 1) {
+    return Promise.reject(new Error(`Malformed PTZ service: '${svc}'`));
+  }
+  if (!data) return Promise.reject(new Error(`Missing PTZ data_${command} configuration`));
+  return hass.callService(svc.slice(0, dot), svc.slice(dot + 1), data);
 }
 
 /**
@@ -732,6 +790,18 @@ export function ptzCapabilities(ptz: PtzCameraConfig): PtzCapabilities {
       return { continuous: true, zoomable: true, homeable: false };
     case "onvif":
       return { continuous: true, zoomable: true, homeable: false };
+    case "service":
+      // The legacy `data_<direction>` shape is pulse-based. WebRTC Camera's
+      // newer `data_start_*` + `data_end_*` shape is continuous: one call on
+      // press and one Stop-style call on release.
+      return {
+        continuous: PTZ_DIRECTIONS.every(
+          (direction) => !!ptz[`data_start_${direction}`] && !!ptz[`data_end_${direction}`]
+        ),
+        // The overlay renders zoom as an in/out pair, so require both calls.
+        zoomable: !!(ptz.data_zoom_in && ptz.data_zoom_out),
+        homeable: !!ptz.data_home,
+      };
     default:
       return { continuous: false, zoomable: false, homeable: false };
   }
@@ -788,6 +858,17 @@ export function dispatchPan(
     // `target.entity_id` is the modern HA shape; the button-based EZVIZ
     // integration was added in the same generation that made `target` canonical.
     return hass.callService("button", "press", {}, { entity_id: entityId });
+  }
+
+  if (ptz.type === "service") {
+    if (phase === "stop") {
+      const endData = ptz[`data_end_${direction}`];
+      return endData
+        ? callConfiguredService(hass, ptz, endData, `end_${direction}`)
+        : Promise.resolve(undefined);
+    }
+    const startData = ptz[`data_start_${direction}`] ?? ptz[`data_${direction}`];
+    return callConfiguredService(hass, ptz, startData, `start_${direction}`);
   }
 
   if (ptz.type === "reolink") {
@@ -890,6 +971,9 @@ export function dispatchAction(
     // Home is a one-shot. Only act on phase:"start" so a press-and-hold
     // doesn't keep retriggering recall while the camera is still moving.
     if (phase === "stop") return Promise.resolve(undefined);
+    if (ptz.type === "service") {
+      return callConfiguredService(hass, ptz, ptz.data_home, "home");
+    }
     if (ptz.type === "reolink") {
       // Reolink: select the Home preset on `select.<base>_ptz_preset`.
       // Prefer an option literally named "Home" (case-insensitive); else
@@ -937,6 +1021,10 @@ export function dispatchAction(
   }
 
   // zoom_in / zoom_out
+  if (ptz.type === "service") {
+    if (phase === "stop") return Promise.resolve(undefined);
+    return callConfiguredService(hass, ptz, ptz[`data_${action}`], action);
+  }
   if (ptz.type === "reolink") {
     // Reolink exposes button.<base>_ptz_zoom_in / _zoom_out alongside the
     // direction buttons. Stop = same shared ptz_stop button.
