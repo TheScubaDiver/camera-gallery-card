@@ -25,6 +25,7 @@ import {
   string,
   type,
   union,
+  unknown as unknownValue,
 } from "superstruct";
 import type { Struct } from "superstruct";
 
@@ -305,6 +306,23 @@ const ptzCamera = type({
   speed: optional(intInRange(PTZ_SPEED_MIN, PTZ_SPEED_MAX)),
   actions: optional(ptzActions),
   buttons: optional(ptzButtons),
+  /** WebRTC Camera-compatible manual service dispatcher. */
+  service: optional(nonEmptyString),
+  data_left: optional(record(string(), unknownValue())),
+  data_right: optional(record(string(), unknownValue())),
+  data_up: optional(record(string(), unknownValue())),
+  data_down: optional(record(string(), unknownValue())),
+  data_start_left: optional(record(string(), unknownValue())),
+  data_end_left: optional(record(string(), unknownValue())),
+  data_start_right: optional(record(string(), unknownValue())),
+  data_end_right: optional(record(string(), unknownValue())),
+  data_start_up: optional(record(string(), unknownValue())),
+  data_end_up: optional(record(string(), unknownValue())),
+  data_start_down: optional(record(string(), unknownValue())),
+  data_end_down: optional(record(string(), unknownValue())),
+  data_zoom_in: optional(record(string(), unknownValue())),
+  data_zoom_out: optional(record(string(), unknownValue())),
+  data_home: optional(record(string(), unknownValue())),
 });
 
 /** Menu button entry — same strictness rationale as `liveStreamUrlEntry`. */

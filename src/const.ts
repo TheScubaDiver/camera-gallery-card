@@ -21,7 +21,7 @@ export const CONTROLS_MODES = ["overlay", "fixed"] as const;
 export const ASPECT_RATIOS = ["16:9", "4:3", "1:1"] as const;
 export const LIVE_LAYOUTS = ["single", "grid"] as const;
 export const MIC_MODES = ["toggle", "ptt"] as const;
-export const PTZ_TYPES = ["ezviz", "reolink", "frigate", "onvif"] as const;
+export const PTZ_TYPES = ["ezviz", "reolink", "frigate", "onvif", "service"] as const;
 export const PTZ_DIRECTIONS = ["up", "down", "left", "right"] as const;
 export const PTZ_POSITIONS = ["bottom-left", "bottom-right", "top-left", "top-right"] as const;
 

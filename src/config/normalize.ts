@@ -101,7 +101,7 @@ export interface MenuButtonInput {
 /** One free-form HA service call used as a PTZ direction override. */
 interface PtzServiceCallInput {
   service?: string;
-  data?: Record<string, string>;
+  data?: Record<string, unknown>;
   target?: { entity_id?: string | string[] };
 }
 
@@ -170,6 +170,22 @@ export interface InputConfig {
       type?: string;
       button_prefix?: string;
       speed?: number;
+      service?: string;
+      data_left?: Record<string, unknown>;
+      data_right?: Record<string, unknown>;
+      data_up?: Record<string, unknown>;
+      data_down?: Record<string, unknown>;
+      data_start_left?: Record<string, unknown>;
+      data_end_left?: Record<string, unknown>;
+      data_start_right?: Record<string, unknown>;
+      data_end_right?: Record<string, unknown>;
+      data_start_up?: Record<string, unknown>;
+      data_end_up?: Record<string, unknown>;
+      data_start_down?: Record<string, unknown>;
+      data_end_down?: Record<string, unknown>;
+      data_zoom_in?: Record<string, unknown>;
+      data_zoom_out?: Record<string, unknown>;
+      data_home?: Record<string, unknown>;
       actions?: {
         up?: PtzActionPairInput;
         down?: PtzActionPairInput;
