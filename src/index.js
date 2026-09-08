@@ -38,6 +38,7 @@ import { CombinedSourceClient } from "./data/combined-source";
 import { canDeleteItem, deleteItem } from "./data/delete-service";
 import { PendingPosterCollector, PosterCacheClient } from "./data/poster-cache";
 import { ItemPipelineClient } from "./data/item-pipeline";
+import { parseUrlActions } from "./data/url-actions";
 import {
   detectObjectForSrc,
   isVideoForSrc as viewIsVideoForSrc,
@@ -441,6 +442,10 @@ class CameraGalleryCard extends LitElement {
     this._thumbMenuOpenedAt = 0;
     this._viewMode = "media";
     this._liveSelectedCamera = "";
+    // One-shot: set when a `cgc_view=gallery` deep-link resolves at first
+    // hass, consumed the first time the item list actually populates (see
+    // `updated()`) so the newest clip opens regardless of thumb_sort_order.
+    this._pendingUrlGallerySelectNewest = false;
     this._liveMuted = false;
     this._livePipActive = false;
     this._galleryPipActive = false;
@@ -873,6 +878,29 @@ class CameraGalleryCard extends LitElement {
     if (firstHass) {
       if (this.config?.start_mode === "live" && this._hasLiveConfig()) {
         this._viewMode = "live";
+      }
+      // Notification deep-link (issue #218): `?cgc_id=<url_id>` overrides
+      // `start_mode`/the default live camera. Runs after the block above so
+      // a URL override lands on top of the configured default, and after
+      // setConfig's own `_liveSelectedCamera` default (src/index.js ~4997).
+      const urlActions = parseUrlActions({
+        search: window.location.search,
+        urlId: this.config?.url_id,
+        cameras: this._getLiveCameraOptions(),
+        hasLiveConfig: this._hasLiveConfig(),
+      });
+      if (urlActions.view) {
+        this._viewMode = urlActions.view;
+        if (urlActions.view === "media") this._pendingUrlGallerySelectNewest = true;
+      }
+      if (urlActions.camera) {
+        this._liveSelectedCamera = urlActions.camera;
+        // A camera deep-link names one camera, so break out of grid layout
+        // onto it — otherwise `isGridLayout()` would stay true and the
+        // deep-linked camera would never actually be shown (issue #218's
+        // reported use case). Reuses the same override `_onGridTileTap`
+        // sets, so the existing "Back to grid" pill picks it up for free.
+        this._liveLayoutOverride = "single";
       }
       // Fire-and-forget: subscribe to HA's Frigate event push stream.
       this._subscribeFrigateEvents();
@@ -3692,6 +3720,11 @@ class CameraGalleryCard extends LitElement {
     const mode = nextMode === "live" ? "live" : "media";
     if (mode === "live" && !this._hasLiveConfig()) return;
 
+    // Manual navigation away from gallery outranks the deep-link's pending
+    // newest-clip selection — don't let a late item load yank the user back
+    // into gallery state they've already left.
+    if (mode !== "media") this._pendingUrlGallerySelectNewest = false;
+
     const wasLive = this._viewMode === "live";
     this._viewMode = mode;
 
@@ -4942,6 +4975,12 @@ class CameraGalleryCard extends LitElement {
   setConfig(config) {
     const prevConfig = this.config ? { ...this.config } : null;
 
+    // A reconfigure (not the card's initial setConfig, which happens before
+    // first hass ever sets this) invalidates a still-pending deep-link
+    // newest-clip selection — the item list that flag was waiting on may no
+    // longer be the same list.
+    if (prevConfig) this._pendingUrlGallerySelectNewest = false;
+
     const { config: nextConfig, customIcons } = normalizeConfig(config);
 
     this.config = nextConfig;
@@ -5155,6 +5194,26 @@ class CameraGalleryCard extends LitElement {
       // cluster members — otherwise tapping a member sits on a skeleton.
       const filtered = this._injectExpandedClusterMembers(filteredBeforeCluster);
       const thumbRenderLimit = this._getThumbRenderLimit(cap, usingMediaSource);
+
+      // Consume the `cgc_view=gallery` deep-link's one-shot flag the first
+      // time the item list is actually populated — before this, there is
+      // nothing to select. Sort order flips which end is "newest": index 0
+      // for `newest` (the default), the last index once `.reverse()'d for
+      // `oldest` (see sortItemsByTime in data/item-pipeline.ts). Consumed
+      // exactly once regardless of outcome so a later render can't yank the
+      // user off a clip they navigated to themselves.
+      if (this._pendingUrlGallerySelectNewest) {
+        this._pendingUrlGallerySelectNewest = false;
+        if (filtered.length) {
+          const sortOrder = String(this.config?.thumb_sort_order || "newest").toLowerCase().trim();
+          this._selectedIndex = sortOrder === "oldest" ? filtered.length - 1 : 0;
+          // Also scroll the thumbnail strip to it — under `oldest` sorting
+          // the newest clip lands at the end of the strip, off-screen by
+          // default (see the other `_selectedIndex`/`_pendingScrollToI`
+          // pairs in this file, e.g. `_navNext`/`_navPrev`).
+          this._pendingScrollToI = this._selectedIndex;
+        }
+      }
 
       const idx = filtered.length
         ? Math.min(Math.max(this._selectedIndex ?? 0, 0), filtered.length - 1)
@@ -6255,7 +6314,7 @@ const CGC_CONFIG_KEY_ORDER = [
   "source_mode", "entities", "media_sources", "frigate_url",
   "path_datetime_format", "max_media",
   // ─── Gallery ───
-  "start_mode", "preview_position", "preview_height", "object_fit",
+  "start_mode", "url_id", "preview_position", "preview_height", "object_fit",
   "controls_mode", "clean_mode", "show_camera_title", "persistent_controls",
   "autoplay", "auto_muted",
   "show_today", "show_media_filter", "show_favorite", "show_live",
@@ -8504,6 +8563,13 @@ class CameraGalleryCardEditor extends HTMLElement {
           <div class="segwrap">
             <button class="seg ${startMode !== "live" ? "on" : ""}" data-startmode="gallery">Gallery</button>
             <button class="seg ${startMode === "live" ? "on" : ""}" data-startmode="live">Live</button>
+          </div>
+        </div>
+        <div class="row">
+          <div class="lbl">Deep-link id <span style="font-weight:400;color:var(--ed-text2);font-size:0.85em;">(optional)</span></div>
+          <div class="desc">Opt-in id that names this card in a URL, for HA notification actions. When set, a link like <code>?cgc_id=porch&amp;cgc_camera=camera.porch_gate</code> opens straight into live view on that camera, or <code>?cgc_id=porch&amp;cgc_view=gallery</code> opens the gallery on the newest clip. Blank means the card ignores URL parameters entirely.</div>
+          <div class="field">
+            <input type="text" class="ed-input" id="url_id" placeholder="e.g. porch" autocomplete="off" value="${this._config.url_id || ""}" />
           </div>
         </div>
       `;
@@ -12936,6 +13002,12 @@ details summary { user-select: none; }
       const val = String(e.target.value || "").trim().replace(/\/+$/, "");
       if (val) this._set("frigate_url", val);
       else { const n = { ...this._config }; delete n.frigate_url; this._config = this._stripAlwaysTrueKeys(n); this._fire(); }
+    });
+
+    $("url_id")?.addEventListener("change", (e) => {
+      const val = String(e.target.value || "").trim();
+      if (val) this._set("url_id", val);
+      else { const n = { ...this._config }; delete n.url_id; this._config = this._stripAlwaysTrueKeys(n); this._fire(); }
     });
 
     $("debug-enabled")?.addEventListener("change", (e) => {

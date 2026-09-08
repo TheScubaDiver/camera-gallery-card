@@ -119,6 +119,16 @@ const serviceId = refine(string(), "service_id", (v) =>
 );
 
 /**
+ * Short slug for `url_id` (issue #218) — letters, digits, `_`, `-`, capped
+ * at 64 chars. This value is compared against a notification-supplied URL
+ * query param, so it's kept to an unambiguous shape rather than accepting
+ * arbitrary text a notification author could mistype or mis-encode.
+ */
+const urlIdSlug = refine(string(), "url_id", (v) =>
+  /^[a-z0-9_-]{1,64}$/i.test(v) ? true : `must be a short slug of letters/digits/-/_ (got '${v}')`
+);
+
+/**
  * Single live-stream button entry.
  *
  * Stricter than the legacy filter: we require `url` to be a non-empty string.
@@ -523,6 +533,11 @@ export const cameraGalleryCardConfigStruct = type({
   // ─── Misc ──────────────────────────────────────────────────
   max_media: defaulted(intInRange(MAX_MEDIA_MIN, MAX_MEDIA_MAX), DEFAULT_MAX_MEDIA),
   sync_entity: optional(string()),
+  // Deep-link id (issue #218) — a notification action links in via
+  // `?cgc_id=<url_id>&cgc_view=…&cgc_camera=…`. Absent/empty means the
+  // card ignores URL params entirely (opt-in, since the query string is
+  // page-scoped and would otherwise hit every card on the dashboard).
+  url_id: optional(urlIdSlug),
   menu_buttons: defaulted(array(menuButton), []),
 });
 
