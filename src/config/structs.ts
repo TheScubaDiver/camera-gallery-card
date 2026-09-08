@@ -67,6 +67,7 @@ import {
   DEFAULT_THUMB_SORT_ORDER,
   DEFAULT_THUMBNAIL_FRAME_PCT,
   DEFAULT_LIVE_LAYOUT,
+  LIVE_GRID_EMPHASES,
   LIVE_LAYOUTS,
   MIC_MODES,
   PTZ_SPEED_DEFAULT,
@@ -420,6 +421,14 @@ export const cameraGalleryCardConfigStruct = type({
   live_camera_entities: defaulted(array(string()), []),
   live_layout: defaulted(enums(LIVE_LAYOUTS), DEFAULT_LIVE_LAYOUT),
   live_grid_labels: defaulted(boolean(), true),
+  // Pin the grid's column count. Absent = automatic (see gridLayout in
+  // src/data/live-config.ts). Capped at 8 — beyond that tiles are unusably
+  // small on any real dashboard.
+  live_grid_columns: optional(intInRange(1, 8)),
+  // Which row(s) render larger — see gridLayout in src/data/live-config.ts.
+  // Absent = "bottom" (today's default shape); left optional rather than
+  // defaulted so an unset config round-trips without gaining the key.
+  live_grid_emphasis: optional(enums(LIVE_GRID_EMPHASES)),
   live_stream_url: optional(string()),
   live_stream_name: optional(string()),
   live_stream_urls: optional(array(liveStreamUrlEntry)),

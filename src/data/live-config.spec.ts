@@ -11,6 +11,7 @@ import {
   getStreamEntries,
   getStreamEntryById,
   gridDims,
+  gridLayout,
   hasAnyMicStream,
   hasLiveConfig,
   isGridLayout,
@@ -302,28 +303,400 @@ describe("getLiveCameraEntityIds", () => {
   });
 });
 
+describe("gridLayout", () => {
+  it("fills every cell — row counts sum to the camera count", () => {
+    for (let n = 1; n <= 20; n++) {
+      const l = gridLayout(n);
+      const sum = l.rowCounts.reduce((a, b) => a + b, 0);
+      expect(sum, `n=${n}`).toBe(n);
+    }
+  });
+
+  it("gives each row spans that exactly fill the unit width", () => {
+    for (let n = 1; n <= 20; n++) {
+      const l = gridLayout(n);
+      for (const c of l.rowCounts) {
+        expect(l.unit % c, `n=${n} row of ${c}`).toBe(0);
+      }
+      // Every tile span is an integer number of unit tracks.
+      for (const s of l.tileSpans) {
+        expect(Number.isInteger(s), `n=${n}`).toBe(true);
+      }
+      expect(l.tileSpans).toHaveLength(n);
+    }
+  });
+
+  it("stays gapless under every emphasis, pinned or automatic, capped or not", () => {
+    const emphases: Array<string | null | undefined> = ["bottom", "top", "hero", undefined];
+    for (let n = 1; n <= 80; n++) {
+      for (const emphasis of emphases) {
+        const pins = [null, ...Array.from({ length: 8 }, (_, i) => i + 1)];
+        for (const pin of pins) {
+          for (let cap = 0; cap <= 4; cap++) {
+            const l = gridLayout(n, {
+              columns: pin,
+              maxColumns: cap > 0 ? cap : null,
+              emphasis,
+            });
+            const label = `n=${n} emphasis=${emphasis} pin=${pin} cap=${cap}`;
+            const sum = l.rowCounts.reduce((a, b) => a + b, 0);
+            expect(sum, label).toBe(n);
+            for (const c of l.rowCounts) {
+              expect(c, label).toBeGreaterThanOrEqual(1);
+              expect(l.unit % c, `${label} row of ${c}`).toBe(0);
+            }
+            expect(l.tileSpans, label).toHaveLength(n);
+            expect(l.cols, label).toBe(Math.max(...l.rowCounts));
+            expect(l.rows, label).toBe(l.rowCounts.length);
+          }
+        }
+      }
+    }
+  });
+
+  it("puts 2 and 3 cameras in a single row", () => {
+    expect(gridLayout(2)).toMatchObject({
+      cols: 2,
+      rows: 1,
+      rowCounts: [2],
+      unit: 2,
+      templateColumns: "repeat(2, 1fr)",
+      templateRows: "1fr",
+      aspectRatio: "32/9",
+    });
+    expect(gridLayout(3)).toMatchObject({
+      cols: 3,
+      rows: 1,
+      rowCounts: [3],
+      unit: 3,
+      templateRows: "1fr",
+      aspectRatio: "16/3",
+    });
+  });
+
+  it("splits 5 cameras 3/2 with a taller second row", () => {
+    expect(gridLayout(5)).toMatchObject({
+      cols: 3,
+      rows: 2,
+      rowCounts: [3, 2],
+      unit: 6,
+      tileSpans: [2, 2, 2, 3, 3],
+      templateColumns: "repeat(6, 1fr)",
+      templateRows: "2fr 3fr",
+      aspectRatio: "32/15",
+    });
+  });
+
+  it("splits 7 cameras 3/2/2", () => {
+    expect(gridLayout(7)).toMatchObject({
+      rowCounts: [3, 2, 2],
+      unit: 6,
+      tileSpans: [2, 2, 2, 3, 3, 3, 3],
+      templateRows: "2fr 3fr 3fr",
+      aspectRatio: "4/3",
+    });
+  });
+
+  it("splits 8 cameras 3/3/2", () => {
+    expect(gridLayout(8)).toMatchObject({
+      rowCounts: [3, 3, 2],
+      unit: 6,
+      templateRows: "2fr 2fr 3fr",
+      aspectRatio: "32/21",
+    });
+  });
+
+  it("splits 10 cameras 4/3/3", () => {
+    expect(gridLayout(10)).toMatchObject({
+      cols: 4,
+      rowCounts: [4, 3, 3],
+      unit: 12,
+      templateRows: "3fr 4fr 4fr",
+      aspectRatio: "64/33",
+    });
+  });
+
+  it("keeps perfect squares identical to the old square layout", () => {
+    expect(gridLayout(4)).toMatchObject({
+      cols: 2,
+      rows: 2,
+      rowCounts: [2, 2],
+      unit: 2,
+      templateRows: "1fr 1fr",
+      aspectRatio: "16/9",
+    });
+    expect(gridLayout(9)).toMatchObject({
+      cols: 3,
+      rows: 3,
+      templateRows: "1fr 1fr 1fr",
+      aspectRatio: "16/9",
+    });
+    expect(gridLayout(16)).toMatchObject({
+      cols: 4,
+      rows: 4,
+      templateRows: "1fr 1fr 1fr 1fr",
+      aspectRatio: "16/9",
+    });
+  });
+
+  it("flows past 16 cameras instead of clipping", () => {
+    const l = gridLayout(20);
+    expect(l.rowCounts.reduce((a, b) => a + b, 0)).toBe(20);
+    expect(l.cols).toBe(5);
+    expect(l.tileSpans).toHaveLength(20);
+  });
+
+  it("honours a pinned column count", () => {
+    expect(gridLayout(5, { columns: 2 })).toMatchObject({
+      cols: 2,
+      rows: 3,
+      rowCounts: [2, 2, 1],
+      unit: 2,
+      tileSpans: [1, 1, 1, 1, 2],
+      templateColumns: "repeat(2, 1fr)",
+      templateRows: "1fr 1fr 2fr",
+    });
+  });
+
+  it("clamps a pinned column count to the camera count", () => {
+    expect(gridLayout(2, { columns: 4 }).cols).toBe(2);
+    expect(gridLayout(5, { columns: 0 }).cols).toBe(3); // 0 is falsy -> automatic
+    expect(gridLayout(5, { columns: -1 }).cols).toBe(3); // invalid -> automatic
+  });
+
+  it("applies maxColumns to the automatic choice only", () => {
+    expect(gridLayout(5, { maxColumns: 2 }).cols).toBe(2);
+    expect(gridLayout(9, { maxColumns: 2 }).rowCounts).toEqual([2, 2, 2, 2, 1]);
+    // An explicit pin beats the cap.
+    expect(gridLayout(9, { columns: 3, maxColumns: 2 }).cols).toBe(3);
+  });
+
+  it("fills a pin greedily instead of re-spreading it away — the pinned count actually renders", () => {
+    // Regression cases: the old even-spread step recomputed rowCounts from
+    // `rows` alone, so whenever ceil(n / ceil(n / pinned)) !== pinned, the
+    // pin was silently discarded in favor of a different column count.
+    expect(gridLayout(4, { columns: 3 })).toMatchObject({
+      cols: 3,
+      rowCounts: [3, 1],
+      templateColumns: "repeat(3, 1fr)",
+    });
+    expect(gridLayout(5, { columns: 4 })).toMatchObject({
+      cols: 4,
+      rowCounts: [4, 1],
+      templateColumns: "repeat(4, 1fr)",
+    });
+    expect(gridLayout(6, { columns: 4 })).toMatchObject({
+      cols: 4,
+      rowCounts: [4, 2],
+      templateColumns: "repeat(4, 1fr)",
+    });
+    // The worst case: pinning 4 used to produce output byte-identical to
+    // the automatic 3-column layout, making the control appear inert.
+    expect(gridLayout(9, { columns: 4 })).toMatchObject({
+      cols: 4,
+      rowCounts: [4, 4, 1],
+      templateColumns: "repeat(4, 1fr)",
+      templateRows: "1fr 1fr 4fr",
+    });
+  });
+
+  it("never returns a `cols` that contradicts `templateColumns` / rowCounts", () => {
+    for (let n = 1; n <= 40; n++) {
+      // Automatic path.
+      const auto = gridLayout(n);
+      expect(auto.cols, `auto n=${n}`).toBe(Math.max(...auto.rowCounts));
+      for (let pin = 1; pin <= 8; pin++) {
+        const pinned = gridLayout(n, { columns: pin });
+        expect(pinned.cols, `n=${n} pin=${pin}`).toBe(Math.max(...pinned.rowCounts));
+        expect(pinned.cols, `n=${n} pin=${pin}`).toBe(Math.min(pin, n));
+      }
+    }
+  });
+
+  it("derives the aspect ratio from the configured tile ratio", () => {
+    expect(gridLayout(4, { aspectRatio: "4/3" }).aspectRatio).toBe("4/3");
+    expect(gridLayout(5, { aspectRatio: "4/3" }).aspectRatio).toBe("8/5");
+    expect(gridLayout(4, { aspectRatio: "1/1" }).aspectRatio).toBe("1/1");
+    // Garbage falls back to 16/9.
+    expect(gridLayout(4, { aspectRatio: "nonsense" }).aspectRatio).toBe("16/9");
+  });
+
+  it("handles degenerate counts without dividing by zero", () => {
+    for (const n of [0, -1, 1.5, NaN]) {
+      const l = gridLayout(n as number);
+      expect(l.cols).toBeGreaterThanOrEqual(1);
+      expect(l.rows).toBeGreaterThanOrEqual(1);
+      expect(l.unit).toBeGreaterThanOrEqual(1);
+      expect(l.templateRows.length).toBeGreaterThan(0);
+    }
+  });
+
+  describe("emphasis: top", () => {
+    it("reverses the row order so the short row lands on top", () => {
+      expect(gridLayout(5, { emphasis: "top" })).toMatchObject({
+        rowCounts: [2, 3],
+        unit: 6,
+        templateRows: "3fr 2fr",
+        aspectRatio: "32/15",
+      });
+      expect(gridLayout(7, { emphasis: "top" })).toMatchObject({
+        rowCounts: [2, 2, 3],
+        unit: 6,
+        templateRows: "3fr 3fr 2fr",
+        aspectRatio: "4/3",
+      });
+      expect(gridLayout(8, { emphasis: "top" })).toMatchObject({
+        rowCounts: [2, 3, 3],
+        unit: 6,
+        templateRows: "3fr 2fr 2fr",
+        aspectRatio: "32/21",
+      });
+      expect(gridLayout(10, { emphasis: "top" })).toMatchObject({
+        rowCounts: [3, 3, 4],
+        unit: 12,
+        templateRows: "4fr 4fr 3fr",
+        aspectRatio: "64/33",
+      });
+    });
+
+    it("cannot change the aspect ratio — reordering rows doesn't change the span sum", () => {
+      for (let n = 1; n <= 40; n++) {
+        const bottom = gridLayout(n);
+        const top = gridLayout(n, { emphasis: "top" });
+        expect(top.aspectRatio, `n=${n}`).toBe(bottom.aspectRatio);
+      }
+    });
+
+    it("is a visual no-op when every row is already equal", () => {
+      for (const n of [2, 3, 4, 6, 9, 12, 16]) {
+        const bottom = gridLayout(n);
+        const top = gridLayout(n, { emphasis: "top" });
+        expect(top.rowCounts, `n=${n}`).toEqual(bottom.rowCounts);
+      }
+    });
+  });
+
+  describe("emphasis: hero", () => {
+    it("puts camera 1 alone on the top row, automatic columns", () => {
+      expect(gridLayout(2, { emphasis: "hero" })).toMatchObject({
+        rowCounts: [1, 1],
+        unit: 1,
+        templateRows: "1fr 1fr",
+        aspectRatio: "8/9",
+      });
+      expect(gridLayout(3, { emphasis: "hero" })).toMatchObject({
+        rowCounts: [1, 2],
+        unit: 2,
+        templateRows: "2fr 1fr",
+        aspectRatio: "32/27",
+      });
+      expect(gridLayout(5, { emphasis: "hero" })).toMatchObject({
+        rowCounts: [1, 4],
+        unit: 4,
+        templateRows: "4fr 1fr",
+        aspectRatio: "64/45",
+      });
+      expect(gridLayout(9, { emphasis: "hero" })).toMatchObject({
+        rowCounts: [1, 8],
+        unit: 8,
+        templateRows: "8fr 1fr",
+        aspectRatio: "128/81",
+      });
+    });
+
+    it("uses the pinned column count for the remainder", () => {
+      expect(gridLayout(5, { emphasis: "hero", columns: 4 })).toMatchObject({
+        rowCounts: [1, 4],
+        unit: 4,
+        templateRows: "4fr 1fr",
+        aspectRatio: "64/45",
+      });
+      expect(gridLayout(9, { emphasis: "hero", columns: 4 })).toMatchObject({
+        rowCounts: [1, 4, 4],
+        unit: 4,
+        templateRows: "4fr 1fr 1fr",
+        aspectRatio: "32/27",
+      });
+      expect(gridLayout(13, { emphasis: "hero", columns: 4 })).toMatchObject({
+        rowCounts: [1, 4, 4, 4],
+        unit: 4,
+        templateRows: "4fr 1fr 1fr 1fr",
+        aspectRatio: "64/63",
+      });
+    });
+
+    it("falls through to the normal layout when there's no meaningful hero (n < 2)", () => {
+      const hero = gridLayout(1, { emphasis: "hero" });
+      const bottom = gridLayout(1);
+      expect(hero).toEqual(bottom);
+    });
+
+    describe("with maxColumns (narrow-screen cap)", () => {
+      it("spreads the remainder at the capped column count instead of one wide strip", () => {
+        expect(gridLayout(5, { emphasis: "hero", maxColumns: 2 }).rowCounts).toEqual([1, 2, 2]);
+        expect(gridLayout(9, { emphasis: "hero", maxColumns: 2 }).rowCounts).toEqual([
+          1, 2, 2, 2, 2,
+        ]);
+        expect(gridLayout(9, { emphasis: "hero", maxColumns: 3 }).rowCounts).toEqual([1, 3, 3, 2]);
+        expect(gridLayout(7, { emphasis: "hero", maxColumns: 3 }).rowCounts).toEqual([1, 3, 3]);
+      });
+
+      it("keeps the single-strip remainder when there is no cap", () => {
+        expect(gridLayout(5, { emphasis: "hero" }).rowCounts).toEqual([1, 4]);
+        expect(gridLayout(9, { emphasis: "hero" }).rowCounts).toEqual([1, 8]);
+        expect(gridLayout(12, { emphasis: "hero" }).rowCounts).toEqual([1, 11]);
+      });
+
+      it("leaves the layout untouched when the cap doesn't actually bind (cap >= n - 1)", () => {
+        for (let n = 2; n <= 40; n++) {
+          const baseline = gridLayout(n, { emphasis: "hero" });
+          for (let cap = n - 1; cap <= n + 2; cap++) {
+            expect(gridLayout(n, { emphasis: "hero", maxColumns: cap })).toEqual(baseline);
+          }
+        }
+      });
+
+      it("still lets an explicit pin beat the cap", () => {
+        expect(gridLayout(9, { emphasis: "hero", columns: 4, maxColumns: 2 }).rowCounts).toEqual([
+          1, 4, 4,
+        ]);
+      });
+    });
+  });
+
+  describe("emphasis: bottom / unrecognised / absent", () => {
+    it("produces byte-identical output to the current no-emphasis behaviour", () => {
+      const bogus: Array<string | null | undefined> = ["bottom", "nonsense", null, undefined];
+      for (let n = 1; n <= 40; n++) {
+        const baseline = gridLayout(n);
+        for (const emphasis of bogus) {
+          const withEmphasis =
+            emphasis === undefined ? gridLayout(n, {}) : gridLayout(n, { emphasis });
+          expect(withEmphasis.rowCounts, `n=${n} emphasis=${emphasis}`).toEqual(baseline.rowCounts);
+          expect(withEmphasis.templateRows, `n=${n} emphasis=${emphasis}`).toBe(
+            baseline.templateRows
+          );
+          expect(withEmphasis.aspectRatio, `n=${n} emphasis=${emphasis}`).toBe(
+            baseline.aspectRatio
+          );
+        }
+        // Omitted `opts` entirely is also equivalent.
+        expect(gridLayout(n)).toEqual(baseline);
+      }
+    });
+  });
+});
+
 describe("gridDims", () => {
-  it("returns 2x2 for counts 0..4", () => {
-    for (const n of [0, 1, 2, 3, 4]) {
-      expect(gridDims(n)).toEqual({ cols: 2, rows: 2 });
-    }
+  it("still returns cols/rows for the counts it always handled", () => {
+    expect(gridDims(4)).toEqual({ cols: 2, rows: 2 });
+    expect(gridDims(9)).toEqual({ cols: 3, rows: 3 });
+    expect(gridDims(16)).toEqual({ cols: 4, rows: 4 });
   });
 
-  it("returns 3x3 for counts 5..9", () => {
-    for (const n of [5, 6, 7, 8, 9]) {
-      expect(gridDims(n)).toEqual({ cols: 3, rows: 3 });
-    }
-  });
-
-  it("returns 4x4 for counts 10..16", () => {
-    for (const n of [10, 12, 16]) {
-      expect(gridDims(n)).toEqual({ cols: 4, rows: 4 });
-    }
-  });
-
-  it("returns 4x4 for counts > 16 (cap, no 5x5 fallback)", () => {
-    expect(gridDims(17)).toEqual({ cols: 4, rows: 4 });
-    expect(gridDims(100)).toEqual({ cols: 4, rows: 4 });
+  it("now packs odd counts instead of forcing a square", () => {
+    expect(gridDims(5)).toEqual({ cols: 3, rows: 2 });
+    expect(gridDims(2)).toEqual({ cols: 2, rows: 1 });
   });
 });
 

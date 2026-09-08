@@ -280,12 +280,15 @@ export const cardStyles = css`
         translate(calc(var(--crop-x, 0%) * -1), calc(var(--crop-y, 0%) * -1)) !important;
       transform-origin: 0 0 !important;
     }
-    /* Multi-camera grid layout (live_layout: grid). Disable pinch-zoom and
+    /* Multi-camera grid layout (live_layout: grid). Column tracks are
+     * subdivided so rows can hold different numbers of tiles — see
+     * gridLayout() in src/data/live-config.ts. The fallbacks reproduce a
+     * plain 2x2 if the card hasn't set the vars yet. Disable pinch-zoom and
      * double-tap-zoom on the grid surface via touch-action. */
     &.live-grid-host {
       display: grid !important;
-      grid-template-columns: repeat(var(--cgc-grid-cols, 2), 1fr);
-      grid-template-rows: repeat(var(--cgc-grid-rows, 2), 1fr);
+      grid-template-columns: var(--cgc-grid-template-cols, repeat(2, 1fr));
+      grid-template-rows: var(--cgc-grid-template-rows, 1fr 1fr);
       gap: 4px;
       padding: 0;
       background: #000;
@@ -340,6 +343,9 @@ export const cardStyles = css`
 
   .live-grid-tile {
     position: relative;
+    grid-column: span var(--cgc-tile-span, 1);
+    min-width: 0;
+    min-height: 0;
     background: #000;
     overflow: hidden;
     cursor: pointer;

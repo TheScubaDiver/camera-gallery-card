@@ -13,6 +13,7 @@
  * `live_stream_urls`. See `getStreamEntries` for the fallback.
  */
 
+import { DEFAULT_LIVE_GRID_EMPHASIS } from "../const";
 import type { CameraGalleryCardConfig } from "../config/normalize";
 import type { HassEntity } from "../types/hass";
 
@@ -362,19 +363,186 @@ export function getLiveCameraEntityIds(
   return out;
 }
 
+/** Greatest common divisor. Both args must be positive integers. */
+function gcd(a: number, b: number): number {
+  while (b) {
+    [a, b] = [b, a % b];
+  }
+  return a;
+}
+
+/** Least common multiple. Both args must be positive integers. */
+function lcm(a: number, b: number): number {
+  return (a / gcd(a, b)) * b;
+}
+
+/** Parse "16/9" (or "16:9") into a positive [w, h] pair. Falls back to 16:9. */
+function parseRatio(raw: string | null | undefined): [number, number] {
+  const parts = String(raw ?? "").split(/[/:]/);
+  const w = Number(parts[0]);
+  const h = Number(parts[1]);
+  if (parts.length === 2 && Number.isFinite(w) && Number.isFinite(h) && w > 0 && h > 0) {
+    return [w, h];
+  }
+  return [16, 9];
+}
+
 /**
- * Map the number of cameras to grid dimensions. Always a square so two
- * cameras don't render as a 1×2 row (which looks broken next to single-cam
- * mode); empty cells fill with the host background.
+ * Row counts for an `n`-camera grid at `cols` columns — "fuller rows first".
  *
- * Breakpoints: ≤4 → 2×2, ≤9 → 3×3, else 4×4 (camera counts beyond 16 keep
- * 4×4 and just clip silently — sane fallback over picking 5×5 on a
- * mobile screen).
+ * `pinned` mirrors `gridLayout`'s own greedy-vs-even-spread split: a pinned
+ * column count is filled greedily (full rows of `cols`, then the remainder)
+ * so the requested count is exactly what renders, while the automatic path
+ * spreads tiles as evenly as possible across `rows = ceil(n / cols)` rows.
+ * Shared by the top-level grid and by `hero`'s remainder-row computation so
+ * neither duplicates the greedy/even-spread logic.
+ */
+function rowCountsFor(n: number, cols: number, pinned: boolean): number[] {
+  const rows = Math.ceil(n / cols);
+  const rowCounts: number[] = [];
+  if (pinned) {
+    for (let i = 0; i < rows; i++) rowCounts.push(Math.min(cols, n - i * cols));
+  } else {
+    const base = Math.floor(n / rows);
+    const rem = n % rows;
+    for (let i = 0; i < rows; i++) rowCounts.push(i < rem ? base + 1 : base);
+  }
+  return rowCounts;
+}
+
+export interface GridLayout {
+  cols: number;
+  rows: number;
+  rowCounts: number[];
+  unit: number;
+  tileSpans: number[];
+  templateColumns: string;
+  templateRows: string;
+  aspectRatio: string;
+}
+
+/**
+ * Compute a gapless tile grid for `count` cameras.
+ *
+ * Rows can hold different tile counts; a row of `c` tiles gets `1/c` of the
+ * unit height, which keeps its tiles at the target aspect ratio — no cell
+ * goes empty, none is letterboxed or cropped. Column tracks subdivide to
+ * `LCM(rowCounts)` so one `grid-template-columns` fits every row; a tile in
+ * a row of `c` spans `unit / c` tracks, doubling as that row's `fr` value.
+ *
+ * Column count:
+ *  - **1-3 cameras** sit in a single row; above that the grid stays roughly
+ *    square at `ceil(sqrt(count))` columns.
+ *  - **`columns`** pins the count outright, filling rows greedily (`cols,
+ *    cols, …, remainder`) so the pinned count is exactly what renders.
+ *  - **`maxColumns`** caps only the automatic choice — never the pin — so
+ *    an explicit pin is honoured at any width.
+ *
+ * `emphasis` only reorders or regroups `rowCounts`; it never changes which
+ * columns exist:
+ *  - **`"bottom"`** (default): fuller, smaller rows first, the taller
+ *    row(s) last.
+ *  - **`"top"`**: reverses that array so the short row lands first.
+ *  - **`"hero"`**: camera 1 gets a solid row of its own on top, the rest
+ *    laid out below (needs ≥2 cameras; falls back to `"bottom"` otherwise).
+ */
+export function gridLayout(
+  count: number,
+  opts?: {
+    columns?: number | null;
+    maxColumns?: number | null;
+    aspectRatio?: string | null;
+    emphasis?: string | null | undefined;
+  }
+): GridLayout {
+  const n = Math.max(1, Math.floor(Number(count) || 0) || 1);
+
+  const pinned = Math.floor(Number(opts?.columns) || 0);
+  const cap = Math.floor(Number(opts?.maxColumns) || 0);
+  const emphasis =
+    opts?.emphasis === "top" || opts?.emphasis === "hero"
+      ? opts.emphasis
+      : DEFAULT_LIVE_GRID_EMPHASIS;
+
+  let cols: number;
+  if (pinned > 0) {
+    cols = Math.min(pinned, n);
+  } else {
+    cols = n <= 3 ? n : Math.ceil(Math.sqrt(n));
+    if (cap > 0) cols = Math.min(cols, cap);
+  }
+  cols = Math.max(1, cols);
+
+  let rowCounts: number[];
+  if (emphasis === "hero" && n >= 2) {
+    let rest: number[];
+    if (pinned > 0) {
+      // Honour the pin for the remainder too — a 4-pin over 9 cameras
+      // yields [1, 4, 4].
+      rest = rowCountsFor(n - 1, cols, true);
+    } else if (cap > 0 && cap < n - 1) {
+      // The cap must still bind here, or a hero tile ends up above a strip
+      // of slivers — exactly what the narrow-screen cap exists to prevent.
+      // A 2-cap over 9 cameras yields [1, 2, 2, 2, 2].
+      //
+      // Laid out at the cap itself, not the top-level automatic `cols`:
+      // `cols` is computed for the full camera count and can be narrower
+      // than the cap actually allows, which would narrow the strip when
+      // the cap didn't require it.
+      rest = rowCountsFor(n - 1, cap, false);
+    } else {
+      // No cap, no pin, or a cap wide enough that it wouldn't have
+      // narrowed the strip anyway: a single landscape strip, not the
+      // square-ish automatic layout — that would stack enough rows under
+      // the hero to tip the whole card into portrait (a full-width 16:9
+      // hero is already about 0.56x the card width tall before anything
+      // else is added below it).
+      rest = [n - 1];
+    }
+    rowCounts = [1, ...rest];
+  } else {
+    rowCounts = rowCountsFor(n, cols, pinned > 0);
+    if (emphasis === "top") rowCounts = [...rowCounts].reverse();
+  }
+  // The returned `cols` always reflects what actually renders (the widest
+  // row), never just the requested pin — so it can't contradict `templateColumns`.
+  cols = Math.max(...rowCounts);
+
+  const unit = rowCounts.reduce(lcm, 1);
+  const rowSpans = rowCounts.map((c) => unit / c);
+
+  const tileSpans: number[] = [];
+  rowCounts.forEach((c, i) => {
+    const span = rowSpans[i]!;
+    for (let k = 0; k < c; k++) tileSpans.push(span);
+  });
+
+  const [arW, arH] = parseRatio(opts?.aspectRatio);
+  const totalSpan = rowSpans.reduce((a, b) => a + b, 0);
+  const ratioW = arW * unit;
+  const ratioH = arH * totalSpan;
+  const d = gcd(ratioW, ratioH) || 1;
+
+  return {
+    cols,
+    rows: rowCounts.length,
+    rowCounts,
+    unit,
+    tileSpans,
+    templateColumns: `repeat(${unit}, 1fr)`,
+    templateRows: rowSpans.map((s) => `${s}fr`).join(" "),
+    aspectRatio: `${ratioW / d}/${ratioH / d}`,
+  };
+}
+
+/**
+ * Legacy column/row pair. Superseded by `gridLayout`, which also returns the
+ * per-tile spans and the container ratio; kept so external callers that only
+ * wanted the dimensions keep working.
  */
 export function gridDims(count: number): { cols: number; rows: number } {
-  if (count <= 4) return { cols: 2, rows: 2 };
-  if (count <= 9) return { cols: 3, rows: 3 };
-  return { cols: 4, rows: 4 };
+  const { cols, rows } = gridLayout(count);
+  return { cols, rows };
 }
 
 /**

@@ -60,7 +60,7 @@ import {
   getLiveCameraOptions,
   getStreamEntries,
   getStreamEntryById,
-  gridDims,
+  gridLayout,
   hasAnyMicStream,
   hasLiveConfig,
   isGridLayout,
@@ -110,6 +110,7 @@ import {
   DEFAULT_DELETE_SERVICE,
   DEFAULT_LIVE_AUTO_MUTED,
   DEFAULT_LIVE_ENABLED,
+  DEFAULT_LIVE_GRID_EMPHASIS,
   DEFAULT_MAX_MEDIA,
   DEFAULT_PREVIEW_CLOSE_ON_TAP_WHEN_GATED,
   PTZ_SPEED_MAX,
@@ -317,6 +318,11 @@ class CameraGalleryCard extends LitElement {
     this._liveLayoutOverride = null;
     // Per-tile player elements when in grid layout, keyed by camera entity.
     this._liveGridTiles = new Map();
+    // Narrow-screen cap on the grid's automatic column count. null = uncapped.
+    this._gridMaxCols = null;
+    this._gridResizeObserver = null;
+    this._gridResizeTarget = null;
+    this._gridResizeTimer = null;
     this._liveCardPending = null;
     this._rtcPeerConnection = null;
     this._rtcWebSocket = null;
@@ -839,6 +845,7 @@ class CameraGalleryCard extends LitElement {
 
     this._clearPreviewVideoHostPlayback();
     this._teardownLiveView();
+    this._stopGridResizeObserver();
 
     this._clearThumbLongPress();
 
@@ -1864,6 +1871,11 @@ class CameraGalleryCard extends LitElement {
    */
   _getPreviewAspectRatio(isLive) {
     if (!isLive) return this._aspectRatio || "16/9";
+    // Grid mode sizes the pane to the tile grid, so every tile lands at the
+    // configured ratio instead of being squashed into a fixed 16/9 box.
+    if (isGridLayout(this.config, this._liveLayoutOverride)) {
+      return this._getGridLayout(getGridCameraEntities(this.config).length).aspectRatio;
+    }
     const cams = Array.isArray(this.config?.live_cameras) ? this.config.live_cameras : [];
     const active = this._getEffectiveLiveCamera?.() || "";
     if (active && cams.length) {
@@ -2537,21 +2549,106 @@ class CameraGalleryCard extends LitElement {
     this._liveGridTiles.clear();
   }
 
+  // Single place that turns the camera count into a tile layout, so the
+  // grid mount and the preview's aspect-ratio can't drift apart.
+  _getGridLayout(count) {
+    const pinned = Number(this.config?.live_grid_columns) || 0;
+    return gridLayout(count, {
+      columns: pinned > 0 ? pinned : null,
+      maxColumns: this._gridMaxCols,
+      aspectRatio: this._aspectRatio || "16/9",
+      emphasis: this.config?.live_grid_emphasis ?? null,
+    });
+  }
+
+  // Cap the grid's automatic column count on narrow cards so tiles don't
+  // shrink to postage stamps in a sidebar or on a phone. An explicit
+  // live_grid_columns pin bypasses this — gridLayout ignores maxColumns
+  // when a pin is set.
+  _gridMaxColsForWidth(width) {
+    if (!Number.isFinite(width) || width <= 0) return null;
+    if (width < 400) return 2;
+    if (width < 600) return 3;
+    return null;
+  }
+
+  // Called from updated(), so it runs after every render. `.preview` is
+  // conditionally rendered and can be replaced, hence the re-target check
+  // rather than a one-shot start.
+  _syncGridResizeObserver() {
+    if (typeof ResizeObserver === "undefined") return;
+    const target = this.renderRoot?.querySelector(".preview") || null;
+    if (target === this._gridResizeTarget) return;
+
+    if (this._gridResizeTimer) {
+      clearTimeout(this._gridResizeTimer);
+      this._gridResizeTimer = null;
+    }
+    if (this._gridResizeObserver) this._gridResizeObserver.disconnect();
+    this._gridResizeTarget = target;
+    if (!target) {
+      this._gridResizeObserver = null;
+      return;
+    }
+
+    this._gridResizeObserver = new ResizeObserver((entries) => {
+      const width = entries[0]?.contentRect?.width ?? 0;
+      const next = this._gridMaxColsForWidth(width);
+      if (next === this._gridMaxCols) return;
+      // Debounce: a drag-resize fires this continuously, and every remount
+      // re-lays-out each ha-camera-stream. The cap is applied inside the
+      // timer so the preview's aspect-ratio and the grid tracks — both read
+      // from _gridMaxCols — can never disagree mid-resize.
+      if (this._gridResizeTimer) clearTimeout(this._gridResizeTimer);
+      this._gridResizeTimer = setTimeout(() => {
+        this._gridResizeTimer = null;
+        if (next === this._gridMaxCols) return;
+        this._gridMaxCols = next;
+        if (!isGridLayout(this.config, this._liveLayoutOverride)) return;
+        this.requestUpdate();
+        this._mountLiveCard();
+      }, 150);
+    });
+    this._gridResizeObserver.observe(target);
+  }
+
+  _stopGridResizeObserver() {
+    if (this._gridResizeTimer) {
+      clearTimeout(this._gridResizeTimer);
+      this._gridResizeTimer = null;
+    }
+    if (this._gridResizeObserver) {
+      this._gridResizeObserver.disconnect();
+      this._gridResizeObserver = null;
+    }
+    this._gridResizeTarget = null;
+  }
+
+  // Sets a tile's grid span and its CSS `order` from the entity's current
+  // index in `cameras`. Kept together because auto-placement needs both to
+  // agree: `order` puts the tile in the right slot, span sizes it once
+  // there. Never move the tile itself to reorder it — see _teardownLiveView
+  // below for why ha-camera-stream can't tolerate being detached/reattached.
+  _applyTileLayout(tile, idx, layout) {
+    tile.style.setProperty("--cgc-tile-span", String(layout.tileSpans[idx] ?? 1));
+    tile.style.order = String(idx);
+  }
+
   async _mountLiveGrid() {
     if (!this._isLiveActive()) return;
     const host = this.renderRoot?.querySelector("#live-card-host");
     if (!host) return;
 
     const cameras = getGridCameraEntities(this.config);
-    const { cols, rows } = gridDims(cameras.length);
+    const layout = this._getGridLayout(cameras.length);
 
     if (!host.classList.contains("live-grid-host")) {
       host.classList.add("live-grid-host");
       host.innerHTML = "";
       this._liveGridTiles.clear();
     }
-    host.style.setProperty("--cgc-grid-cols", String(cols));
-    host.style.setProperty("--cgc-grid-rows", String(rows));
+    host.style.setProperty("--cgc-grid-template-cols", layout.templateColumns);
+    host.style.setProperty("--cgc-grid-template-rows", layout.templateRows);
     host.classList.toggle("live-grid-no-labels", this.config?.live_grid_labels === false);
 
     // Remove tiles for cameras no longer present.
@@ -2573,12 +2670,20 @@ class CameraGalleryCard extends LitElement {
           const so = this._hass?.states?.[entity];
           if (so?.last_changed !== stream.stateObj?.last_changed) stream.stateObj = so;
         }
+        // Reused tiles stay put in the DOM even when `cameras` gets
+        // reordered, so span alone can't fix placement — `_applyTileLayout`
+        // also sets `order` to re-sort auto-placement without touching the DOM.
+        this._applyTileLayout(existing, cameras.indexOf(entity), layout);
         continue;
       }
 
       const tile = document.createElement("div");
       tile.className = "live-grid-tile";
       tile.dataset.entity = entity;
+      // New tiles are always appended at the end, so once older tiles are
+      // out of position, DOM order alone won't match `cameras` order
+      // either — `_applyTileLayout`'s `order` assignment fixes both cases.
+      this._applyTileLayout(tile, cameras.indexOf(entity), layout);
       tile.addEventListener("click", () => this._onGridTileTap(entity));
 
       const stream = document.createElement("ha-camera-stream");
@@ -5206,6 +5311,7 @@ class CameraGalleryCard extends LitElement {
     }
 
     this._setupThumbObserver();
+    this._syncGridResizeObserver();
   }
 
   _setupThumbObserver() {
@@ -6261,7 +6367,7 @@ const CGC_CONFIG_KEY_ORDER = [
   "show_today", "show_media_filter", "show_favorite", "show_live",
   // ─── Live ───
   "live_enabled", "live_auto_muted", "live_cameras", "live_layout",
-  "live_grid_labels", "live_stream_urls", "live_go2rtc_url",
+  "live_grid_labels", "live_grid_columns", "live_grid_emphasis", "live_stream_urls", "live_go2rtc_url",
   "live_mic_mode", "live_mic_audio_processing",
   "live_mic_shape", "live_mic_button_position",
   "live_mic_waveform_enabled", "live_mic_waveform_sensitivity",
@@ -7985,6 +8091,11 @@ class CameraGalleryCardEditor extends HTMLElement {
     const liveEnabled = c.live_enabled === true;
     const liveCameraEntities = getLiveCameraEntityIds(c);
     const liveLayout = c.live_layout === "grid" ? "grid" : "single";
+    const liveGridCols = Number(c.live_grid_columns) || 0;
+    const liveGridEmphasis =
+      c.live_grid_emphasis === "top" || c.live_grid_emphasis === "hero"
+        ? c.live_grid_emphasis
+        : DEFAULT_LIVE_GRID_EMPHASIS;
 
 
     const cameraEntities = Object.keys(this._hass?.states || {})
@@ -8897,6 +9008,22 @@ class CameraGalleryCardEditor extends HTMLElement {
               <button class="seg ${liveLayout === "single" ? "on" : ""}" data-livelayout="single">Single</button>
               <button class="seg ${liveLayout === "grid" ? "on" : ""}" data-livelayout="grid">Grid</button>
             </div>
+            ${liveLayout === "grid" ? `
+            <div class="lbl" style="margin-top:10px;">Grid columns</div>
+            <div class="desc"><code>Auto</code> shapes the grid to the number of cameras and fills every cell. Pin a number to force a fixed column count.</div>
+            <div class="segwrap">
+              ${[0, 1, 2, 3, 4].map((n) => `
+                <button class="seg ${liveGridCols === n ? "on" : ""}" data-gridcols="${n}">${n === 0 ? "Auto" : n}</button>
+              `).join("")}
+            </div>
+            <div class="lbl" style="margin-top:10px;">Larger tiles</div>
+            <div class="desc">Where the bigger tiles land when a row has fewer cameras than the rest. <code>Bottom</code> puts the short row last. <code>Top</code> puts it first. <code>Hero</code> gives camera 1 a full row to itself.</div>
+            <div class="segwrap">
+              <button class="seg ${liveGridEmphasis === "bottom" ? "on" : ""}" data-gridemphasis="bottom">Bottom</button>
+              <button class="seg ${liveGridEmphasis === "top" ? "on" : ""}" data-gridemphasis="top">Top</button>
+              <button class="seg ${liveGridEmphasis === "hero" ? "on" : ""}" data-gridemphasis="hero">Hero</button>
+            </div>
+            ` : ``}
           </div>
           ` : ``}
 
@@ -12979,10 +13106,51 @@ details summary { user-select: none; }
           delete next.live_layout;
           this._config = this._stripAlwaysTrueKeys(next);
           this._fire();
+          this._scheduleRender();
         } else {
           this._set("live_layout", val);
         }
         btn.closest(".segwrap")?.querySelectorAll(".seg").forEach((s) => s.classList.toggle("on", s === btn));
+      });
+    });
+
+    this.shadowRoot.querySelectorAll(".seg[data-gridcols]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const val = Number(btn.dataset.gridcols) || 0;
+        if (val === 0) {
+          // Auto is the default — drop the key so the YAML stays minimal.
+          const next = { ...this._config };
+          delete next.live_grid_columns;
+          this._config = this._stripAlwaysTrueKeys(next);
+          this._fire();
+        } else {
+          this._set("live_grid_columns", val);
+        }
+        btn
+          .closest(".segwrap")
+          ?.querySelectorAll(".seg")
+          .forEach((s) => s.classList.toggle("on", s === btn));
+      });
+    });
+
+    this.shadowRoot.querySelectorAll(".seg[data-gridemphasis]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const val = btn.dataset.gridemphasis === "top" || btn.dataset.gridemphasis === "hero"
+          ? btn.dataset.gridemphasis
+          : DEFAULT_LIVE_GRID_EMPHASIS;
+        if (val === DEFAULT_LIVE_GRID_EMPHASIS) {
+          // Bottom is the default — drop the key so the YAML stays minimal.
+          const next = { ...this._config };
+          delete next.live_grid_emphasis;
+          this._config = this._stripAlwaysTrueKeys(next);
+          this._fire();
+        } else {
+          this._set("live_grid_emphasis", val);
+        }
+        btn
+          .closest(".segwrap")
+          ?.querySelectorAll(".seg")
+          .forEach((s) => s.classList.toggle("on", s === btn));
       });
     });
 
