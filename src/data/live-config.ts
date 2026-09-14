@@ -32,6 +32,27 @@ const STREAM_ID_LEGACY_ALIAS = "__cgc_stream__";
 type LiveCameraEntry = NonNullable<CameraGalleryCardConfig["live_cameras"]>[number];
 
 /**
+ * Camera entities offered by the visual editor.
+ *
+ * Runtime state must not decide whether an entity can be configured: cameras
+ * commonly report `unknown` or `unavailable` while they are starting, offline,
+ * or being repaired. Home Assistant still keeps those entities in `hass.states`,
+ * and YAML already accepts them, so the editor should expose them as well.
+ */
+export function getEditorCameraEntities(
+  hassStates: Readonly<Record<string, HassEntity>> | null | undefined
+): string[] {
+  const states = hassStates ?? {};
+  return Object.keys(states)
+    .filter((id) => id.startsWith("camera."))
+    .sort((a, b) => {
+      const an = String(states[a]?.attributes?.["friendly_name"] ?? a).toLowerCase();
+      const bn = String(states[b]?.attributes?.["friendly_name"] ?? b).toLowerCase();
+      return an.localeCompare(bn);
+    });
+}
+
+/**
  * Canonical live-cameras list. Reads `config.live_cameras` when populated;
  * otherwise builds it on the fly from the legacy keys
  * (`live_camera_entities`, `live_stream_urls`, `live_stream_url` singular,

@@ -5,6 +5,7 @@ import type { HassEntity } from "../types/hass";
 import {
   friendlyCameraName,
   getAllLiveCameraEntities,
+  getEditorCameraEntities,
   getGridCameraEntities,
   getLiveCameraEntityIds,
   getLiveCameraOptions,
@@ -35,6 +36,30 @@ function state(over: Partial<HassEntity> = {}): HassEntity {
     context: { id: "", parent_id: null, user_id: null },
   } as HassEntity;
 }
+
+describe("getEditorCameraEntities", () => {
+  it("keeps unavailable and unknown cameras selectable", () => {
+    const result = getEditorCameraEntities({
+      "camera.available": state({
+        entity_id: "camera.available",
+        attributes: { friendly_name: "Available" },
+      }),
+      "camera.unavailable": state({
+        entity_id: "camera.unavailable",
+        state: "unavailable",
+        attributes: { friendly_name: "Unavailable" },
+      }),
+      "camera.unknown": state({
+        entity_id: "camera.unknown",
+        state: "unknown",
+        attributes: { friendly_name: "Unknown" },
+      }),
+      "sensor.not_a_camera": state({ entity_id: "sensor.not_a_camera" }),
+    });
+
+    expect(result).toEqual(["camera.available", "camera.unavailable", "camera.unknown"]);
+  });
+});
 
 describe("getStreamEntries", () => {
   it("returns [] for null/empty config", () => {
