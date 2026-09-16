@@ -70,6 +70,7 @@ FileTrack is a fork of the archived [files integration by TarheelGrad1998](https
 
 - Image & video preview
 - **Fullscreen image viewer** — tap to open in fullscreen, rotates to landscape on mobile
+- **Native video fullscreen** — clips open in the platform's own player (iOS, macOS, Android, desktop browsers)
 - Timeline thumbnails with lazy loading
 - Day grouping
 - Filename timestamp parsing
@@ -131,8 +132,8 @@ A few notes on the generic walker:
 - Native Home Assistant **WebRTC live preview**
 - Redesigned live view layout: camera name on the left, controls on the right
 - **Controls mode** — choose between `overlay` (controls fade out after inactivity) or `fixed` (always visible)
-- Native fullscreen button (iOS + Android/desktop)
-- **Pinch to zoom in fullscreen** — touch, trackpad, and Ctrl + scroll wheel; pan with the mouse after zooming in
+- **Native fullscreen** — set `live_fullscreen: video` to open the live stream in the platform's own player instead of the card overlay (grid layout always uses the card)
+- **Pinch to zoom in card fullscreen** — touch, trackpad, and Ctrl + scroll wheel; pan with the mouse after zooming in
 - **Aspect ratio toggle** — quickly switch between 16:9, 4:3 and 1:1, remembered per camera
 - Live badge
 - **Multiple live cameras** — configure several cameras and switch between them using chevron arrows
@@ -303,6 +304,7 @@ Then in the card editor: **General → Delete services → Frigate** → pick `r
 | `live_camera_entity` | Default camera entity for live view |
 | `live_camera_entities` | Camera entities visible in the live picker |
 | `live_layout` | `single` or `grid` (multi-camera) |
+| `live_fullscreen` | `card` (default, keeps pills, PTZ and zoom) or `video` (platform player) |
 | `live_grid_labels` | Show camera name labels in grid mode |
 | `live_stream_urls` | Array of named RTSP streams: `[{url, name}]` |
 | `live_auto_muted` | Auto-mute audio in live view |

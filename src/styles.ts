@@ -113,12 +113,15 @@ export const cardStyles = css`
       min-height: 0;
       border-radius: 0 !important;
     }
+    /* Card fullscreen rarely matches the feed's shape, so letterbox. */
+    --cgc-live-fit: contain;
     & .preview {
       flex: 1 !important;
       height: auto !important;
       min-height: 0;
       border-radius: 0 !important;
       overflow: hidden;
+      background: #000;
     }
     & :is(.divider, .objfilters, .tthumbs, .datepill, .seg) {
       display: none !important;
@@ -176,8 +179,8 @@ export const cardStyles = css`
   }
   .img-fs-close {
     position: absolute;
-    top: 12px;
-    right: 12px;
+    top: calc(12px + env(safe-area-inset-top, 0px));
+    right: calc(12px + env(safe-area-inset-right, 0px));
     background: rgba(0, 0, 0, 0.5);
     border: none;
     border-radius: 50%;
@@ -262,7 +265,7 @@ export const cardStyles = css`
     & video {
       width: 100% !important;
       height: 100% !important;
-      object-fit: var(--cgc-object-fit, cover) !important;
+      object-fit: var(--cgc-live-fit, var(--cgc-object-fit, cover)) !important;
     }
     /* Per-camera crop — when the live entry has a crop the host element
      * picks up a .has-crop class plus --crop-x/--crop-y/--crop-w/--crop-h

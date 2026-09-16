@@ -27,7 +27,7 @@ const LIVE_FILL_CSS = `
   :host { display:block!important; width:100%!important; height:100%!important; }
   .image-container { width:100%!important; height:100%!important; }
   .ratio { padding-bottom:0!important; padding-top:0!important; width:100%!important; height:100%!important; position:relative!important; }
-  img, video, ha-hls-player, ha-web-rtc-player, ha-camera-stream { width:100%!important; height:100%!important; object-fit:cover!important; display:block!important; position:static!important; }
+  img, video, ha-hls-player, ha-web-rtc-player, ha-camera-stream { width:100%!important; height:100%!important; object-fit:var(--cgc-live-fit, cover)!important; display:block!important; position:static!important; }
 `;
 
 function injectInto(el: Element): void {

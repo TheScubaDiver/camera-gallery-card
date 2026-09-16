@@ -83,7 +83,7 @@ describe("injectLiveFillStyle", () => {
     const host = mkHostWithShadow();
     injectLiveFillStyle(host);
     const css = host.shadowRoot!.querySelector("#cgc-fill")?.textContent ?? "";
-    expect(css).toContain("object-fit:cover!important");
+    expect(css).toContain("object-fit:var(--cgc-live-fit, cover)!important");
     expect(css).toContain("ha-hls-player");
     expect(css).toContain("ha-web-rtc-player");
     expect(css).toContain("ha-camera-stream");
@@ -97,5 +97,18 @@ describe("injectLiveFillStyle", () => {
     // Drain any pending timers — should not throw.
     vi.advanceTimersByTime(10_000);
     expect(host.shadowRoot).toBeNull();
+  });
+});
+
+describe("object-fit override", () => {
+  afterEach(() => {
+    document.body.innerHTML = "";
+  });
+
+  it("lets the host pick the fit via --cgc-live-fit, defaulting to cover", () => {
+    const host = mkHostWithShadow();
+    injectLiveFillStyle(host);
+    const css = host.shadowRoot!.querySelector("#cgc-fill")!.textContent ?? "";
+    expect(css).toMatch(/object-fit:\s*var\(--cgc-live-fit,\s*cover\)\s*!important/);
   });
 });

@@ -142,6 +142,7 @@ export interface InputConfig {
   live_camera_entity?: string;
   live_cameras?: LiveCameraEntryInput[];
   live_layout?: string;
+  live_fullscreen?: string;
   live_grid_labels?: boolean;
   live_stream_url?: string;
   live_stream_name?: string;

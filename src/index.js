@@ -75,6 +75,12 @@ import {
 } from "./data/pill-catalog";
 import { WebRtcMicClient } from "./data/webrtc-mic";
 import {
+  armWebkitExitResume,
+  liveFullscreenTarget,
+  pickVideoFullscreen,
+  shouldResumeAfterExit,
+} from "./data/video-fullscreen";
+import {
   detectPtzType,
   detectPtzButtons,
   dispatchAction as ptzDispatchAction,
@@ -294,6 +300,8 @@ class CameraGalleryCard extends LitElement {
 
     this._previewMediaKey = "";
     this._previewVideoEl = null;
+    this._videoFsWasPlaying = false;
+    this._videoLastPauseAt = null;
     this._prefetchKey = "";
     this._selectedPreviewSrc = "";
     this._deleted = new Set();
@@ -1111,6 +1119,7 @@ class CameraGalleryCard extends LitElement {
       });
       video.addEventListener("pause", () => {
         this._galleryPlaying = false;
+        this._videoLastPauseAt = performance.now();
         this._stopGalleryProgressRaf();
       });
       video.addEventListener("ended", () => {
@@ -1134,6 +1143,10 @@ class CameraGalleryCard extends LitElement {
       });
       video.addEventListener("durationchange", () => {
         this._galleryDuration = isFinite(video.duration) ? video.duration : 0;
+      });
+      video.addEventListener("webkitendfullscreen", () => this._onVideoFullscreenExit(video));
+      video.addEventListener("fullscreenchange", () => {
+        if (document.fullscreenElement !== video) this._onVideoFullscreenExit(video);
       });
 
       host.appendChild(video);
@@ -2100,12 +2113,42 @@ class CameraGalleryCard extends LitElement {
       return;
     }
 
+    const target = liveFullscreenTarget(
+      this.config?.live_fullscreen,
+      isGridLayout(this.config, this._liveLayoutOverride),
+      video,
+      !!document.fullscreenEnabled,
+    );
+
     // iOS Safari: webkitEnterFullscreen op video element
-    if (video && video.webkitSupportsFullscreen) {
+    if (target === "webkit") {
+      this._setLiveVideoControls(video, true);
+      armWebkitExitResume(video);
+      video.addEventListener("webkitendfullscreen", () => this._setLiveVideoControls(video, false), { once: true });
       video.webkitEnterFullscreen();
       return;
     }
 
+    if (target === "standard") {
+      this._setLiveVideoControls(video, true);
+      const onChange = () => {
+        if (document.fullscreenElement === video) return;
+        video.removeEventListener("fullscreenchange", onChange);
+        this._setLiveVideoControls(video, false);
+      };
+      video.addEventListener("fullscreenchange", onChange);
+      video.requestFullscreen().catch(() => {
+        video.removeEventListener("fullscreenchange", onChange);
+        this._setLiveVideoControls(video, false);
+        this._enterCardFullscreen(isAndroidWebView);
+      });
+      return;
+    }
+
+    this._enterCardFullscreen(isAndroidWebView);
+  }
+
+  _enterCardFullscreen(isAndroidWebView) {
     // Android WebView: skip native API, go to CSS fallback (zie boven)
     if (!isAndroidWebView && document.fullscreenEnabled) {
       this.requestFullscreen().catch(() => {});
@@ -2116,6 +2159,12 @@ class CameraGalleryCard extends LitElement {
     this._liveFullscreen = true;
     this.setAttribute("data-live-fs", "");
     this.requestUpdate();
+  }
+
+  // ha-camera-stream re-renders its video, so set the prop there too.
+  _setLiveVideoControls(video, on) {
+    if (this._liveCard) this._liveCard.controls = on;
+    video.controls = on;
   }
 
   async _toggleLivePip() {
@@ -2388,6 +2437,42 @@ class CameraGalleryCard extends LitElement {
           : body}
       </div>
     `;
+  }
+
+  _openVideoFullscreen() {
+    const video = this._previewVideoEl;
+    const mode = pickVideoFullscreen(video, !!document.fullscreenEnabled);
+    if (mode === "overlay") {
+      this._openImageFullscreen();
+      return;
+    }
+    this._videoFsWasPlaying = !video.paused;
+    // .pimg blocks pointer events; the native controls need them.
+    video.style.pointerEvents = "auto";
+    video.controls = true;
+    if (mode === "webkit") {
+      video.webkitEnterFullscreen();
+      return;
+    }
+    video.requestFullscreen().catch(() => {
+      this._onVideoFullscreenExit(video);
+      this._openImageFullscreen();
+    });
+  }
+
+  _onVideoFullscreenExit(video) {
+    video.controls = false;
+    video.style.pointerEvents = "";
+    const wasPlaying = this._videoFsWasPlaying;
+    const exitedAt = performance.now();
+    this._videoFsWasPlaying = false;
+    // iPhone pauses after this event, not before it. Look again shortly.
+    setTimeout(() => {
+      if (!video.paused || video !== this._previewVideoEl) return;
+      if (shouldResumeAfterExit(wasPlaying, this._videoLastPauseAt, exitedAt)) {
+        video.play().catch(() => {});
+      }
+    }, 500);
   }
 
   _openImageFullscreen() {
@@ -3458,7 +3543,8 @@ class CameraGalleryCard extends LitElement {
             @pointerdown=${(e) => e.stopPropagation()}
             @click=${(e) => {
               e.stopPropagation();
-              this._openImageFullscreen();
+              if (ctx.selectedIsVideo) this._openVideoFullscreen();
+              else this._openImageFullscreen();
             }}
           >
             <ha-icon icon="mdi:fullscreen"></ha-icon>
@@ -6260,7 +6346,7 @@ const CGC_CONFIG_KEY_ORDER = [
   "autoplay", "auto_muted",
   "show_today", "show_media_filter", "show_favorite", "show_live",
   // ─── Live ───
-  "live_enabled", "live_auto_muted", "live_cameras", "live_layout",
+  "live_enabled", "live_auto_muted", "live_cameras", "live_layout", "live_fullscreen",
   "live_grid_labels", "live_stream_urls", "live_go2rtc_url",
   "live_mic_mode", "live_mic_audio_processing",
   "live_mic_shape", "live_mic_button_position",
@@ -7985,6 +8071,7 @@ class CameraGalleryCardEditor extends HTMLElement {
     const liveEnabled = c.live_enabled === true;
     const liveCameraEntities = getLiveCameraEntityIds(c);
     const liveLayout = c.live_layout === "grid" ? "grid" : "single";
+    const liveFullscreen = c.live_fullscreen === "video" ? "video" : "card";
 
 
     const cameraEntities = Object.keys(this._hass?.states || {})
@@ -8899,6 +8986,15 @@ class CameraGalleryCardEditor extends HTMLElement {
             </div>
           </div>
           ` : ``}
+
+          <div class="row">
+            <div class="lbl">Fullscreen</div>
+            <div class="desc"><code>Card</code> keeps the pills, PTZ and zoom on screen. <code>Video</code> hands the stream to the browser's own player. Grid layout always uses <code>Card</code>.</div>
+            <div class="segwrap">
+              <button class="seg ${liveFullscreen === "card" ? "on" : ""}" data-livefs="card">Card</button>
+              <button class="seg ${liveFullscreen === "video" ? "on" : ""}" data-livefs="video">Video</button>
+            </div>
+          </div>
 
           <div class="row">
             <div class="row-head">
@@ -12981,6 +13077,21 @@ details summary { user-select: none; }
           this._fire();
         } else {
           this._set("live_layout", val);
+        }
+        btn.closest(".segwrap")?.querySelectorAll(".seg").forEach((s) => s.classList.toggle("on", s === btn));
+      });
+    });
+
+    this.shadowRoot.querySelectorAll(".seg[data-livefs]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const val = btn.dataset.livefs === "video" ? "video" : "card";
+        if (val === "card") {
+          const next = { ...this._config };
+          delete next.live_fullscreen;
+          this._config = this._stripAlwaysTrueKeys(next);
+          this._fire();
+        } else {
+          this._set("live_fullscreen", val);
         }
         btn.closest(".segwrap")?.querySelectorAll(".seg").forEach((s) => s.classList.toggle("on", s === btn));
       });
