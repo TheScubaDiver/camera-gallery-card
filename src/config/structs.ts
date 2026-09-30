@@ -30,6 +30,7 @@ import type { Struct } from "superstruct";
 
 import {
   ASPECT_RATIOS,
+  TAP_ACTIONS,
   AVAILABLE_OBJECT_FILTERS,
   BAR_OPACITY_MAX,
   BAR_OPACITY_MIN,
@@ -238,6 +239,23 @@ const ptzActionPair = object({
 });
 
 /**
+ * Home Assistant-style action config, fired when the live preview is tapped.
+ * Standard HA actions plus the card's own `fullscreen` / `snapshot` / `refresh`.
+ * Loose (`type`) so action-specific keys (`perform_action`, `target`, `data`,
+ * `navigation_path`, `url_path`, ...) pass through untouched.
+ */
+const tapAction = type({
+  action: enums(TAP_ACTIONS),
+  entity: optional(string()),
+  perform_action: optional(string()),
+  service: optional(string()),
+  navigation_path: optional(string()),
+  navigation_replace: optional(boolean()),
+  url_path: optional(string()),
+  confirmation: optional(union([boolean(), type({ text: optional(string()) })])),
+});
+
+/**
  * Per-direction overrides. Each is optional — directions without an
  * override fall through to the type-specific built-in dispatcher
  * (auto-detected button entity for EZVIZ/Reolink, `frigate.ptz` for
@@ -424,6 +442,9 @@ export const cameraGalleryCardConfigStruct = type({
   live_stream_name: optional(string()),
   live_stream_urls: optional(array(liveStreamUrlEntry)),
   live_go2rtc_url: optional(string()),
+  // Action fired when the single-camera live preview is tapped (HA action
+  // syntax). Unset keeps the built-in behaviour (show the quick-switch button).
+  tap_action: optional(tapAction),
   live_go2rtc_stream: optional(string()),
   live_mic_mode: defaulted(enums(MIC_MODES), DEFAULT_LIVE_MIC_MODE),
   live_mic_audio_processing: optional(liveMicAudioProcessing),
