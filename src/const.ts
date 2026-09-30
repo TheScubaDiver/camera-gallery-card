@@ -333,3 +333,21 @@ export const STYLE = {
   topbar_margin: "0px",
   topbar_padding: "0px",
 } as const;
+
+/**
+ * Action types supported by `tap_action`: the standard Home Assistant actions
+ * (minus `assist`, which needs frontend-internal dialogs) plus the card's own
+ * live controls.
+ */
+export const TAP_ACTIONS = [
+  "none",
+  "more-info",
+  "toggle",
+  "perform-action",
+  "call-service",
+  "navigate",
+  "url",
+  "fullscreen",
+  "snapshot",
+  "refresh",
+] as const;

@@ -3743,7 +3743,76 @@ class CameraGalleryCard extends LitElement {
       return;
     }
 
+    if (this._runTapAction(path)) return;
+
     this._showLiveQuickSwitchButton();
+  }
+
+  // Fires `tap_action` (HA action syntax) for a tap on the single-camera live
+  // preview. Returns true when an action consumed the tap. Taps on pills / nav
+  // buttons keep their own behaviour, and grid tiles keep "tap to focus".
+  _runTapAction(path) {
+    const cfg = this.config?.tap_action;
+    if (!cfg || !cfg.action || cfg.action === "none") return false;
+    if (this.config?.live_layout === "grid" && this._liveLayoutOverride !== "single") return false;
+    if (
+      this._pathHasClass(path, "gallery-pill") ||
+      this._pathHasClass(path, "pnavbtn") ||
+      this._pathHasClass(path, "pnav") ||
+      this._pathHasClass(path, "live-hamburger-wrap")
+    ) return false;
+
+    if (cfg.confirmation) {
+      const text = (typeof cfg.confirmation === "object" && cfg.confirmation.text) || "Are you sure?";
+      if (!window.confirm(text)) return true;
+    }
+
+    const hass = this._hass;
+    const entity = cfg.entity || this._liveSelectedCamera;
+    switch (cfg.action) {
+      case "more-info":
+        if (!entity) return false;
+        this.dispatchEvent(new CustomEvent("hass-more-info", {
+          bubbles: true, composed: true, detail: { entityId: entity },
+        }));
+        return true;
+      case "toggle":
+        if (!entity) return false;
+        hass?.callService("homeassistant", "toggle", { entity_id: entity });
+        return true;
+      case "perform-action":
+      case "call-service": {
+        const svc = cfg.perform_action || cfg.service;
+        if (!svc || !svc.includes(".")) return false;
+        const [domain, name] = svc.split(".");
+        hass?.callService(domain, name, { ...(cfg.data || cfg.service_data || {}) }, cfg.target);
+        return true;
+      }
+      case "navigate":
+        if (!cfg.navigation_path) return false;
+        if (cfg.navigation_replace) history.replaceState(null, "", cfg.navigation_path);
+        else history.pushState(null, "", cfg.navigation_path);
+        window.dispatchEvent(new CustomEvent("location-changed", {
+          detail: { replace: !!cfg.navigation_replace },
+        }));
+        return true;
+      case "url":
+        // Refuse script-bearing schemes; http(s) and relative paths only.
+        if (!cfg.url_path || /^\s*(javascript|data|vbscript):/i.test(cfg.url_path)) return false;
+        window.open(cfg.url_path, "_blank", "noopener,noreferrer");
+        return true;
+      case "fullscreen":
+        this._toggleLiveFullscreen();
+        return true;
+      case "snapshot":
+        this._captureLiveSnapshot();
+        return true;
+      case "refresh":
+        this._refreshLiveStream();
+        return true;
+      default:
+        return false;
+    }
   }
 
   _toggleLiveMode() {
@@ -6262,7 +6331,7 @@ const CGC_CONFIG_KEY_ORDER = [
   // ─── Live ───
   "live_enabled", "live_auto_muted", "live_cameras", "live_layout",
   "live_grid_labels", "live_stream_urls", "live_go2rtc_url",
-  "live_mic_mode", "live_mic_audio_processing",
+  "tap_action", "live_mic_mode", "live_mic_audio_processing",
   "live_mic_shape", "live_mic_button_position",
   "live_mic_waveform_enabled", "live_mic_waveform_sensitivity",
   "live_mic_ice_servers", "live_mic_force_relay",
