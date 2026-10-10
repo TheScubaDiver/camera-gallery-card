@@ -442,6 +442,9 @@ class CameraGalleryCard extends LitElement {
     this._viewMode = "media";
     this._liveSelectedCamera = "";
     this._liveMuted = false;
+    // Bumped whenever mounted/pending live media becomes stale (teardown,
+    // camera switch). Awaited setup steps compare against it before commit.
+    this._liveViewGeneration = 0;
     this._livePipActive = false;
     this._galleryPipActive = false;
     this._galleryPlaying = false;
@@ -488,6 +491,9 @@ class CameraGalleryCard extends LitElement {
     // override sticks until the next config change.
     this._galleryMuted = true;
     this._liveFullscreen = false;
+    // Bumped whenever a fullscreen entry/exit becomes stale (genuine exit,
+    // teardown). Pending native entries compare against it before acting.
+    this._cardFullscreenGeneration = 0;
     this._imgFsOpen = false;
     this._hamburgerOpen = false;
 
@@ -583,11 +589,21 @@ class CameraGalleryCard extends LitElement {
     };
 
     this._onFullscreenChange = () => {
-      const isFs = document.fullscreenElement === this || document.webkitFullscreenElement === this;
+      // A container's shadow root retargets document.fullscreenElement to
+      // its host. The root containing this card retains the card target.
+      const root = this.getRootNode();
+      const element = root.fullscreenElement || root.webkitFullscreenElement || document.fullscreenElement || document.webkitFullscreenElement;
+      const isFs = element === this;
       if (isFs) {
+        this._liveFallbackCleanup?.();
+        this._liveFullscreen = false;
         this.setAttribute('data-live-fs', '');
         this._showPills();
+      } else if (this._liveFallbackCleanup) {
+        // Unrelated native exit events must not dismiss CSS/top-layer fullscreen.
+        if (document.fullscreenElement || document.webkitFullscreenElement) this._exitCardFullscreenFallback();
       } else if (!document.fullscreenElement && !document.webkitFullscreenElement) {
+        if (this.hasAttribute('data-live-fs')) this._cardFullscreenGeneration++;
         this.removeAttribute('data-live-fs');
         this._liveFullscreen = false;
         this._resetZoom();
@@ -799,6 +815,7 @@ class CameraGalleryCard extends LitElement {
     // in `set hass` then catches it. Covers disconnect→reconnect cycles where
     // _hass stays set but the previous subscription was torn down.
     this._subscribeFrigateEvents();
+    this.requestUpdate(); // Remount live media after a disconnect/reconnect.
   }
 
   disconnectedCallback() {
@@ -817,7 +834,7 @@ class CameraGalleryCard extends LitElement {
     window.removeEventListener('keydown', this._onLiveCameraKeydown);
     window.removeEventListener("keydown", this._onPtzKeyDown);
     window.removeEventListener("keyup", this._onPtzKeyUp);
-    if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+    this._exitOwnedFullscreen();
 
     this._stopMediaPoll();
     this._unsubscribeFrigateEvents();
@@ -1668,7 +1685,9 @@ class CameraGalleryCard extends LitElement {
       return this._liveCard;
     }
 
+    const generation = this._liveViewGeneration;
     await customElements.whenDefined("ha-camera-stream");
+    if (generation !== this._liveViewGeneration || !this._isLiveActive()) return null;
     const player = document.createElement("ha-camera-stream");
     player.stateObj = this._hass?.states?.[entity];
     player.hass = this._hass;
@@ -1712,11 +1731,14 @@ class CameraGalleryCard extends LitElement {
     try {
       return await promise;
     } finally {
-      if (this._liveCardPending?.key === key) this._liveCardPending = null;
+      // Match on the promise, not the key: a newer call for the same key has
+      // its own in-flight entry that must survive this one's completion.
+      if (this._liveCardPending?.promise === promise) this._liveCardPending = null;
     }
   }
 
   async _ensureLiveCardFromUrlImpl(url, key) {
+    const generation = this._liveViewGeneration;
     const video = document.createElement("video");
     video.autoplay = true;
     video.muted = true;
@@ -1747,6 +1769,7 @@ class CameraGalleryCard extends LitElement {
         const now = Date.now();
         if (!this._signedWsPath || now - this._signedWsPathTs > 25_000) {
           const signed = await this._hass.callWS({ type: "auth/sign_path", path: "/api/webrtc/ws" });
+          if (generation !== this._liveViewGeneration) return null;
           this._signedWsPath = signed.path;
           this._signedWsPathTs = now;
         }
@@ -1825,9 +1848,11 @@ class CameraGalleryCard extends LitElement {
         }
       };
     } catch (err) {
+      if (generation !== this._liveViewGeneration) return null;
       console.warn("[CGC] RTSP stream failed:", err);
     }
 
+    if (generation !== this._liveViewGeneration || !this._isLiveActive()) return null;
     this._liveCard = video;
     this._liveCardConfigKey = key;
     return video;
@@ -2086,17 +2111,14 @@ class CameraGalleryCard extends LitElement {
     // unaffected because the video.webkitEnterFullscreen path runs first.
     const isAndroidWebView = /Android/.test(ua) && (/Home Assistant\//.test(ua) || /; wv\)/.test(ua));
 
-    // Uitgang fullscreen
-    if (document.fullscreenElement || document.webkitFullscreenElement || this._liveFullscreen) {
-      if (document.fullscreenElement || document.webkitFullscreenElement) {
-        (document.exitFullscreen || document.webkitExitFullscreen).call(document).catch(() => {});
+    // Exit only fullscreen owned by this card, not another dashboard card.
+    if (this._ownsFullscreen() || video?.webkitDisplayingFullscreen || this._liveFullscreen) {
+      if (this._ownsFullscreen() || video?.webkitDisplayingFullscreen) {
+        this._cardFullscreenGeneration++;
+        this._exitOwnedFullscreen(video);
         return;
       }
-      // CSS-fallback exit
-      this._liveFullscreen = false;
-      this._resetZoom();
-      this.removeAttribute("data-live-fs");
-      this.requestUpdate();
+      this._exitCardFullscreenFallback();
       return;
     }
 
@@ -2108,13 +2130,158 @@ class CameraGalleryCard extends LitElement {
 
     // Android WebView: skip native API, go to CSS fallback (zie boven)
     if (!isAndroidWebView && document.fullscreenEnabled) {
-      this.requestFullscreen().catch(() => {});
+      // A pending entry must not resurrect fullscreen after a genuine exit
+      // or teardown; a rejected entry falls back to the CSS/top-layer path
+      // (e.g. popup cards where transformed ancestors clip fixed layout).
+      const generation = this._cardFullscreenGeneration;
+      const stale = () => generation !== this._cardFullscreenGeneration || !this._isLiveActive();
+      const fallback = () => { if (!stale()) this._enterCardFullscreenFallback(); };
+      try {
+        Promise.resolve(this.requestFullscreen()).then(() => {
+          if (stale()) this._exitOwnedFullscreen();
+        }, fallback);
+      } catch (_) { fallback(); }
       return;
     }
 
     // CSS fallback (Android WebView, or no native fullscreen support).
+    this._enterCardFullscreenFallback();
+  }
+
+  _isVideoFullscreen(video) {
+    // Document retargets fullscreen inside shadow DOM to the card host.
+    return document.fullscreenElement === video || video.getRootNode?.().fullscreenElement === video;
+  }
+
+  _ownsFullscreen() {
+    // Start in the card's containing root, not the document: nested cards
+    // otherwise see only an ancestor container as the fullscreen target.
+    const root = this.getRootNode();
+    let element = root.fullscreenElement || root.webkitFullscreenElement || document.fullscreenElement || document.webkitFullscreenElement;
+    while (element) {
+      if (element === this) return true;
+      element = element.parentElement || element.getRootNode?.().host;
+    }
+    return false;
+  }
+
+  _exitOwnedFullscreen(video) {
+    if (this._ownsFullscreen()) {
+      const exit = document.exitFullscreen || document.webkitExitFullscreen;
+      try { Promise.resolve(exit?.call(document)).catch(() => {}); } catch (_) {}
+    }
+    // iOS native video fullscreen is not represented by document.fullscreenElement.
+    if (video?.webkitDisplayingFullscreen && typeof video.webkitExitFullscreen === "function") {
+      try { video.webkitExitFullscreen(); } catch (_) {}
+    }
+  }
+
+  _liveFullscreenAncestors() {
+    const ancestors = [];
+    for (let element = this; element; element = element.parentElement || element.getRootNode?.().host) {
+      ancestors.push(element);
+    }
+    return ancestors;
+  }
+
+  _liveFullscreenContainerHidden(ancestors) {
+    return ancestors.some((element) => {
+      const style = getComputedStyle(element);
+      // Bubble closes via transform, not display:none. Observe its local state
+      // without altering Bubble CSS, history, or any other popup/card.
+      return element.hidden || element.getAttribute("aria-hidden") === "true" ||
+        style.display === "none" || style.visibility === "hidden" || style.visibility === "collapse" ||
+        (element.classList.contains("bubble-pop-up") &&
+          (element.classList.contains("is-popup-closed") || element.classList.contains("is-closing")));
+    });
+  }
+
+  _exitCardFullscreenFallback() {
+    this._cardFullscreenGeneration++;
+    this._liveFallbackCleanup?.();
+    this._liveFullscreen = false;
+    this.removeAttribute("data-live-fs");
+    this._resetZoom();
+    this.requestUpdate();
+  }
+
+  _enterCardFullscreenFallback() {
+    this._liveFallbackCleanup?.();
+    const ancestors = this._liveFullscreenAncestors();
+    if (this._liveFullscreenContainerHidden(ancestors)) return;
+    let focus = document.activeElement;
+    while (focus?.shadowRoot?.activeElement) focus = focus.shadowRoot.activeElement;
+    const tabindex = this.getAttribute("tabindex");
+    let popover = false;
+    const exit = () => this._exitCardFullscreenFallback();
+    const onKey = (event) => {
+      if (event.key !== "Escape" || event.defaultPrevented) return;
+      // Route only to the focused/event-owning card, never a background
+      // fallback whose global listener happened to be registered first.
+      let active = document.activeElement;
+      while (active?.shadowRoot?.activeElement) active = active.shadowRoot.activeElement;
+      while (active && active !== this) active = active.parentElement || active.getRootNode?.().host;
+      if (!event.composedPath().includes(this) && active !== this) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      exit();
+    };
+    const onToggle = () => {
+      if (popover && this._liveFallbackCleanup === cleanup && !this.matches(":popover-open")) exit();
+    };
+    const observer = new MutationObserver(() => {
+      if (this._liveFullscreenContainerHidden(ancestors)) exit();
+    });
+    const cleanup = () => {
+      // Clear ownership first: hidePopover's deferred toggle must be harmless.
+      this._liveFallbackCleanup = null;
+      this.removeAttribute("data-live-fs-fallback");
+      observer.disconnect();
+      window.removeEventListener("keydown", onKey, true);
+      window.removeEventListener("popstate", exit);
+      window.removeEventListener("hashchange", exit);
+      this.removeEventListener("toggle", onToggle);
+      if (popover) {
+        try { this.hidePopover(); } catch (_) {}
+        this.removeAttribute("popover");
+        this.removeAttribute("data-live-fs-popover");
+      }
+      if (tabindex === null) this.removeAttribute("tabindex");
+      else this.setAttribute("tabindex", tabindex);
+      if (focus?.isConnected && !this._liveFullscreenContainerHidden(ancestors)) {
+        try { focus.focus({ preventScroll: true }); } catch (_) {}
+      }
+    };
+    this._liveFallbackCleanup = cleanup;
     this._liveFullscreen = true;
     this.setAttribute("data-live-fs", "");
+    this.setAttribute("data-live-fs-fallback", "");
+    // Same host, same shadow/media tree: no disconnect/reparent/stream restart.
+    // Manual popovers avoid light-dismiss closing an underlying Bubble popup.
+    if (!this.hasAttribute("popover") && typeof this.showPopover === "function" && typeof this.hidePopover === "function") {
+      this.setAttribute("popover", "manual");
+      this.setAttribute("data-live-fs-popover", "");
+      try {
+        this.showPopover();
+        popover = this.matches(":popover-open");
+      } catch (_) {}
+      if (!popover) {
+        try { this.hidePopover(); } catch (_) {}
+        this.removeAttribute("popover");
+        this.removeAttribute("data-live-fs-popover");
+      }
+    }
+    // Back follows HA/Bubble's normal navigation; never add or replace history.
+    window.addEventListener("keydown", onKey, true);
+    window.addEventListener("popstate", exit);
+    window.addEventListener("hashchange", exit);
+    this.addEventListener("toggle", onToggle);
+    for (const element of ancestors) observer.observe(element, {
+      attributes: true, attributeFilter: ["class", "style", "hidden", "aria-hidden"],
+    });
+    this.setAttribute("tabindex", "-1");
+    try { this.focus({ preventScroll: true }); } catch (_) {}
+    this._showPills();
     this.requestUpdate();
   }
 
@@ -2617,13 +2784,14 @@ class CameraGalleryCard extends LitElement {
     // Single mode — clean up any leftover grid tiles first.
     this._clearLiveGrid();
 
+    const generation = this._liveViewGeneration;
     const effectiveCam = this._getEffectiveLiveCamera();
     const streamEntry = this._getStreamEntryById(effectiveCam);
     const isStreamUrl = !!streamEntry;
     const card = isStreamUrl
       ? await this._ensureLiveCardFromUrl(streamEntry.url)
       : await this._ensureLiveCard();
-    if (!card) return;
+    if (!card || generation !== this._liveViewGeneration || !this._isLiveActive()) return;
 
     const isNewMount = card.parentElement !== host;
 
@@ -2662,6 +2830,14 @@ class CameraGalleryCard extends LitElement {
   // the <video>, and `display:none` doesn't pause playback either — so a card
   // left mounted in media mode keeps streaming and audible (issue #109).
   _teardownLiveView() {
+    this._liveViewGeneration++;
+    const video = this._findLiveVideo();
+    // Exit only fullscreen this card owns — never another dashboard card's.
+    this._cardFullscreenGeneration++;
+    this._exitOwnedFullscreen(video);
+    this._liveFallbackCleanup?.();
+    this._liveFullscreen = false;
+    this.removeAttribute("data-live-fs");
     if (this._autoAspectObs) {
       clearInterval(this._autoAspectObs);
       this._autoAspectObs = null;
@@ -2669,7 +2845,6 @@ class CameraGalleryCard extends LitElement {
     this._autoAspectVideo = null;
 
     // Pause first so audio stops before we wait on element removal.
-    const video = this._findLiveVideo();
     if (video) {
       try { video.pause(); } catch (_) {}
       try { video.srcObject = null; } catch (_) {}
