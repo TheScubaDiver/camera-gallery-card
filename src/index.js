@@ -74,6 +74,7 @@ import {
   sortPillsByOrder,
 } from "./data/pill-catalog";
 import { WebRtcMicClient } from "./data/webrtc-mic";
+import { syncLiveAudio } from "./data/live-audio";
 import {
   detectPtzType,
   detectPtzButtons,
@@ -382,6 +383,7 @@ class CameraGalleryCard extends LitElement {
       },
       onChange: () => {
         const next = this._micClient.state();
+        this._onMicAudioState(next);
         if (next !== this._micState) this._micState = next;
         const errCode = this._micClient.error()?.code ?? "";
         if (errCode !== this._micErrorCode) this._micErrorCode = errCode;
@@ -441,10 +443,18 @@ class CameraGalleryCard extends LitElement {
     this._thumbMenuOpenedAt = 0;
     this._viewMode = "media";
     this._liveSelectedCamera = "";
-    this._liveMuted = false;
+    this._liveMuted = true;
+    this._talkbackAudio = null;
     // Bumped whenever mounted/pending live media becomes stale (teardown,
     // camera switch). Awaited setup steps compare against it before commit.
     this._liveViewGeneration = 0;
+    this._liveAudioTimer = null;
+    this._liveAudioSuspended = true;
+    this._liveAudioLastVideo = null;
+    this._liveAudioLastStream = null;
+    this._liveAudioStatus = "Live audio inactive";
+    this._liveAudioPlaybackError = "";
+    this._liveAudioPlayAttempt = 0;
     this._livePipActive = false;
     this._galleryPipActive = false;
     this._galleryPlaying = false;
@@ -1624,7 +1634,7 @@ class CameraGalleryCard extends LitElement {
     const cams = getLiveCameraEntityIds(this.config);
     for (const id of cams) this._probeCameraResolution(id);
 
-    return buildDiagnostics({
+    const sections = buildDiagnostics({
       cardVersion: typeof CARD_VERSION === "string" ? CARD_VERSION : "",
       viewMode: this._viewMode,
       hass: this._hass,
@@ -1641,6 +1651,12 @@ class CameraGalleryCard extends LitElement {
       micStats: this._micClient?.stats() ?? null,
       micError: this._micClient?.error() ?? null,
     });
+    sections.push({
+      title: "Listening audio",
+      icon: "mdi:volume-high",
+      rows: [["Status", this._liveAudioPlaybackError || this._liveAudioStatus]],
+    });
+    return sections;
   }
 
   _diagnosticsToText() {
@@ -2095,11 +2111,34 @@ class CameraGalleryCard extends LitElement {
   }
 
   _toggleLiveMute() {
-    const newMuted = !this._liveMuted;
-    this._liveMuted = newMuted;
-    if (this._liveCard) this._liveCard.muted = newMuted;
-    const video = this._findLiveVideo();
-    if (video) video.muted = newMuted;
+    this._liveMuted = !this._liveMuted;
+    if (this._talkbackAudio) {
+      this._talkbackAudio.muted = this._liveMuted;
+      this._talkbackAudio.manual = true;
+    }
+    // Run play() in the speaker gesture, not just in a later Lit update.
+    this._syncLiveMuted(!this._liveMuted);
+    this.requestUpdate();
+  }
+
+  _onMicAudioState(next) {
+    if (next !== "idle" && next !== "error") {
+      if (!this._talkbackAudio) {
+        this._talkbackAudio = { muted: this._liveMuted, manual: false, activated: false };
+      }
+      if (next === "active" && !this._talkbackAudio.activated) {
+        this._talkbackAudio.activated = true;
+        if (!this._talkbackAudio.manual) {
+          this._liveMuted = false;
+          this._syncLiveMuted(true);
+        }
+      }
+      return;
+    }
+    if (!this._talkbackAudio) return;
+    this._liveMuted = this._talkbackAudio.muted;
+    this._talkbackAudio = null;
+    this._syncLiveMuted(!this._liveMuted);
   }
 
   _toggleLiveFullscreen() {
@@ -2603,23 +2642,45 @@ class CameraGalleryCard extends LitElement {
     });
   }
 
-  _applyLiveMuteState() {
-    const muted = this._liveMuted;
-    if (this._liveCard) this._liveCard.muted = muted;
-    const video = this._findLiveVideo();
-    if (video) {
-      video.muted = muted;
+  _applyLiveMuteState(forcePlay = false) {
+    if (this._liveAudioSuspended || !this._liveCard || !this._isLiveActive()) return false;
+    const { video, recovered, status } = syncLiveAudio(this._liveCard, this._liveMuted);
+    const changed = video !== this._liveAudioLastVideo || video?.srcObject !== this._liveAudioLastStream;
+    this._liveAudioLastVideo = video;
+    this._liveAudioLastStream = video?.srcObject;
+    this._liveAudioStatus = status;
+    if (this._liveMuted) {
+      this._liveAudioPlaybackError = "";
+      this._liveAudioPlayAttempt++;
+    }
+    if (video && !this._liveMuted && (forcePlay || changed || recovered)) {
+      const card = this._liveCard;
+      const attempt = ++this._liveAudioPlayAttempt;
+      this._liveAudioPlaybackError = "";
+      try {
+        Promise.resolve(video.play()).catch(() => {
+          if (attempt !== this._liveAudioPlayAttempt || card !== this._liveCard || video !== this._liveAudioLastVideo || this._liveMuted) return;
+          this._liveAudioPlaybackError = "Listening playback blocked; toggle the speaker to retry (browser autoplay policy)";
+          this.requestUpdate();
+        });
+      } catch (_) {
+        this._liveAudioPlaybackError = "Listening playback unavailable; toggle the speaker to retry";
+      }
     }
     return true;
   }
 
-  _syncLiveMuted() {
-    this._applyLiveMuteState();
-    // Alleen herhalen voor het unmute-geval: ha-camera-stream reset muted na stream connect
-    if (!this._liveMuted) {
-      setTimeout(() => this._applyLiveMuteState(), 2000);
-      setTimeout(() => this._applyLiveMuteState(), 5000);
-    }
+  _syncLiveMuted(forcePlay = false) {
+    if (!this._applyLiveMuteState(forcePlay)) return;
+    if (this._liveAudioTimer) return;
+    // Lifetime-bound polling also covers delayed shadow DOM, audio tracks and
+    // HA reconnects. It never retains a PC or stream and is stopped at teardown.
+    this._liveAudioTimer = setInterval(() => {
+      if (!this._applyLiveMuteState()) {
+        clearInterval(this._liveAudioTimer);
+        this._liveAudioTimer = null;
+      }
+    }, 500);
   }
 
   // Mic state lives in `this._micClient` (a WebRtcMicClient). The card just
@@ -2814,6 +2875,7 @@ class CameraGalleryCard extends LitElement {
       card.hass = this._hass;
       injectLiveFillStyle(card);
       this._liveMuted = this.config?.live_auto_muted !== false;
+      this._liveAudioSuspended = false;
       this._syncLiveMuted();
     }
 
@@ -2838,14 +2900,23 @@ class CameraGalleryCard extends LitElement {
     this._liveFallbackCleanup?.();
     this._liveFullscreen = false;
     this.removeAttribute("data-live-fs");
+    this._liveAudioSuspended = true;
+    clearInterval(this._liveAudioTimer);
+    this._liveAudioTimer = null;
+    this._liveAudioLastVideo = null;
+    this._liveAudioLastStream = null;
+    this._liveAudioStatus = "Live audio inactive";
+    this._liveAudioPlaybackError = "";
+    this._liveAudioPlayAttempt++;
     if (this._autoAspectObs) {
       clearInterval(this._autoAspectObs);
       this._autoAspectObs = null;
     }
     this._autoAspectVideo = null;
 
-    // Pause first so audio stops before we wait on element removal.
+    // Silence first; stop() can synchronously restore talkback's prior choice.
     if (video) {
+      video.muted = true;
       try { video.pause(); } catch (_) {}
       try { video.srcObject = null; } catch (_) {}
     }
