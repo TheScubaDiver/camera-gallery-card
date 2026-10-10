@@ -2128,24 +2128,30 @@ class CameraGalleryCard extends LitElement {
       return;
     }
 
-    // Android WebView: skip native API, go to CSS fallback (zie boven)
-    if (!isAndroidWebView && document.fullscreenEnabled) {
+    this._enterCardFullscreen(isAndroidWebView);
+  }
+
+  _enterCardFullscreen(isAndroidWebView) {
+    // Card fullscreen belongs to the live view, not an individual camera:
+    // a camera swap neither bumps the generation nor restarts the entry.
+    const generation = this._cardFullscreenGeneration;
+    const fallback = () => {
       // A pending entry must not resurrect fullscreen after a genuine exit
       // or teardown; a rejected entry falls back to the CSS/top-layer path
       // (e.g. popup cards where transformed ancestors clip fixed layout).
-      const generation = this._cardFullscreenGeneration;
-      const stale = () => generation !== this._cardFullscreenGeneration || !this._isLiveActive();
-      const fallback = () => { if (!stale()) this._enterCardFullscreenFallback(); };
+      if (!this._isLiveActive() || generation !== this._cardFullscreenGeneration) return;
+      this._enterCardFullscreenFallback();
+    };
+    // Android WebView: skip the native API and take the CSS/top-layer path.
+    if (!isAndroidWebView && document.fullscreenEnabled && this.requestFullscreen) {
       try {
         Promise.resolve(this.requestFullscreen()).then(() => {
-          if (stale()) this._exitOwnedFullscreen();
+          if (generation !== this._cardFullscreenGeneration || !this._isLiveActive()) this._exitOwnedFullscreen();
         }, fallback);
       } catch (_) { fallback(); }
       return;
     }
-
-    // CSS fallback (Android WebView, or no native fullscreen support).
-    this._enterCardFullscreenFallback();
+    fallback();
   }
 
   _isVideoFullscreen(video) {
@@ -2829,15 +2835,24 @@ class CameraGalleryCard extends LitElement {
   // URL-fast-path holds a PC + WS on `this` that won't close just by removing
   // the <video>, and `display:none` doesn't pause playback either — so a card
   // left mounted in media mode keeps streaming and audible (issue #109).
-  _teardownLiveView() {
+  _teardownLiveView({ preserveCardFullscreen = false } = {}) {
     this._liveViewGeneration++;
     const video = this._findLiveVideo();
-    // Exit only fullscreen this card owns — never another dashboard card's.
-    this._cardFullscreenGeneration++;
-    this._exitOwnedFullscreen(video);
-    this._liveFallbackCleanup?.();
-    this._liveFullscreen = false;
-    this.removeAttribute("data-live-fs");
+    // A camera swap keeps the card host in fullscreen without exit/re-entry.
+    // Descendant/native video fullscreen cannot survive removing that player.
+    const keepFullscreen = preserveCardFullscreen && this._isLiveActive() &&
+      !this.renderRoot?.fullscreenElement && !this.renderRoot?.webkitFullscreenElement &&
+      !video?.webkitDisplayingFullscreen;
+    if (!keepFullscreen) {
+      // Genuine exit: invalidate any pending entry, and exit only fullscreen
+      // this card owns — never another dashboard card's.
+      this._cardFullscreenGeneration++;
+      this._exitOwnedFullscreen(video);
+      this._liveFallbackCleanup?.();
+      this._liveFullscreen = false;
+      this.removeAttribute("data-live-fs");
+      this._resetZoom();
+    }
     if (this._autoAspectObs) {
       clearInterval(this._autoAspectObs);
       this._autoAspectObs = null;
@@ -3838,8 +3853,8 @@ class CameraGalleryCard extends LitElement {
     this._hideLiveQuickSwitchButton();
     // Full teardown of the current card before swapping cameras: URL→entity
     // transitions otherwise leak the previous PC/WS, since _ensureLiveCard
-    // doesn't know to close them.
-    this._teardownLiveView();
+    // doesn't know to close them. Keep card fullscreen while replacing media.
+    this._teardownLiveView({ preserveCardFullscreen: true });
     this._signedWsPath = null;
     this._liveSelectedCamera = next;
 

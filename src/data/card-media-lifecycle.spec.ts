@@ -182,6 +182,226 @@ describe("real card fullscreen handlers", () => {
     }
   );
 
+  function prepareCameraSwitch() {
+    Object.defineProperty(card, "updateComplete", { value: Promise.resolve(true) });
+    vi.spyOn(card, "_mountLiveCard").mockResolvedValue(undefined);
+    const exit = vi.fn(() => Promise.resolve());
+    Object.defineProperty(document, "exitFullscreen", { configurable: true, value: exit });
+    return exit;
+  }
+
+  it.each(["fullscreenElement", "webkitFullscreenElement"] as const)(
+    "camera selection retains nested card fullscreen and releases the old media (%s)",
+    async (property) => {
+      const exit = prepareCameraSwitch();
+      nestedFullscreen(property);
+      card._onFullscreenChange();
+      // PR3 trim: the integrate row also drives mic/talkback state
+      // (micState helper, _talkbackAudio/_liveAudioTimer, audio.stop) — those
+      // fields land with the audio PR (E), not with camera-switch continuity.
+      const socket = { close: vi.fn() };
+      const connection = { close: vi.fn() };
+      card._rtcWebSocket = socket;
+      card._rtcPeerConnection = connection;
+      const generation = card._liveViewGeneration;
+      await card._selectLiveCamera("camera.other");
+      expect(card.hasAttribute("data-live-fs")).toBe(true);
+      expect(card._ownsFullscreen()).toBe(true);
+      expect(exit).not.toHaveBeenCalled();
+      expect(card.requestFullscreen).not.toHaveBeenCalled();
+      expect(card._liveViewGeneration).toBe(generation + 1);
+      expect(video.pause).toHaveBeenCalled();
+      expect(video.srcObject).toBeNull();
+      expect(camera.parentElement).toBeNull();
+      expect(socket.close).toHaveBeenCalledTimes(1);
+      expect(connection.close).toHaveBeenCalledTimes(1);
+      Object.defineProperty(document, property, { configurable: true, value: null });
+    }
+  );
+
+  it("arrows retain CSS card fullscreen through successive selections", async () => {
+    const exit = prepareCameraSwitch();
+    card.config.live_cameras.push({ entity: "camera.other" }, { entity: "camera.third" });
+    card._hass = { states: { "camera.test": {}, "camera.other": {}, "camera.third": {} } };
+    card._liveFullscreen = true;
+    card.setAttribute("data-live-fs", "");
+    card._navLiveCamera(1);
+    card._navLiveCamera(1);
+    await Promise.resolve();
+    expect(card._liveSelectedCamera).toBe("camera.third");
+    expect(card._liveFullscreen).toBe(true);
+    expect(card.hasAttribute("data-live-fs")).toBe(true);
+    expect(exit).not.toHaveBeenCalled();
+    expect(card.requestFullscreen).not.toHaveBeenCalled();
+  });
+
+  it("a selection never exits another card's nested fullscreen", async () => {
+    const exit = prepareCameraSwitch();
+    const root = nestedFullscreen("fullscreenElement");
+    const other = document.createElement("div");
+    root.append(other);
+    Object.defineProperty(root, "fullscreenElement", { configurable: true, value: other });
+    await card._selectLiveCamera("camera.other");
+    expect(exit).not.toHaveBeenCalled();
+    expect(card.hasAttribute("data-live-fs")).toBe(false);
+    Object.defineProperty(document, "fullscreenElement", { configurable: true, value: null });
+  });
+
+  it.each(["fullscreenElement", "webkitFullscreenElement"] as const)(
+    "a selection exits descendant fullscreen before replacing the player (%s)",
+    async (property) => {
+      const exit = prepareCameraSwitch();
+      nestedFullscreen(property);
+      Object.defineProperty(card.renderRoot, property, { configurable: true, value: camera });
+      card.setAttribute("data-live-fs", "");
+      await card._selectLiveCamera("camera.other");
+      expect(exit).toHaveBeenCalledTimes(1);
+      expect(card.hasAttribute("data-live-fs")).toBe(false);
+      Object.defineProperty(document, property, { configurable: true, value: null });
+    }
+  );
+
+  it("a selection exits iOS native video fullscreen", async () => {
+    // PR3 trim: the integrate row also checks _liveVideoFsCleanup + video
+    // control restore — those belong to the PR#239 backport (A) and land
+    // with that PR, not with camera-switch continuity.
+    prepareCameraSwitch();
+    video.webkitDisplayingFullscreen = true;
+    video.webkitExitFullscreen = vi.fn();
+    await card._selectLiveCamera("camera.other");
+    expect(video.webkitExitFullscreen).toHaveBeenCalledTimes(1);
+    expect(card.hasAttribute("data-live-fs")).toBe(false);
+    video.webkitDisplayingFullscreen = false;
+  });
+
+  it.each(["media", "disconnect", "configuration"])(
+    "preserved card fullscreen still exits on %s",
+    async (reason) => {
+      const exit = prepareCameraSwitch();
+      nestedFullscreen("fullscreenElement");
+      card._onFullscreenChange();
+      await card._selectLiveCamera("camera.other");
+      if (reason === "media") card._setViewMode("media");
+      else if (reason === "disconnect") card.disconnectedCallback();
+      else
+        card.setConfig({
+          type: "custom:camera-gallery-card",
+          entities: ["sensor.synthetic"],
+          path_datetime_format: "YYYY-MM-DD",
+          live_enabled: false,
+        });
+      expect(exit).toHaveBeenCalled();
+      expect(card.hasAttribute("data-live-fs")).toBe(false);
+      expect(card._liveFullscreen).toBe(false);
+      Object.defineProperty(document, "fullscreenElement", { configurable: true, value: null });
+    }
+  );
+
+  it.each(["resolve", "reject"])(
+    "pending card entry can %s across a camera selection without exit/re-entry",
+    async (outcome) => {
+      const exit = prepareCameraSwitch();
+      let resolve!: () => void;
+      let reject!: (error: Error) => void;
+      card.requestFullscreen.mockReturnValue(
+        new Promise<void>((done, fail) => {
+          resolve = done;
+          reject = fail;
+        })
+      );
+      card._toggleLiveFullscreen();
+      await card._selectLiveCamera("camera.other");
+      if (outcome === "resolve") {
+        nestedFullscreen("fullscreenElement");
+        card._onFullscreenChange();
+        resolve();
+      } else reject(new Error("denied"));
+      await Promise.resolve();
+      expect(card.hasAttribute("data-live-fs")).toBe(true);
+      expect(exit).not.toHaveBeenCalled();
+      expect(card.requestFullscreen).toHaveBeenCalledTimes(1);
+      Object.defineProperty(document, "fullscreenElement", { configurable: true, value: null });
+    }
+  );
+
+  it.each(["control", "native-exit"])(
+    "a genuine %s invalidates a pending card request after a camera selection",
+    async (reason) => {
+      prepareCameraSwitch();
+      let reject!: (error: Error) => void;
+      card.requestFullscreen.mockReturnValue(
+        new Promise((_, fail) => {
+          reject = fail;
+        })
+      );
+      card._toggleLiveFullscreen();
+      await card._selectLiveCamera("camera.other");
+      const root = nestedFullscreen("fullscreenElement");
+      card._onFullscreenChange();
+      if (reason === "control") card._toggleLiveFullscreen();
+      Object.defineProperty(root, "fullscreenElement", { configurable: true, value: null });
+      Object.defineProperty(document, "fullscreenElement", { configurable: true, value: null });
+      card._onFullscreenChange();
+      reject(new Error("denied"));
+      await Promise.resolve();
+      expect(card.hasAttribute("data-live-fs")).toBe(false);
+      expect(card._liveFullscreen).toBe(false);
+    }
+  );
+
+  it("rapid real mounts discard older readiness and seed the final camera muted", async () => {
+    Object.defineProperty(card, "updateComplete", { value: Promise.resolve(true) });
+    card.config.live_cameras.push({ entity: "camera.other" }, { entity: "camera.third" });
+    card._hass = {
+      states: {
+        "camera.other": { last_changed: "other" },
+        "camera.third": { last_changed: "third" },
+      },
+    };
+    card._liveFullscreen = true;
+    card.setAttribute("data-live-fs", "");
+    let release!: () => void;
+    vi.spyOn(customElements, "whenDefined").mockReturnValue(
+      new Promise<CustomElementConstructor>((done) => {
+        release = () => done(HTMLElement);
+      })
+    );
+    vi.spyOn(card, "_setupAutoAspectRatio").mockImplementation(() => {});
+    const mount = vi.spyOn(card, "_mountLiveCard");
+    await card._selectLiveCamera("camera.other");
+    await card._selectLiveCamera("camera.third");
+    release();
+    await Promise.all(mount.mock.results.map((result) => result.value));
+    expect(card._liveCardConfigKey).toBe("webrtc:camera.third");
+    expect(card._liveCard.stateObj.last_changed).toBe("third");
+    expect(card.renderRoot.querySelector("#live-card-host").childElementCount).toBe(1);
+    expect(card._liveCard.muted).toBe(true);
+    expect(card.hasAttribute("data-live-fs")).toBe(true);
+    expect(camera.parentElement).toBeNull();
+    // PR3 trim: the integrate row also asserts `audio.stop` untouched —
+    // receiver-audio tracking lands with the audio PR (E).
+  });
+
+  it("a true exit during camera readiness prevents a late remount", async () => {
+    Object.defineProperty(card, "updateComplete", { value: Promise.resolve(true) });
+    let release!: () => void;
+    vi.spyOn(customElements, "whenDefined").mockReturnValue(
+      new Promise<CustomElementConstructor>((done) => {
+        release = () => done(HTMLElement);
+      })
+    );
+    const mount = vi.spyOn(card, "_mountLiveCard");
+    await card._selectLiveCamera("camera.other");
+    card._setViewMode("media");
+    release();
+    await Promise.all(mount.mock.results.map((result) => result.value));
+    expect(card._liveCard).toBeNull();
+    expect(card.renderRoot.querySelector("#live-card-host").childElementCount).toBe(0);
+    // PR3 trim: the integrate row also expects `_liveAudioTimer` null — that
+    // field lands with the audio PR (E).
+    expect(card.hasAttribute("data-live-fs")).toBe(false);
+  });
+
   it("Android Companion takes the CSS card path", () => {
     vi.spyOn(navigator, "userAgent", "get").mockReturnValue("Android; wv) Home Assistant/test");
     card._toggleLiveFullscreen();
@@ -210,6 +430,37 @@ describe("real card fullscreen handlers", () => {
     video.webkitExitFullscreen = vi.fn();
     card._teardownLiveView();
     expect(video.webkitExitFullscreen).toHaveBeenCalledTimes(1);
+  });
+
+  it("a late native fullscreen entry is released after live teardown", async () => {
+    let resolve!: () => void;
+    card.requestFullscreen.mockReturnValue(
+      new Promise<void>((done) => {
+        resolve = done;
+      })
+    );
+    document.exitFullscreen = vi.fn(() => Promise.resolve());
+    card._toggleLiveFullscreen();
+    card._teardownLiveView();
+    Object.defineProperty(document, "fullscreenElement", { configurable: true, value: card });
+    resolve();
+    await Promise.resolve();
+    expect(document.exitFullscreen).toHaveBeenCalledTimes(1);
+    Object.defineProperty(document, "fullscreenElement", { configurable: true, value: null });
+  });
+
+  it("stale card fullscreen rejection does not enable CSS fullscreen after teardown", async () => {
+    let reject!: (reason: Error) => void;
+    card.requestFullscreen.mockReturnValue(
+      new Promise((_, fail) => {
+        reject = fail;
+      })
+    );
+    card._toggleLiveFullscreen();
+    card._teardownLiveView();
+    reject(new Error("denied"));
+    await Promise.resolve();
+    expect(card.hasAttribute("data-live-fs")).toBe(false);
   });
 });
 
@@ -277,6 +528,22 @@ describe("same-host top-layer card fullscreen fallback", () => {
     expect(card.showPopover).not.toHaveBeenCalled();
     expect(card.hidePopover).not.toHaveBeenCalled();
     expect(card.getAttribute("popover")).toBe("auto");
+  });
+
+  it("keeps popover open across a camera switch and clears it on true teardown", async () => {
+    Object.defineProperty(card, "updateComplete", { value: Promise.resolve(true) });
+    vi.spyOn(card, "_mountLiveCard").mockResolvedValue(undefined);
+    card._toggleLiveFullscreen();
+    await card._selectLiveCamera("camera.other");
+    expect(open).toBe(true);
+    expect(card.showPopover).toHaveBeenCalledTimes(1);
+    expect(card.hidePopover).not.toHaveBeenCalled();
+    // PR3 trim: the integrate row also expects `video.muted` true — the
+    // silence-first mute write lands with the audio PR (E).
+    expect(video.srcObject).toBeNull();
+    card._setViewMode("media");
+    expect(open).toBe(false);
+    expect(card.hasAttribute("data-live-fs-popover")).toBe(false);
   });
 
   it.each(["disconnect", "configuration"])("pairs popover cleanup on %s", (reason) => {
