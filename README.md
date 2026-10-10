@@ -143,7 +143,14 @@ A few notes on the generic walker:
 - Default live camera
 - Camera friendly names and entity IDs in selector
 - Auto-teardown of stream + push-to-talk on view switch (no audio/bandwidth leak)
-- **Two-way audio (talkback)** — tap the mic pill in live view to speak through a camera's backchannel speaker. Per-camera, with tap-to-toggle or push-to-talk modes. *Advanced setup* — see [Two-way audio](#two-way-audio-advanced) below.
+- **Two-way audio (talkback)** — tap the mic pill in live view to speak through a camera's backchannel speaker. Per-camera, with tap-to-toggle or push-to-talk modes. Active talkback temporarily unmutes listening, then restores your previous setting; manual speaker choices take priority. *Advanced setup* — see [Two-way audio](#two-way-audio-advanced) below.
+
+Listening audio recovery reuses existing Home Assistant WebRTC receiver
+tracks to allow speaker unmute after muted startup. It depends on
+feature-detected player internals, so compatibility is not guaranteed across
+frontend versions. Browser autoplay policy can also block listening; retry
+with the speaker button and check **Debug → Listening audio**. Local automated
+tests do not establish real camera audio or device fullscreen behavior.
 
 ### Actions
 
