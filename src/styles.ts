@@ -125,6 +125,30 @@ export const cardStyles = css`
     }
   }
 
+  /* Mobile browser chrome/safe areas affect CSS fallback, not native layout. */
+  :host([data-live-fs][data-live-fs-fallback]) {
+    height: 100dvh !important;
+    box-sizing: border-box;
+    & .root {
+      min-height: 0;
+      box-sizing: border-box;
+      padding: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px)
+        env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px);
+    }
+  }
+
+  /* Reset UA popover geometry only for the card-owned fullscreen fallback. */
+  :host([data-live-fs][data-live-fs-popover]) {
+    margin: 0 !important;
+    border: 0 !important;
+    padding: 0 !important;
+    max-width: none !important;
+    max-height: none !important;
+    overflow: hidden !important;
+    background: #000;
+    color: inherit;
+  }
+
   .panel {
     background: var(--cgc-card-bg, var(--card-background-color, #fff));
     border: none;
