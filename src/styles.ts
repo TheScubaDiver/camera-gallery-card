@@ -113,6 +113,9 @@ export const cardStyles = css`
       min-height: 0;
       border-radius: 0 !important;
     }
+    /* HA's built-in WebRTC/HLS video otherwise caps at 100vh - 97px.
+     * Use the live host's height only while this card owns fullscreen. */
+    --video-max-height: 100%;
     & .preview {
       flex: 1 !important;
       height: auto !important;
@@ -120,7 +123,9 @@ export const cardStyles = css`
       border-radius: 0 !important;
       overflow: hidden;
     }
-    & :is(.divider, .objfilters, .tthumbs, .datepill, .seg) {
+    /* Hide gallery wrappers too: empty toolbar/timeline flex items still
+     * reserve row gaps and the thumbnail wrapper's minimum height. */
+    & :is(.topbar, .timeline, .divider, .objfilters, .tthumbs, .datepill, .seg) {
       display: none !important;
     }
   }
