@@ -406,6 +406,45 @@ describe("MediaSourceClient.ensureLoaded", () => {
     expect(ids).toEqual([`${root}/20260501_080000.mp4`, `${root}/20260502_120030.mp4`]);
   });
 
+  it("pairs a Reolink FTP still with its clip when the stamps differ by seconds", async () => {
+    // Reolink names each upload for its own capture time, so the stems
+    // never match. The walker's parsed `dtMs` feeds the proximity pass.
+    const root = "media-source://media_source/local/reolink_ftp";
+    const child = (title: string, cls: string, mime: string): unknown => ({
+      title,
+      media_class: cls,
+      media_content_type: mime,
+      media_content_id: `${root}/${title}`,
+      can_play: true,
+      can_expand: false,
+      thumbnail: null,
+      children: [],
+    });
+    hass.registerWs("media_source/browse_media", (p) => {
+      if (p["media_content_id"] !== root) return null;
+      return {
+        title: "reolink_ftp",
+        media_class: "directory",
+        media_content_type: "directory",
+        media_content_id: root,
+        can_play: false,
+        can_expand: true,
+        thumbnail: null,
+        children: [
+          child("Moss garden_00_20261012111141.jpg", "image", "image/jpeg"),
+          child("Moss garden_00_20261012111139.mp4", "video", "video/mp4"),
+        ],
+      };
+    });
+
+    client.load(baseConfig({ media_sources: [root], path_datetime_format: "YYYYMMDDHHmmss" }));
+    await client.ensureLoaded();
+
+    const clip = `${root}/Moss garden_00_20261012111139.mp4`;
+    expect(client.getIds()).toEqual([clip]);
+    expect(client.getPairedThumbs().get(clip)).toBe(`${root}/Moss garden_00_20261012111141.jpg`);
+  });
+
   it("drops stale results when load(config) bumps the generation mid-flight (B1, R5)", async () => {
     const root = "media-source://media_source/local/recordings";
     const child = (id: string, title: string): unknown => ({

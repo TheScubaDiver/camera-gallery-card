@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { CameraGalleryCardConfig } from "../config/normalize";
 import { makeFakeHass, type FakeHass } from "../test/fake-hass";
+import { dtMsFromSrc } from "./datetime-parsing";
 import { parseServiceParts, SensorSourceClient, toFsPath, toWebPath } from "./sensor-source";
 
 const baseConfig = (overrides: Partial<CameraGalleryCardConfig> = {}): CameraGalleryCardConfig =>
@@ -179,6 +180,35 @@ describe("SensorSourceClient.getItems", () => {
     // The thumbnail is removed from the rendered list; the video stays.
     expect(items.map((x) => x.src).sort()).toEqual(["/local/clip.mp4", "/local/other.mp4"]);
     expect(client.getSensorPairedThumbs().get("/local/clip.mp4")).toBe("/local/clip.jpg");
+  });
+
+  it("pairs timestamp-adjacent jpg/mp4 when enrich attaches dtMs", () => {
+    hass.setState("sensor.cam", {
+      fileList: ["/local/ftp/cam_00_20261012111141.jpg", "/local/ftp/cam_00_20261012111139.mp4"],
+    });
+    client.load(baseConfig({ entities: ["sensor.cam"] }));
+
+    // Mirrors the card's pipeline enrich: `dtMs` from `path_datetime_format`.
+    const opts = { pathFormat: "YYYYMMDDHHmmss" };
+    const enrich = (src: string): { src: string; dtMs?: number } => {
+      const dtMs = dtMsFromSrc(src, opts);
+      return dtMs !== null ? { src, dtMs } : { src };
+    };
+    const items = client.getItems(enrich);
+    expect(items.map((x) => x.src)).toEqual(["/local/ftp/cam_00_20261012111139.mp4"]);
+    expect(client.getSensorPairedThumbs().get("/local/ftp/cam_00_20261012111139.mp4")).toBe(
+      "/local/ftp/cam_00_20261012111141.jpg"
+    );
+  });
+
+  it("leaves timestamp-adjacent files unpaired without dtMs (default enrich)", () => {
+    hass.setState("sensor.cam", {
+      fileList: ["/local/ftp/cam_00_20261012111141.jpg", "/local/ftp/cam_00_20261012111139.mp4"],
+    });
+    client.load(baseConfig({ entities: ["sensor.cam"] }));
+
+    expect(client.getItems()).toHaveLength(2);
+    expect(client.getSensorPairedThumbs().size).toBe(0);
   });
 
   it("invokes the enrich callback with each src", () => {

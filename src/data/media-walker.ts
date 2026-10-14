@@ -436,9 +436,10 @@ export class MediaSourceClient {
 
   /**
    * Build a new list from raw walk results — pairs same-stem video/jpg
-   * siblings and rebuilds the by-id index. Never replaces the array
-   * reference for `list` so a snapshot taken from `state` stays in sync
-   * with `state.list` after pairing.
+   * siblings (or, failing that, timestamp-adjacent ones via `dtMs`) and
+   * rebuilds the by-id index. Never replaces the array reference for
+   * `list` so a snapshot taken from `state` stays in sync with
+   * `state.list` after pairing.
    */
   setList(items: readonly MsItem[]): void {
     const { items: paired, pairedThumbs } = pairMediaSourceThumbnails(

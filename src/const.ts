@@ -284,6 +284,19 @@ export const FRIGATE_API_RETRY_AFTER_MS = 5 * 60 * 1000;
 export const FRIGATE_SNAPSHOT_MATCH_WINDOW_MS = 15_000;
 
 /**
+ * Time window for proximity-pairing a plain-file thumbnail with a video
+ * whose filename differs only in its timestamp digits.
+ *
+ * Cameras that upload over FTP stamp each file with its own capture time:
+ * Reolink names the clip after the recording start (pre-record buffer
+ * included) and the still after the trigger frame, e.g.
+ * `Cam_00_20261012111139.mp4` + `Cam_00_20261012111141.jpg`. Same 15s
+ * budget as the Frigate match; the filename-shape check in
+ * `pairVideoThumbnails` keeps it from bridging two cameras or channels.
+ */
+export const THUMBNAIL_MATCH_WINDOW_MS = 15_000;
+
+/**
  * Time-to-live for a media-source resolve failure. After this elapses,
  * the next `queueResolve` for that ID re-attempts the resolve.
  *
