@@ -69,7 +69,7 @@ FileTrack is a fork of the archived [files integration by TarheelGrad1998](https
 ### Gallery
 
 - Image & video preview
-- **Fullscreen image viewer** — tap to open in fullscreen, rotates to landscape on mobile
+- **Fullscreen image viewer** — tap to open in fullscreen, rotates to landscape on mobile, with pinch-to-zoom, pan, double-tap and mouse wheel zoom
 - Timeline thumbnails with lazy loading
 - Day grouping
 - Filename timestamp parsing

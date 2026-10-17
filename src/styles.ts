@@ -167,12 +167,21 @@ export const cardStyles = css`
     justify-content: center;
     width: 100dvw;
     height: 100dvh;
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+    overflow: hidden;
   }
   .img-fs-overlay img,
   .img-fs-overlay video {
     max-width: 100%;
     max-height: 100%;
     object-fit: contain;
+  }
+  .img-fs-overlay img {
+    touch-action: none;
+    will-change: transform;
+    pointer-events: auto;
   }
   .img-fs-close {
     position: absolute;
