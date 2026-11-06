@@ -124,6 +124,8 @@ export interface InputConfig {
   // ─── Media source ──────────────────────────────────────────
   media_sources?: string[] | string;
   frigate_url?: string;
+  frigate_cameras?: string[];
+  frigate_labels?: string[];
   frigate_thumb_bbox?: boolean;
   frigate_event_cluster?: boolean;
   frigate_event_cluster_gap_sec?: number;
@@ -579,6 +581,20 @@ function preMigrateConfig(input: InputConfig): PreMigrated {
   if (cams !== undefined) {
     out.live_camera_entities = Array.isArray(cams)
       ? cams.map((s: string) => s.trim()).filter((s) => s.length > 0)
+      : [];
+  }
+
+  // frigate_cameras / frigate_labels: trim + drop empties, same as above.
+  const frigateCams = outAny["frigate_cameras"];
+  if (frigateCams !== undefined) {
+    outAny["frigate_cameras"] = Array.isArray(frigateCams)
+      ? frigateCams.map((s: string) => String(s ?? "").trim()).filter((s) => s.length > 0)
+      : [];
+  }
+  const frigateLabels = outAny["frigate_labels"];
+  if (frigateLabels !== undefined) {
+    outAny["frigate_labels"] = Array.isArray(frigateLabels)
+      ? frigateLabels.map((s: string) => String(s ?? "").trim()).filter((s) => s.length > 0)
       : [];
   }
 
