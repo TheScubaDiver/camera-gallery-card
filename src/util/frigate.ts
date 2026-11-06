@@ -123,14 +123,29 @@ export interface MappedFrigateItem {
 }
 
 /**
+ * Join a camera/label filter list into the comma-separated form Frigate's
+ * REST API expects (`cameras=a,b` / `labels=x,y`). Empty/missing input
+ * means "all" — Frigate's own default — so we omit the param entirely
+ * rather than sending an empty string.
+ */
+function joinFilterParam(values: readonly string[] | null | undefined): string {
+  const cleaned = (values ?? []).map((v) => String(v ?? "").trim()).filter((v) => v.length > 0);
+  return cleaned.join(",");
+}
+
+/**
  * Fetch the Frigate REST `/api/events?limit=…` endpoint. Returns null on any
  * network/parse failure (timeout, non-2xx, non-array body) — caller should
  * treat null as "no Frigate items" and fall back to the media-source walk.
+ *
+ * `cameras`/`labels` scope the query server-side via Frigate's own
+ * `cameras=`/`labels=` comma-separated filter params — omitted (or empty)
+ * means "all cameras"/"all labels", matching Frigate's default.
  */
 export async function fetchFrigateEvents(
   base: string,
   limit: number,
-  opts: { timeoutMs?: number } = {}
+  opts: { timeoutMs?: number; cameras?: readonly string[]; labels?: readonly string[] } = {}
 ): Promise<FrigateEvent[] | null> {
   const trimmedBase = String(base ?? "")
     .trim()
@@ -140,7 +155,12 @@ export async function fetchFrigateEvents(
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
-    const resp = await fetch(`${trimmedBase}/api/events?limit=${limit}`, {
+    const params = new URLSearchParams({ limit: String(limit) });
+    const cameras = joinFilterParam(opts.cameras);
+    const labels = joinFilterParam(opts.labels);
+    if (cameras) params.set("cameras", cameras);
+    if (labels) params.set("labels", labels);
+    const resp = await fetch(`${trimmedBase}/api/events?${params.toString()}`, {
       signal: ctrl.signal,
     });
     if (!resp.ok) return null;
@@ -201,6 +221,10 @@ export function mapFrigateEventToItem(
  * endpoint, but routed through HA — so it works regardless of CORS and
  * without needing a `frigate_url` in the card config.
  *
+ * `cameras`/`labels` are passed straight through to the WS command's own
+ * `cameras`/`labels` filter arrays (see the Frigate HA integration's
+ * `ws_api.py`) — omitted/empty means "all", same as the REST path.
+ *
  * Returns null on any failure (no instance id, integration missing, transport
  * error). Caller treats null as "no events" and falls back to the REST/walk path.
  */
@@ -210,7 +234,8 @@ interface HassLike {
 export async function fetchFrigateEventsViaWs(
   hass: HassLike | null | undefined,
   instanceId: string | null | undefined,
-  limit?: number
+  limit?: number,
+  opts: { cameras?: readonly string[]; labels?: readonly string[] } = {}
 ): Promise<FrigateEvent[] | null> {
   if (!hass || !instanceId) return null;
   try {
@@ -220,6 +245,10 @@ export async function fetchFrigateEventsViaWs(
       has_clip: true,
     };
     if (typeof limit === "number" && limit > 0) msg["limit"] = limit;
+    const cameras = (opts.cameras ?? []).map((c) => String(c ?? "").trim()).filter(Boolean);
+    const labels = (opts.labels ?? []).map((l) => String(l ?? "").trim()).filter(Boolean);
+    if (cameras.length) msg["cameras"] = cameras;
+    if (labels.length) msg["labels"] = labels;
     const result = await hass.callWS<unknown>(msg);
     let parsed: unknown = result;
     if (typeof parsed === "string") {
