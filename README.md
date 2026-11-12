@@ -162,7 +162,7 @@ A few notes on the generic walker:
 - **PTZ overlay** — a joystick with zoom and home buttons for cameras that can pan and tilt. Built-in support for EZVIZ, Reolink, Frigate and ONVIF, plus a manual mode that calls any service (see [Manual service PTZ](#manual-service-ptz))
 - Camera friendly names and entity IDs in selector
 - Auto-teardown of stream + push-to-talk on view switch (no audio/bandwidth leak)
-- **Two-way audio (talkback)** — tap the mic pill in live view to speak through a camera's backchannel speaker. Per-camera, with tap-to-toggle or push-to-talk modes, a full-width bar or a compact round button (`live_mic_shape`), and a live waveform while you talk. Active talkback temporarily unmutes listening, then restores your previous setting; manual speaker choices take priority. *Advanced setup* — see [Two-way audio](#two-way-audio-advanced) below.
+- **Two-way audio (talkback)** — tap the mic pill in live view to speak through a camera's backchannel speaker. Per-camera, with tap-to-toggle or push-to-talk modes, a full-width bar or a compact round button (`live_mic_shape`), over the video or in its own row below or above it (`live_mic_position`), and a live waveform while you talk. Active talkback temporarily unmutes listening, then restores your previous setting; manual speaker choices take priority. *Advanced setup* — see [Two-way audio](#two-way-audio-advanced) below.
 
 Listening audio recovery reuses existing Home Assistant WebRTC receiver
 tracks to allow speaker unmute after muted startup. It depends on
@@ -634,6 +634,7 @@ Everything below can also be set in the visual editor. Defaults are shown in bra
 | `live_mic_mode` | `toggle` (tap to start and stop) or `ptt` (press and hold) [`toggle`] |
 | `live_mic_shape` | `bar` (full width) or `button` (compact round button) [`bar`] |
 | `live_mic_button_position` | Position of the round button: `left`, `center`, or `right` [`center`] |
+| `live_mic_position` | Where the talk control sits: `overlay` (over the video), `below` or `above` (its own row, so it never covers the picture) [`overlay`] |
 | `live_mic_waveform_enabled` | Show a waveform while you talk [`true`] |
 | `live_mic_waveform_sensitivity` | Waveform sensitivity: `low`, `medium`, or `high` [`medium`] |
 | `live_mic_audio_processing` | Echo cancellation, noise suppression and auto gain: `{ echo_cancellation, noise_suppression, auto_gain_control }`, each [`true`] |
