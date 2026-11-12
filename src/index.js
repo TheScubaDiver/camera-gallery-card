@@ -36,6 +36,7 @@ import { REOLINK_LOGO_DATA_URL } from "./assets/reolink-logo";
 import { collectMediaSamples, scoreSamples } from "./data/path-format-detect";
 import { CombinedSourceClient } from "./data/combined-source";
 import { canDeleteItem, deleteItem } from "./data/delete-service";
+import { filenameFromUrl, resolveDownloadTarget } from "./data/download-target";
 import { galleryState, SKELETON_THUMB_COUNT } from "./data/gallery-state";
 import {
   buildThumbActionCall,
@@ -4404,7 +4405,18 @@ class CameraGalleryCard extends LitElement {
 
     if (actionId === "download") {
       this._closeThumbMenu();
-      await this._downloadSrc(url || item.src);
+      // Playback URLs aren't always files (#204): Frigate clips resolve to an
+      // HLS playlist, so fetch the integration's clip.mp4 instead, and don't
+      // save a bare playlist for other stream-only sources.
+      const target = resolveDownloadTarget(item.src, url);
+      if (target.kind === "stream") {
+        this._showErrorToast(
+          "Download not available",
+          "This source only provides a stream (HLS), not a video file to save."
+        );
+        return;
+      }
+      await this._downloadSrc(target.url, target.filename);
       return;
     }
 
@@ -4785,18 +4797,11 @@ class CameraGalleryCard extends LitElement {
     this.requestUpdate();
   }
 
-  async _downloadSrc(urlOrPath) {
+  async _downloadSrc(urlOrPath, filename) {
     if (!urlOrPath) return;
 
     const url = String(urlOrPath);
-    const base = url.split("?")[0].split("#")[0];
-    const name = (() => {
-      try {
-        return decodeURIComponent(base.split("/").pop() || "download");
-      } catch (_) {
-        return base.split("/").pop() || "download";
-      }
-    })();
+    const name = filename || filenameFromUrl(url);
 
     try {
       const resp = await fetch(url);
