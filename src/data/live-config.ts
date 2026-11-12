@@ -17,6 +17,7 @@ import { DEFAULT_LIVE_GRID_EMPHASIS } from "../const";
 import type { CameraGalleryCardConfig } from "../config/normalize";
 import type { HassEntity } from "../types/hass";
 import { entityDisplayName, type EntityNameSource } from "../util/entity-name";
+import { normalizeRotation, type Rotation } from "./live-rotation";
 
 /** A live-stream button (RTSP-go2rtc / HLS / etc. URL surfaced as a picker entry). */
 export interface StreamEntry {
@@ -634,4 +635,12 @@ export function getTriggerCameras(
     if (id && triggers.length > 0) out.push({ id, triggers });
   }
   return out;
+}
+
+/** Rotation of a live camera (entity id or stream id). 0 when unset. */
+export function liveCameraRotation(
+  cameraId: string | null | undefined,
+  config: CameraGalleryCardConfig | null | undefined
+): Rotation {
+  return normalizeRotation(findLiveCamera(cameraId, config)?.rotation);
 }

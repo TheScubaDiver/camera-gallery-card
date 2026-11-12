@@ -164,6 +164,11 @@ export const cardStyles = css`
     display: none;
   }
 
+  /* Size container for a rotated live host (see .has-rot). */
+  .preview.cgc-rot-pane {
+    container-type: size;
+  }
+
   .preview {
     position: relative;
     -webkit-mask-image: -webkit-radial-gradient(white, black);
@@ -314,6 +319,22 @@ export const cardStyles = css`
         translate(calc(var(--crop-x, 0%) * -1), calc(var(--crop-y, 0%) * -1)) !important;
       transform-origin: 0 0 !important;
     }
+    /* Per-camera rotation (data/live-rotation.ts). HA's stream element
+     * sizes itself to 100% of this host from inside its own shadow root, so
+     * we rotate the host instead: the preview pane is the size container,
+     * the host takes the pane's size (swapped for 90/270), sits centered
+     * and turns with the individual rotate/translate properties.
+     * Those apply before transform, which pinch-zoom sets inline. A crop
+     * still works on the host's child, in the camera's own orientation. */
+    &.has-rot {
+      inset: auto;
+      left: 50%;
+      top: 50%;
+      width: var(--rot-w, 100cqw);
+      height: var(--rot-h, 100cqh);
+      translate: -50% -50%;
+      rotate: var(--rot, 0deg);
+    }
     /* Multi-camera grid layout (live_layout: grid). Column tracks are
      * subdivided so rows can hold different numbers of tiles — see
      * gridLayout() in src/data/live-config.ts. The fallbacks reproduce a
@@ -410,11 +431,31 @@ export const cardStyles = css`
     touch-action: manipulation;
   }
 
-  .live-grid-tile > ha-camera-stream {
+  /* Wrapper around each tile's stream; carries the rotation. */
+  .live-grid-stream {
+    position: absolute;
+    inset: 0;
+  }
+
+  .live-grid-stream > ha-camera-stream {
     width: 100% !important;
     height: 100% !important;
     display: block !important;
     object-fit: cover !important;
+  }
+
+  /* Rotated grid tile: same technique as .has-rot on the live host. */
+  .live-grid-tile.has-rot {
+    container-type: size;
+  }
+  .live-grid-tile.has-rot > .live-grid-stream {
+    inset: auto;
+    left: 50%;
+    top: 50%;
+    width: var(--rot-w, 100cqw);
+    height: var(--rot-h, 100cqh);
+    translate: -50% -50%;
+    rotate: var(--rot, 0deg);
   }
 
   .live-grid-host.live-grid-no-labels .live-grid-label {

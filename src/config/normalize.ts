@@ -28,6 +28,7 @@ import type { Infer } from "superstruct";
 
 import { KNOWN_FILTERS } from "../data/object-filters";
 import { getStreamEntries } from "../data/live-config";
+import { normalizeRotation } from "../data/live-rotation";
 import { FRIGATE_URI_PREFIX, hasFrigateConfig } from "../util/frigate";
 import { cameraGalleryCardConfigStruct, type CameraGalleryCardConfigStruct } from "./structs";
 
@@ -62,6 +63,7 @@ export interface LiveCameraEntryInput {
   name?: string;
   mic?: string;
   crop?: LiveCameraCropInput;
+  rotation?: number | string;
   triggers?: string[];
 }
 
@@ -687,6 +689,9 @@ function preMigrateConfig(input: InputConfig): PreMigrated {
         if (url) built["url"] = url;
         built["name"] = name;
         if (mic) built["mic"] = mic;
+        // Rotation: snap to 0/90/180/270; 0 is the default and stays off.
+        const rotation = normalizeRotation(r["rotation"]);
+        if (rotation !== 0) built["rotation"] = rotation;
         // Trigger entities: trim, drop empties and duplicates, keep order.
         const trigRaw = r["triggers"];
         if (Array.isArray(trigRaw)) {

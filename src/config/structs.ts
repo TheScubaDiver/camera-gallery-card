@@ -192,6 +192,9 @@ const liveCameraEntry = object({
   name: defaulted(string(), ""),
   mic: optional(string()),
   crop: optional(liveCameraCrop),
+  // Clockwise rotation of the live picture, applied after the crop.
+  // See data/live-rotation.ts.
+  rotation: optional(enums([0, 90, 180, 270])),
   // Entities that switch the card to this camera when they turn active
   // (motion, occupancy, a doorbell event). See data/live-triggers.ts.
   triggers: optional(array(string())),

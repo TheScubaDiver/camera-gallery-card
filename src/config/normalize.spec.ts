@@ -1081,3 +1081,29 @@ describe("camera triggers config", () => {
     ).toThrow();
   });
 });
+
+describe("live camera rotation", () => {
+  it("keeps a supported rotation and snaps strings", () => {
+    const { config } = normalizeConfig({
+      live_enabled: true,
+      live_cameras: [
+        { entity: "camera.garage", rotation: 180 },
+        { entity: "camera.hall", rotation: "270" },
+        { entity: "camera.door", rotation: -90 },
+      ],
+    });
+    expect(config.live_cameras.map((c) => c.rotation)).toEqual([180, 270, 270]);
+  });
+
+  it("drops rotation 0 and unusable values", () => {
+    const { config } = normalizeConfig({
+      live_enabled: true,
+      live_cameras: [
+        { entity: "camera.a", rotation: 0 },
+        { entity: "camera.b", rotation: 45 },
+        { entity: "camera.c" },
+      ],
+    });
+    for (const cam of config.live_cameras) expect("rotation" in cam).toBe(false);
+  });
+});

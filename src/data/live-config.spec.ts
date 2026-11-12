@@ -19,6 +19,7 @@ import {
   micStreamForCamera,
   STREAM_ID_PREFIX,
   getTriggerCameras,
+  liveCameraRotation,
 } from "./live-config";
 
 function cfg(over: Partial<CameraGalleryCardConfig> = {}): CameraGalleryCardConfig {
@@ -933,5 +934,29 @@ describe("getTriggerCameras", () => {
 
   it("is empty without a config", () => {
     expect(getTriggerCameras(null)).toEqual([]);
+  });
+});
+
+describe("liveCameraRotation", () => {
+  const config = {
+    live_cameras: [
+      { entity: "camera.garage", name: "", rotation: 180 },
+      { entity: "camera.door", name: "" },
+      { url: "rtsp://a", name: "Shed", rotation: 90 },
+    ],
+  } as unknown as CameraGalleryCardConfig;
+
+  it("returns the rotation of an entity camera", () => {
+    expect(liveCameraRotation("camera.garage", config)).toBe(180);
+  });
+
+  it("returns the rotation of a stream camera by its stream id", () => {
+    expect(liveCameraRotation("__cgc_stream_0__", config)).toBe(90);
+  });
+
+  it("is 0 for unrotated or unknown cameras", () => {
+    expect(liveCameraRotation("camera.door", config)).toBe(0);
+    expect(liveCameraRotation("camera.nope", config)).toBe(0);
+    expect(liveCameraRotation("camera.door", null)).toBe(0);
   });
 });
