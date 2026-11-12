@@ -366,7 +366,7 @@ What a tap does:
 - **Everything else** is toggled.
 - A `service`, when set, always wins over these defaults.
 
-`placement` is YAML-only for now. The editor keeps it when you edit a button there.
+In the editor's Menu buttons tab, turn on **Show among live controls** for a button to set `placement: controls`. Turn it off to move the button back into the hamburger menu.
 
 ---
 
