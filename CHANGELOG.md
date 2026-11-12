@@ -1,5 +1,14 @@
 # Changelog
 
+## [3.3.0](https://github.com/TheScubaDiver/camera-gallery-card/compare/v3.2.0...v3.3.0) (2026-11-12)
+
+
+### Features
+
+* align with Home Assistant 2026 dashboards (names, grid, card picker) ([#273](https://github.com/TheScubaDiver/camera-gallery-card/issues/273)) ([c4c9931](https://github.com/TheScubaDiver/camera-gallery-card/commit/c4c9931c4adfaebe4100a7012ad4d6051ea41d7c))
+* **live:** use Home Assistant's own two-way audio when available ([#274](https://github.com/TheScubaDiver/camera-gallery-card/issues/274)) ([271ad9e](https://github.com/TheScubaDiver/camera-gallery-card/commit/271ad9e5a16c766a5ce6682d941e4257aa4e2a91))
+* native fullscreen options for clips and live, overlay stays default ([#276](https://github.com/TheScubaDiver/camera-gallery-card/issues/276)) ([686d554](https://github.com/TheScubaDiver/camera-gallery-card/commit/686d5548b240e05ef60a9c2b268b4e55f6adb2d2))
+
 ## [3.2.0](https://github.com/TheScubaDiver/camera-gallery-card/compare/v3.1.0...v3.2.0) (2026-11-12)
 
 
