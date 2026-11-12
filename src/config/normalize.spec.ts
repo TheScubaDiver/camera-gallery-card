@@ -876,6 +876,48 @@ describe("tap_action", () => {
   });
 });
 
+describe("thumb_actions", () => {
+  it("passes configured menu actions through untouched", () => {
+    const thumb_actions = [
+      {
+        name: "Archive",
+        icon: "mdi:archive-arrow-down",
+        perform_action: "script.archive_clip",
+        data: { path: "{path}", keep: true, nested: { id: "{media_id}" } },
+        target: { entity_id: "script.archive_clip" },
+        confirmation: { text: "Archive this clip?" },
+      },
+      { name: "Ping", perform_action: "script.ping", confirmation: true },
+    ];
+    const { config } = normalizeConfig({ ...minimalMedia, thumb_actions });
+    expect(config.thumb_actions).toEqual(thumb_actions);
+  });
+
+  it("is unset by default and round-trips without gaining the key", () => {
+    const first = normalizeConfig(minimalSensor);
+    expect(first.config.thumb_actions).toBeUndefined();
+    expect("thumb_actions" in normalizeConfig(first.config).config).toBe(false);
+  });
+
+  it("rejects a perform_action that isn't domain.service", () => {
+    expect(() =>
+      normalizeConfig({
+        ...minimalSensor,
+        thumb_actions: [{ name: "Bad", perform_action: "archive" }],
+      })
+    ).toThrow();
+  });
+
+  it("rejects an action without a name", () => {
+    expect(() =>
+      normalizeConfig({
+        ...minimalSensor,
+        thumb_actions: [{ name: " ", perform_action: "script.archive" }],
+      })
+    ).toThrow();
+  });
+});
+
 describe("live_grid_columns", () => {
   it("passes an in-range column pin through untouched", () => {
     const { config } = normalizeConfig({

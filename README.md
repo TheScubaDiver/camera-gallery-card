@@ -82,6 +82,7 @@ FileTrack is a fork of the archived [files integration by TarheelGrad1998](https
 - **Favorites** — star any item with a tap; filter the timeline to show only favorites
 - **Prev / next + keyboard navigation** — arrow buttons in the fullscreen viewer, plus <kbd>←</kbd>/<kbd>→</kbd> on desktop
 - **Runtime mute pill** — tap-to-mute pill on the video preview, independent of the global auto-mute toggle
+- **Custom menu actions** — add your own entries to the long-press menu that call a Home Assistant action with the item's path or URL (see [Custom menu actions](#custom-menu-actions))
 
 <img width="490" height="407" alt="Scherm­afbeelding 2026-03-29 om 17 05 49" src="https://github.com/user-attachments/assets/6817a0ae-5d57-4ebf-8c8d-b5452c66ad66" />
 
@@ -277,6 +278,61 @@ Then in the card editor: **General → Delete services → Frigate** → pick `r
 
 ---
 
+## Custom menu actions
+
+Add your own entries to the long-press (right-click) menu of a thumbnail. Each one calls a Home Assistant action, such as a script, with details of the pressed item. This lets you, for example, archive a recording to permanent storage without downloading it first. It is YAML-only for now.
+
+```yaml
+thumb_actions:
+  - name: Archive
+    icon: mdi:archive-arrow-down
+    perform_action: script.archive_clip
+    data:
+      path: "{path}"
+      media_id: "{media_id}"
+    confirmation: true
+```
+
+| Key | Description |
+|---|---|
+| `name` | Menu label (required) |
+| `icon` | MDI icon (default `mdi:gesture-tap-button`) |
+| `perform_action` | Action to call, in `domain.service` form (required) |
+| `data` | Action data. Placeholders below are filled in per item |
+| `target` | Optional action target (`entity_id`, `device_id`, `area_id`) |
+| `confirmation` | `true`, or `{ text: "..." }`, to ask before running |
+
+Placeholders, usable in any string inside `data` and `target`:
+
+| Placeholder | Value |
+|---|---|
+| `{path}` | Filesystem path on the HA host, when the card can derive it: `media-source://media_source/local/…` becomes `/media/…`, and `/local/…` becomes `/config/www/…`. Empty for other media folders and for integration sources such as Frigate or Reolink |
+| `{media_id}` | The item's own id: the `media-source://…` URI, or the sensor file path |
+| `{url}` | A URL the browser can open. For media-source items this is a signed, short-lived URL |
+| `{filename}` | The file name, e.g. `clip_2026-06-12_12-00-00.mp4` |
+
+The placeholders use single braces, so they never clash with `{{ }}` templates inside your script. A script receives the values as variables, for example:
+
+```yaml
+script:
+  archive_clip:
+    fields:
+      path:
+        description: File to archive
+    sequence:
+      - action: shell_command.archive_clip
+        data:
+          path: "{{ path }}"
+
+shell_command:
+  archive_clip: 'cp "{{ path }}" /media/archive/'
+```
+
+> [!NOTE]
+> If your media lives in a folder you added under `media_dirs` (anything other than `local`), the card can't see where that folder is on disk, so `{path}` stays empty. Pass `{media_id}` instead and map it to a path in your script.
+
+---
+
 ## Notification deep-links
 
 Opt-in URL parameters so an HA notification action can open this exact card straight into live view or the gallery. Nothing here does anything until you set `url_id` — without it the card ignores the query string entirely, which matters because the query string is page-scoped and would otherwise be picked up by every camera-gallery-card on the dashboard at once.
@@ -383,6 +439,8 @@ data:
 | `frigate_delete_service` | Frigate clip delete service (`rest_command.*`) |
 | `delete_confirm` | Show confirmation before deleting (default: `true`) |
 | `allow_bulk_delete` | Enable bulk delete (default: `true`) |
+| **Thumbnail menu** | |
+| `thumb_actions` | Extra long-press menu entries that call an HA action. See [Custom menu actions](#custom-menu-actions) |
 | **Layout & misc** | |
 | `card_height` | Card height in px |
 | `pill_size` | Pill text size (px) — pills scale around this |

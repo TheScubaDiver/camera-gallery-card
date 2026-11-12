@@ -269,6 +269,25 @@ const tapAction = type({
 });
 
 /**
+ * One user-defined entry in the long-press thumbnail menu (#243). Calls
+ * `perform_action` with `data` / `target`, after expanding the item
+ * placeholders (`{path}`, `{media_id}`, `{url}`, `{filename}`) — see
+ * `src/data/thumb-actions.ts`.
+ */
+const thumbAction = object({
+  name: nonEmptyString,
+  icon: optional(string()),
+  perform_action: refine(nonEmptyString, "perform_action", (v) =>
+    /^\s*[a-z0-9_]+\.[a-z0-9_]+\s*$/i.test(v)
+      ? true
+      : `must be in 'domain.service' form (got '${v}')`
+  ),
+  data: optional(record(string(), unknownValue())),
+  target: optional(record(string(), unknownValue())),
+  confirmation: optional(union([boolean(), object({ text: optional(string()) })])),
+});
+
+/**
  * Per-direction overrides. Each is optional — directions without an
  * override fall through to the type-specific built-in dispatcher
  * (auto-detected button entity for EZVIZ/Reolink, `frigate.ptz` for
@@ -535,6 +554,12 @@ export const cameraGalleryCardConfigStruct = type({
   delete_confirm: defaulted(boolean(), DEFAULT_DELETE_CONFIRM),
   delete_service: defaulted(serviceId, DEFAULT_DELETE_SERVICE),
   frigate_delete_service: defaulted(serviceId, ""),
+
+  // ─── Thumbnail menu ────────────────────────────────────────
+  // Extra long-press menu entries that call an HA action with the pressed
+  // item's details (#243). Optional (not defaulted) so an unset config
+  // round-trips without gaining the key.
+  thumb_actions: optional(array(thumbAction)),
 
   // ─── Object filters ────────────────────────────────────────
   // The loose `string | { name: icon }` input shape is unwrapped in
