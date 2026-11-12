@@ -69,7 +69,7 @@ FileTrack is a fork of the archived [files integration by TarheelGrad1998](https
 ### Gallery
 
 - Image & video preview
-- **Fullscreen image viewer** — tap to open in fullscreen, rotates to landscape on mobile
+- **Fullscreen image viewer** — tap to open in fullscreen, rotates to landscape on mobile, with pinch-to-zoom, pan, double-tap and mouse wheel zoom
 - Timeline thumbnails with lazy loading
 - Day grouping
 - Filename timestamp parsing
@@ -175,6 +175,7 @@ tests do not establish real camera audio or device fullscreen behavior.
   - All other sources (NAS, Blue Iris, etc.): first-frame capture
 - Sensor mode: first-frame capture
 - **Paired image + video** — when a snapshot and clip share the same filename stem they're shown as one item, with the image used as the thumbnail
+  - Snapshots stamped a few seconds off their clip pair too (Reolink FTP: `Cam_00_20261012111141.jpg` + `Cam_00_20261012111139.mp4`), when `path_datetime_format` dates both files, their names differ only in the timestamp digits, and the times are within 15s. A clip that started before the snapshot wins over a closer one that started after it
 
 ### Video controls
 
@@ -203,6 +204,7 @@ Features:
 - Controls mode dropdown (Overlay / Fixed)
 - Menu buttons tab — configure action buttons with entity, icon, label and on/off icon
 - Frigate URL field — set the direct Frigate API URL (shown in media and combined mode)
+- Deep-link id field — set `url_id` for notification deep-links, see [Notification deep-links](#notification-deep-links)
 - **Auto-detect path datetime format** — scans your sources and suggests a working format
 - Cleanup of legacy config keys
 - Live preview in the HA card picker
@@ -275,6 +277,45 @@ Then in the card editor: **General → Delete services → Frigate** → pick `r
 
 ---
 
+## Notification deep-links
+
+Opt-in URL parameters so an HA notification action can open this exact card straight into live view or the gallery. Nothing here does anything until you set `url_id` — without it the card ignores the query string entirely, which matters because the query string is page-scoped and would otherwise be picked up by every camera-gallery-card on the dashboard at once.
+
+Set a `url_id` in the editor's **Source → View** section (or `url_id: porch` in YAML), then point a notification action at:
+
+```
+/lovelace/home?cgc_id=porch&cgc_camera=camera.porch_gate
+```
+
+| Parameter | Meaning |
+|---|---|
+| `cgc_id` | Must match the card's `url_id` exactly, or the whole query string is ignored |
+| `cgc_view` | `live` or `gallery` — which screen to open |
+| `cgc_camera` | An entry from the card's own live camera list — a camera entity, or a `live_stream_urls` stream — opens live view on that camera |
+
+A worked example, e.g. from a motion automation:
+
+```yaml
+action: notify.mobile_app_your_phone
+data:
+  message: "Motion at the porch"
+  data:
+    clickAction: "/lovelace/home?cgc_id=porch&cgc_camera=camera.porch_gate"
+```
+
+`?cgc_id=porch&cgc_view=gallery` opens the gallery on the newest clip regardless of `thumb_sort_order` — with one caveat: once a day has more items than `max_media` (default 50), the gallery only ever holds the oldest `max_media` of them under `oldest` sorting, so the deep link lands on the newest clip *within that truncated window*, not necessarily the day's actual newest clip. That truncation applies to `oldest` sorting generally, deep link or not.
+
+> [!NOTE]
+> `cgc_camera` only works together with live view. The gallery's sources are configured separately from the live camera list, and the card has no camera-to-clip mapping, so a camera can't filter the gallery. Passing `cgc_camera` therefore implies live view — and an explicit `cgc_view=gallery` makes `cgc_camera` be ignored.
+
+> [!NOTE]
+> Deep links apply when the card first initializes on page load. Navigating to the same URL within an already-open dashboard may not re-run that initialization, since Home Assistant is a single-page app — for a reliable deep link, the notification should open the dashboard fresh (e.g. via `clickAction`) rather than assume a tab already on the dashboard will react.
+
+> [!NOTE]
+> All of `cgc_id`, `cgc_view`, and `cgc_camera` are case-sensitive. `cgc_view=Gallery` isn't recognized as `gallery` — and if a camera is also present, that falls through to opening *live* instead, the opposite of what a mistyped gallery link probably intended. And if more than one card on the dashboard shares the same `url_id`, they'll all react to the same query string at once — keep `url_id` unique per card.
+
+---
+
 ## Configuration options
 
 <details>
@@ -290,8 +331,11 @@ Then in the card editor: **General → Delete services → Frigate** → pick `r
 | `max_media` | Max media items |
 | **Frigate** | |
 | `frigate_url` | Optional direct Frigate REST API URL (e.g. `http://192.168.1.x:5000`). If omitted, the card uses the HA Frigate integration via WebSocket |
+| `frigate_cameras` | Server-side camera filter for Frigate sources (list of camera names, e.g. `[frontdoor]`). Empty/omitted means all cameras — Frigate's own default. Works with both the WS and REST (`frigate_url`) paths |
+| `frigate_labels` | Server-side label filter for Frigate sources (list of labels, e.g. `[cat]`). Empty/omitted means all labels |
 | **Gallery view** | |
 | `start_mode` | Default view: `gallery` or `live` |
+| `url_id` | Opt-in id for notification deep-links. See [Notification deep-links](#notification-deep-links) |
 | `preview_position` | `top` or `bottom` |
 | `clean_mode` | Hide overlays when preview is closed |
 | `object_fit` | Media display mode: `cover` or `contain` |
@@ -310,6 +354,7 @@ Then in the card editor: **General → Delete services → Frigate** → pick `r
 | `live_camera_entity` | Default camera entity for live view |
 | `live_camera_entities` | Camera entities visible in the live picker |
 | `live_layout` | `single` or `grid` (multi-camera) |
+| `tap_action` | Action fired when the single-camera live preview is tapped, using standard HA action syntax: `more-info`, `toggle`, `perform-action`, `navigate`, `url` (plus `confirmation`, `target`, `data`), `none`, or the card's own `fullscreen`, `snapshot`, `refresh`. Unset keeps the default behaviour |
 | `live_grid_labels` | Show camera name labels in grid mode |
 | `live_stream_urls` | Array of named RTSP streams: `[{url, name}]` |
 | `live_auto_muted` | Auto-mute audio in live view |
@@ -324,6 +369,10 @@ Then in the card editor: **General → Delete services → Frigate** → pick `r
 | `live_mic_audio_processing` | Per-mic Web Audio constraints |
 | `live_mic_ice_servers` | Advanced. Override built-in STUN list with custom STUN/TURN |
 | `live_mic_force_relay` | Advanced. Force `iceTransportPolicy: "relay"` (TURN-only) |
+| `live_ptz_enabled` | Enable the PTZ joystick overlay |
+| `live_ptz_position` | PTZ overlay corner: `top-left`, `top-right`, `bottom-left`, or `bottom-right` |
+| `live_ptz_speed` | Global PTZ speed (1–9) for integrations that support it |
+| `live_ptz_cameras` | Per-camera PTZ configuration, including built-in and manual-service dispatchers. See [Manual service PTZ](#manual-service-ptz) |
 | **Filters** | |
 | `object_filters` | Filter buttons (built-in and custom) |
 | `object_colors` | Color per object filter |
@@ -365,6 +414,50 @@ live_mic_mode: ptt        # press-and-hold; omit for tap-to-toggle
 
 See [Two-way audio (advanced)](#two-way-audio-advanced) for prerequisites and TURN setup.
 
+### Manual service PTZ
+
+For cameras controlled by a script or another Home Assistant service, use `type: service`. The format mirrors the custom PTZ configuration in `custom:webrtc-camera`:
+
+```yaml
+type: custom:camera-gallery-card
+live_enabled: true
+live_camera_entities:
+  - camera.some_camera_with_ptz
+live_ptz_enabled: true
+live_ptz_cameras:
+  camera.some_camera_with_ptz:
+    type: service
+    service: script.camera_ptz
+    data_left:
+      direction: directionleft
+    data_right:
+      direction: directionright
+    data_up:
+      direction: directionup
+    data_down:
+      direction: directiondown
+```
+
+The card passes the selected `data_*` object unchanged to the configured service. The simple `data_left`/`data_right`/`data_up`/`data_down` form is pulse-based: a command is sent immediately and repeated while the joystick is held.
+
+For services that start continuous movement, use WebRTC Camera's press/release form instead. The card sends `data_start_*` once when pressed and the matching `data_end_*` once when released:
+
+```yaml
+live_ptz_cameras:
+  camera.some_camera_with_ptz:
+    type: service
+    service: icsee_ptz.move
+    data_start_left:
+      entity_id: binary_sensor.some_camera_motion_alarm
+      cmd: DirectionLeft
+    data_end_left:
+      entity_id: binary_sensor.some_camera_motion_alarm
+      cmd: Stop
+    # Repeat start/end entries for right, up, and down.
+```
+
+Optional `data_zoom_in` and `data_zoom_out` objects together enable the zoom control; `data_home` enables the Home control. Service data may contain strings, numbers, booleans, and nested values. The visual editor exposes these objects as JSON fields; YAML uses the normal mapping syntax shown above.
+
 ### Minimal — sensor mode
 
 For users with file sensors (FileTrack) pointing at local camera storage. **Create the FileTrack sensors first** via *Settings → Devices & Services → FileTrack* (or use the editor's **Create new FileTrack sensor** button on the General tab) — the entity ids below should match what you created.
@@ -404,6 +497,28 @@ live_layout: single
 object_filters:
   - person
   - car
+```
+
+### Frigate, scoped to one camera
+
+Multiple cameras configured in Frigate, but this card instance should only
+ever show one of them (e.g. a dedicated per-camera dashboard page)?
+`frigate_cameras` / `frigate_labels` filter server-side, before the gallery
+ever sees the other cameras' events — unlike `object_filters`, which only
+controls which filter *buttons* are shown and has to be tapped manually.
+
+```yaml
+type: custom:camera-gallery-card
+source_mode: media
+media_sources:
+  - media-source://frigate/main/event-search/clips
+frigate_cameras:
+  - frig_kittycam_coral
+frigate_labels:
+  - cat
+live_enabled: true
+live_camera_entities:
+  - camera.frig_kittycam_coral
 ```
 
 ### Reolink NVR / Doorbell / camera
