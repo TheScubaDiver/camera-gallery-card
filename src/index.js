@@ -36,6 +36,7 @@ import { REOLINK_LOGO_DATA_URL } from "./assets/reolink-logo";
 import { collectMediaSamples, scoreSamples } from "./data/path-format-detect";
 import { CombinedSourceClient } from "./data/combined-source";
 import { canDeleteItem, deleteItem } from "./data/delete-service";
+import { nativeTalkShouldToggle, nativeTalkUiState, talkSource } from "./data/native-talk";
 import {
   isMenuButtonOn,
   menuButtonLabel,
@@ -500,6 +501,10 @@ class CameraGalleryCard extends LitElement {
     this._scrollPillTimer = null;
     this._micWaveRaf = null;
     this._micFreqBuf = new Uint8Array(256); // fftSize/2 — freq-domain bins
+    // HA's own two-way audio (2026.11 Labs): camera id → true/false/"pending"
+    // from `camera/capabilities`, and the active player's microphone state.
+    this._nativeTalkCaps = new Map();
+    this._nativeMicState = "off";
     this._onMicPointerDown = (e) => {
       e.stopPropagation();
       // Resolve the mic stream for the camera that's currently in focus.
@@ -507,6 +512,10 @@ class CameraGalleryCard extends LitElement {
       // no entry in `live_mic_streams` (and no legacy fallback) returns ""
       // and the pill should already be hidden — defensive check below.
       const cameraId = this._getEffectiveLiveCamera();
+      if (this._talkSourceFor(cameraId) === "native") {
+        this._onNativeTalkPointer("down");
+        return;
+      }
       const streamName = micStreamForCamera(cameraId, this.config);
       if (!streamName) return;
       const mode = this.config?.live_mic_mode ?? "toggle";
@@ -518,6 +527,10 @@ class CameraGalleryCard extends LitElement {
     };
     this._onMicPointerUp = (e) => {
       e.stopPropagation();
+      if (this._talkSourceFor(this._getEffectiveLiveCamera()) === "native") {
+        this._onNativeTalkPointer("up");
+        return;
+      }
       if (this.config?.live_mic_mode === "ptt" && this._micState !== "idle") {
         this._micClient.stop();
       }
@@ -1776,6 +1789,13 @@ class CameraGalleryCard extends LitElement {
     const player = document.createElement("ha-camera-stream");
     player.stateObj = this._hass?.states?.[entity];
     player.hass = this._hass;
+    // HA two-way audio (2026.11): mirror the player's microphone state.
+    this._nativeMicState = "off";
+    player.addEventListener("microphone-changed", (ev) => {
+      if (this._liveCard !== player) return;
+      this._nativeMicState = String(ev?.detail?.state || "off");
+      this.requestUpdate();
+    });
     player.muted = true; // start muted zodat autoplay werkt; _syncLiveMuted unmute daarna
     player.controls = false;
     player.style.cssText = `display:block;width:100%;height:100%;margin:0;object-fit:cover;`;
@@ -3196,14 +3216,26 @@ class CameraGalleryCard extends LitElement {
   // aria-live.
   _renderMicTalkbackBar() {
     const cameraId = this._getEffectiveLiveCamera();
-    const streamName = micStreamForCamera(cameraId, this.config);
-    if (!streamName) return html``;
-    const state = this._micState;
-    const err = this._micErrorCode;
+    const source = this._talkSourceFor(cameraId);
+    if (!source) return html``;
+    let state = this._micState;
+    let err = this._micErrorCode;
+    if (source === "native") {
+      // HA's own two-way audio: state comes from the player, not the mic client.
+      const ui = nativeTalkUiState(
+        this._liveCardConfigKey === `webrtc:${cameraId}` ? this._nativeMicState : "off",
+        { secureContext: window.isSecureContext !== false }
+      );
+      state = ui.state;
+      err = ui.error;
+    }
     const isPtt = this.config?.live_mic_mode === "ptt";
     const idleLabel = isPtt ? "Hold to talk" : "Tap to talk";
     const activeLabel = isPtt ? "Talking…" : "Talking… (tap to stop)";
-    const errorLabel = isPtt ? "Tap and hold to retry" : "Tap to retry";
+    const errorLabel =
+      source === "native" && err
+        ? this._micErrorLabelForCode(err)
+        : isPtt ? "Tap and hold to retry" : "Tap to retry";
     const label =
       state === "active"
         ? activeLabel
@@ -3375,6 +3407,46 @@ class CameraGalleryCard extends LitElement {
   // in-card toast and the HA persistent_notification payload so users
   // never see internal codes like `ws-server-error`. PR 15 (i18n) will
   // route this through hass.localize.
+  // ─── HA two-way audio (2026.11) ────────────────────────────────
+
+  /** "go2rtc", "native" or null: which backchannel the talk button uses. */
+  _talkSourceFor(cameraId) {
+    return talkSource({
+      cameraId,
+      go2rtcStream: String(micStreamForCamera(cameraId, this.config) || ""),
+      nativeSupported: this._nativeTalkSupported(cameraId),
+      nativeEnabled: this.config?.live_native_talk,
+    });
+  }
+
+  /** Whether HA reports two-way audio for `cameraId`; fetched once per camera. */
+  _nativeTalkSupported(cameraId) {
+    const id = String(cameraId || "");
+    if (!id.startsWith("camera.") || this.config?.live_native_talk === false) return false;
+    const cached = this._nativeTalkCaps.get(id);
+    if (cached !== undefined) return cached === true;
+    if (!this._hass?.callWS) return false;
+    this._nativeTalkCaps.set(id, "pending");
+    this._hass
+      .callWS({ type: "camera/capabilities", entity_id: id })
+      .then((caps) => this._nativeTalkCaps.set(id, caps?.two_way_audio === true))
+      .catch(() => this._nativeTalkCaps.set(id, false))
+      .finally(() => this.requestUpdate());
+    return false;
+  }
+
+  _onNativeTalkPointer(phase) {
+    if (window.isSecureContext === false) return; // the button already says HTTPS is needed
+    const player = this._liveCard;
+    if (!player?.toggleMicrophone) return;
+    const toggle = nativeTalkShouldToggle({
+      phase,
+      mode: this.config?.live_mic_mode ?? "toggle",
+      mic: this._nativeMicState,
+    });
+    if (toggle) Promise.resolve(player.toggleMicrophone()).catch(() => undefined);
+  }
+
   _micErrorLabelForCode(code, detail) {
     switch (code) {
       case "https-required":
@@ -6992,7 +7064,7 @@ const CGC_CONFIG_KEY_ORDER = [
   "live_enabled", "live_auto_muted", "live_cameras", "live_layout",
   "live_grid_labels", "live_grid_columns", "live_grid_emphasis", "live_stream_urls", "live_go2rtc_url",
   "tap_action", "live_mic_mode", "live_mic_audio_processing",
-  "live_mic_shape", "live_mic_button_position",
+  "live_mic_shape", "live_mic_button_position", "live_native_talk",
   "live_mic_waveform_enabled", "live_mic_waveform_sensitivity",
   "live_mic_ice_servers", "live_mic_force_relay",
   "live_ptz_enabled", "live_ptz_position", "live_ptz_speed", "live_ptz_cameras",
@@ -9780,7 +9852,7 @@ class CameraGalleryCardEditor extends HTMLElement {
           ${(() => {
             const comps = this._hass?.config?.components;
             const hasWebrtc = Array.isArray(comps) && comps.includes("webrtc");
-            if (hasWebrtc) return ``;
+            if (hasWebrtc || !hasAnyMicStream(this._config)) return ``;
             return `<div class="cgc-inline-warn">${svgIcon('mdi:alert-outline', 14)}<span>WebRTC Camera integration not detected — install it via HACS for the mic to work.</span></div>`;
           })()}
           ${(() => {
@@ -9791,7 +9863,18 @@ class CameraGalleryCardEditor extends HTMLElement {
             </div>`;
           })()}
         </div>
-        ${hasAnyMicStream(this._config) ? `
+        <div class="row">
+          <div class="row-head">
+            <div>
+              <div class="lbl">Home Assistant two-way audio</div>
+              <div class="desc">Use Home Assistant's own talk support for cameras without a mic stream above. Needs Home Assistant 2026.11 with <strong>Settings → System → Labs → Two-way audio</strong> on, a camera whose integration supports it (for example Reolink over RTSP, or Matter) and HTTPS. The talk button only appears on cameras that support it.</div>
+            </div>
+            <div class="togrow">
+              <label class="cgc-switch"><input type="checkbox" id="live-native-talk" ${this._config.live_native_talk !== false ? "checked" : ""}><span class="cgc-track"></span></label>
+            </div>
+          </div>
+        </div>
+        ${hasAnyMicStream(this._config) || this._config.live_native_talk !== false ? `
         <div class="row">
           <div class="lbl">Interaction</div>
           <div class="desc"><code>Toggle</code> latches the mic on/off with one tap. <code>Push-to-talk</code> holds the mic open only while pressed.</div>
@@ -13675,6 +13758,19 @@ details summary { user-select: none; }
       btn.addEventListener("click", () => {
         this._set("live_mic_waveform_sensitivity", btn.dataset.wfsens);
       });
+    });
+
+    // HA two-way audio (2026.11): on by default, so only `false` is written.
+    $("live-native-talk")?.addEventListener("change", (e) => {
+      if (e.target.checked) {
+        const next = { ...this._config };
+        delete next.live_native_talk;
+        this._config = next;
+        this._fire();
+      } else {
+        this._set("live_native_talk", false);
+      }
+      this._scheduleRender();
     });
 
 

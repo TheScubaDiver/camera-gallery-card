@@ -458,6 +458,7 @@ data:
 | `persistent_controls` | Always show controls (don't fade out) |
 | `menu_buttons` | Configurable action buttons in the hamburger menu or among the live controls. See [Live menu buttons](#live-menu-buttons) |
 | `live_mic_streams` | Per-camera map of go2rtc backchannel streams. See [Two-way audio](#two-way-audio-advanced) |
+| `live_native_talk` | Use Home Assistant's own two-way audio (2026.11+) for cameras that support it and have no go2rtc mic stream (default: `true`) |
 | `live_go2rtc_stream` | Legacy single-camera fallback for talkback |
 | `live_go2rtc_url` | Optional direct go2rtc URL for the live video fast-path |
 | `live_mic_mode` | Mic interaction model: `toggle` (default) or `ptt` |
@@ -832,7 +833,21 @@ Check that the `shell_command` or `rest_command` you point to is actually define
 
 ## Two-way audio (advanced)
 
-Two-way audio (talkback) lets you speak through a camera's backchannel speaker from the live view. Setup is more involved than the rest of the card — read this if you want to enable it.
+Two-way audio (talkback) lets you speak through a camera's backchannel speaker from the live view. There are two ways to set it up.
+
+### Home Assistant two-way audio (2026.11 and newer, easiest)
+
+Home Assistant 2026.11 can send your microphone to the camera itself. When it does, the card's talk button just works for that camera, with no go2rtc setup.
+
+1. Turn on **Settings → System → Labs → Two-way audio**.
+2. Use a camera whose integration supports it. At the time of writing that is Matter cameras and Reolink. Reolink must use **RTSP** (in the Reolink integration options), because RTMP and FLV can't carry audio back to the camera.
+3. Open Home Assistant over **HTTPS**. Browsers only allow the microphone on secure pages.
+
+The talk button appears on every camera for which Home Assistant reports two-way audio and that has no go2rtc mic stream set below. Toggle / push-to-talk and the button shape work the same. To turn it off, set `live_native_talk: false` (or switch off **Home Assistant two-way audio** in the editor's Two-way audio section).
+
+### go2rtc backchannel (any version)
+
+Setup is more involved than the rest of the card. A go2rtc mic stream set for a camera takes priority over Home Assistant's own two-way audio.
 
 **You need:**
 

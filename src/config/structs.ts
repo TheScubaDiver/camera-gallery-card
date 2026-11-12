@@ -542,6 +542,10 @@ export const cameraGalleryCardConfigStruct = type({
   // shape; `center` is the default and is dropped by the editor.
   live_mic_shape: optional(enums(["bar", "button"])),
   live_mic_button_position: optional(enums(["left", "center", "right"])),
+  // Use Home Assistant's own two-way audio (HA 2026.11, Labs) for cameras
+  // that report `two_way_audio` and have no go2rtc backchannel configured.
+  // Absent = on; `false` turns it off. See src/data/native-talk.ts.
+  live_native_talk: optional(boolean()),
 
   // ─── Live PTZ (pan/tilt + presets) ─────────────────────────
   // Per-camera map keyed by camera entity id; values configure the

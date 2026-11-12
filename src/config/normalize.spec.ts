@@ -989,3 +989,16 @@ describe("live_grid_emphasis", () => {
     );
   });
 });
+
+describe("live_native_talk", () => {
+  it("is unset by default and accepts false", () => {
+    expect(normalizeConfig(minimalSensor).config.live_native_talk).toBeUndefined();
+    expect(
+      normalizeConfig({ ...minimalSensor, live_native_talk: false }).config.live_native_talk
+    ).toBe(false);
+  });
+
+  it("rejects a non-boolean", () => {
+    expect(() => normalizeConfig({ ...minimalSensor, live_native_talk: "yes" })).toThrow();
+  });
+});
