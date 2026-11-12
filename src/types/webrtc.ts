@@ -7,7 +7,3 @@
 export interface SignedPath {
   path: string;
 }
-
-export interface WebRtcAnswer {
-  answer: string;
-}

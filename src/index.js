@@ -24,7 +24,6 @@ import { FavoritesStore } from "./data/favorites";
 import {
   parseServiceParts,
   SensorSourceClient,
-  toWebPath,
 } from "./data/sensor-source";
 import {
   isMediaSourceId,
@@ -92,7 +91,7 @@ import {
   resolvePillSettings,
   sortPillsByOrder,
 } from "./data/pill-catalog";
-import { WebRtcMicClient } from "./data/webrtc-mic";
+import { MIC_NOTIFICATION_ID, WebRtcMicClient } from "./data/webrtc-mic";
 import { syncLiveAudio } from "./data/live-audio";
 import {
   armWebkitExitResume,
@@ -115,7 +114,6 @@ import {
 } from "./data/ptz";
 import { buildDiagnostics, diagnosticsToText } from "./data/diagnostics";
 import {
-  FRIGATE_URI_PREFIX,
   frigateEventIdFromSrc,
   hasFrigateConfig,
   isFrigateRecordingsRoot,
@@ -130,24 +128,12 @@ import {
 } from "./util/locale";
 import {
   AVAILABLE_OBJECT_FILTERS,
-  DEFAULT_ALLOW_BULK_DELETE,
   DEFAULT_AUTOMUTED,
   DEFAULT_AUTOPLAY,
-  DEFAULT_BAR_OPACITY,
-  DEFAULT_CLEAN_MODE,
-  DEFAULT_FULLSCREEN_ZOOM,
-  DEFAULT_DELETE_CONFIRM,
-  DEFAULT_DELETE_SERVICE,
   DEFAULT_LIVE_AUTO_MUTED,
-  DEFAULT_LIVE_ENABLED,
   DEFAULT_LIVE_GRID_EMPHASIS,
   DEFAULT_MAX_MEDIA,
-  DEFAULT_PREVIEW_CLOSE_ON_TAP_WHEN_GATED,
   PTZ_SPEED_MAX,
-  DEFAULT_PREVIEW_POSITION,
-  DEFAULT_SOURCE_MODE,
-  DEFAULT_THUMB_BAR_POSITION,
-  DEFAULT_THUMB_LAYOUT,
   DEFAULT_THUMBNAIL_FRAME_PCT,
   DEFAULT_VISIBLE_OBJECT_FILTERS,
   MAX_VISIBLE_OBJECT_FILTERS,
@@ -159,7 +145,6 @@ import {
   THUMB_SWIPE_COMMIT,
   THUMB_SWIPE_MAX,
   THUMB_RADIUS,
-  THUMB_SIZE,
   THUMBS_ENABLED,
 } from "./const";
 
@@ -266,7 +251,6 @@ class CameraGalleryCard extends LitElement {
       _errorToast: { type: Object },
       _showDatePicker: { type: Boolean },
       _showLivePicker: { type: Boolean },
-      _showLiveQuickSwitch: { type: Boolean },
       _suppressNextThumbClick: { type: Boolean },
       _swipeStartX: { type: Number },
       _swipeStartY: { type: Number },
@@ -289,7 +273,6 @@ class CameraGalleryCard extends LitElement {
       _aspectRatio: { type: String },
       _micState: { type: String },
       _micErrorCode: { type: String },
-      _micLevelTick: { type: Number },
       _scrollPillText: { type: String },
       _scrollPillVisible: { type: Boolean },
       _hamburgerOpen: { type: Boolean },
@@ -329,7 +312,6 @@ class CameraGalleryCard extends LitElement {
     this._videoLastPauseAt = null;
     this._imgFsHandoff = null;
     this._prefetchKey = "";
-    this._selectedPreviewSrc = "";
     this._deleted = new Set();
     this._deletedFrigateEventIds = new Set();
     // Clean up legacy NEW-arrival localStorage from prior builds. The
@@ -363,8 +345,6 @@ class CameraGalleryCard extends LitElement {
     this._signedWsPathTs = 0;
     this._micState = "idle";
     this._micErrorCode = "";
-    this._micLevelTick = 0;
-    this._micLevelRaf = null;
     // PTZ overlay state. `_ptzActive` toggles the joystick + zoom + home
     // overlay on top of the live preview. Press-and-hold tracking lives
     // in `_ptzHold*`: the direction (or named action like zoom) we're
@@ -412,7 +392,7 @@ class CameraGalleryCard extends LitElement {
             this._hass?.callService("persistent_notification", "create", {
               title: "Camera Gallery Card — microphone",
               message: this._micErrorLabelForCode(err.code, err.detail),
-              notification_id: "cgc_mic_error",
+              notification_id: MIC_NOTIFICATION_ID,
             });
           } catch (_) {
             /* persistent_notification.create unavailable */
@@ -425,7 +405,6 @@ class CameraGalleryCard extends LitElement {
         if (next !== this._micState) this._micState = next;
         const errCode = this._micClient.error()?.code ?? "";
         if (errCode !== this._micErrorCode) this._micErrorCode = errCode;
-        this._scheduleMicLevelRaf();
         this.requestUpdate();
       },
       audioProcessing: this._micAudioProcessingFromConfig(),
@@ -434,7 +413,6 @@ class CameraGalleryCard extends LitElement {
     });
     this._autoAspectVideo = null;
     this._autoAspectObs = null;
-    this._liveQuickSwitchTimer = null;
     this._objectFilters = [];
     this._filterVideo = false;
     this._filterImage = false;
@@ -454,7 +432,6 @@ class CameraGalleryCard extends LitElement {
     this._showDatePicker = false;
     this._datePickerDays = null;
     this._showLivePicker = false;
-    this._showLiveQuickSwitch = false;
     this._debugOpen = false;
     this._pillsVisible = false;
     this._pillsHovered = false;
@@ -823,7 +800,6 @@ class CameraGalleryCard extends LitElement {
       isVideoForSrc: (src) => this._isVideoForSrc(src),
       onChange: () => this.requestUpdate(),
     });
-    this._previewLoadTimer = null;
 
     this._revealedThumbs = new Set();
     // Cluster expand-on-tap: tracks which cluster representatives the user
@@ -920,7 +896,6 @@ class CameraGalleryCard extends LitElement {
 
     this._stopMediaPoll();
     this._unsubscribeFrigateEvents();
-    if (this._liveQuickSwitchTimer) clearTimeout(this._liveQuickSwitchTimer);
     if (this._bulkHintTimer) clearTimeout(this._bulkHintTimer);
     if (this._scrollPillTimer) { clearTimeout(this._scrollPillTimer); this._scrollPillTimer = null; }
     this._scrollPillVisible = false;
@@ -931,9 +906,7 @@ class CameraGalleryCard extends LitElement {
     // the camera spinning.
     this._stopPtzHold();
     document.removeEventListener("visibilitychange", this._onPtzVisibilityChange);
-    this._cancelMicLevelRaf();
 
-    this._liveQuickSwitchTimer = null;
     this._bulkHintTimer = null;
 
     this._clearPreviewVideoHostPlayback();
@@ -1455,7 +1428,6 @@ class CameraGalleryCard extends LitElement {
         }
       }
 
-      this._selectedPreviewSrc = selectedSrc;
     });
   }
 
@@ -2073,10 +2045,6 @@ class CameraGalleryCard extends LitElement {
     return `--crop-x:${x}%;--crop-y:${y}%;--crop-w:${w};--crop-h:${h};`;
   }
 
-  _getStreamEntries() {
-    return getStreamEntries(this.config);
-  }
-
   _getStreamEntryById(id) {
     return getStreamEntryById(this.config, id);
   }
@@ -2088,15 +2056,6 @@ class CameraGalleryCard extends LitElement {
       localeTag: resolveLocale(this._hass),
       friendlyName: (id) => this._friendlyCameraName(id),
     });
-  }
-
-  _hideLiveQuickSwitchButton() {
-    if (this._liveQuickSwitchTimer) {
-      clearTimeout(this._liveQuickSwitchTimer);
-      this._liveQuickSwitchTimer = null;
-    }
-    this._showLiveQuickSwitch = false;
-    this.requestUpdate();
   }
 
   _findLiveVideo() {
@@ -2162,14 +2121,6 @@ class CameraGalleryCard extends LitElement {
     return map[val] || "16/9";
   }
 
-
-  _isLiveFullscreen() {
-    return this._isLiveActive() && (
-      !!document.fullscreenElement ||
-      !!document.webkitFullscreenElement ||
-      !!this._liveFullscreen
-    );
-  }
 
   _resetZoom() {
     this._zoomScale = 1;
@@ -2966,36 +2917,6 @@ class CameraGalleryCard extends LitElement {
     return arr;
   }
 
-  // The mic client computes input level in an RAF loop while active. We don't
-  // want the client to driveLit re-renders at 20Hz directly (each requestUpdate
-  // schedules a paint); instead, while active, we tick a counter at the same
-  // 20Hz cadence and that's the only Lit-observable that ratchets — the level
-  // value itself is read synchronously from the client during render.
-  _scheduleMicLevelRaf() {
-    if (this._micState !== "active") {
-      this._cancelMicLevelRaf();
-      return;
-    }
-    if (this._micLevelRaf !== null) return;
-    const tick = () => {
-      if (this._micState !== "active") {
-        this._micLevelRaf = null;
-        return;
-      }
-      this._micLevelTick = (this._micLevelTick + 1) | 0;
-      this.requestUpdate();
-      this._micLevelRaf = requestAnimationFrame(tick);
-    };
-    this._micLevelRaf = requestAnimationFrame(tick);
-  }
-
-  _cancelMicLevelRaf() {
-    if (this._micLevelRaf !== null) {
-      cancelAnimationFrame(this._micLevelRaf);
-      this._micLevelRaf = null;
-    }
-  }
-
   _onGridTileTap(entity) {
     this._liveLayoutOverride = "single";
     this._liveSelectedCamera = entity;
@@ -3309,10 +3230,6 @@ class CameraGalleryCard extends LitElement {
     this._liveCameraListCache = this._getLiveCameraOptions();
     this._showLivePicker = true;
     this.requestUpdate();
-  }
-
-  _renderLiveCardHost() {
-    return html`<div id="live-card-host" class="live-card-host"></div>`;
   }
 
   // ─── Talkback bar (two-way audio) ─────────────────────────────────────
@@ -4318,7 +4235,6 @@ class CameraGalleryCard extends LitElement {
     const next = String(entity || "").trim();
     if (!next) return;
 
-    this._hideLiveQuickSwitchButton();
     // Full teardown of the current card before swapping cameras: URL→entity
     // transitions otherwise leak the previous PC/WS, since _ensureLiveCard
     // doesn't know to close them. Keep card fullscreen while replacing media.
@@ -4363,7 +4279,6 @@ class CameraGalleryCard extends LitElement {
     }
 
     if (mode !== "live") {
-      this._hideLiveQuickSwitchButton();
       this._showLivePicker = false;
       this._resetZoom();
       this._aspectRatio = this._parseAspectRatio(this.config?.aspect_ratio);
@@ -4373,31 +4288,13 @@ class CameraGalleryCard extends LitElement {
     this.requestUpdate();
   }
 
-  _showLiveQuickSwitchButton() {
-    if (!this._isLiveActive()) return;
-    if (this._getLiveCameraOptions().length <= 1) return;
-
-    this._showLiveQuickSwitch = true;
-    this.requestUpdate();
-
-    if (this._liveQuickSwitchTimer) {
-      clearTimeout(this._liveQuickSwitchTimer);
-    }
-
-    this._liveQuickSwitchTimer = setTimeout(() => {
-      this._showLiveQuickSwitch = false;
-      this.requestUpdate();
-    }, 2500);
-  }
-
   _onPreviewClick(e) {
     if (!this._isLiveActive()) return;
 
     const path = e.composedPath?.() || [];
     if (
       this._pathHasClass(path, "live-picker") ||
-      this._pathHasClass(path, "live-picker-backdrop") ||
-      this._pathHasClass(path, "live-quick-switch")
+      this._pathHasClass(path, "live-picker-backdrop")
     ) return;
 
     if (this._hamburgerOpen && !this._pathHasClass(path, "live-hamburger-wrap")) {
@@ -4405,9 +4302,7 @@ class CameraGalleryCard extends LitElement {
       return;
     }
 
-    if (this._runTapAction(path)) return;
-
-    this._showLiveQuickSwitchButton();
+    this._runTapAction(path);
   }
 
   // Fires `tap_action` (HA action syntax) for a tap on the single-camera live
@@ -4526,13 +4421,11 @@ class CameraGalleryCard extends LitElement {
     if (!this._hasLiveConfig()) return;
 
     if (this._isLiveActive()) {
-      this._hideLiveQuickSwitchButton();
       this._setViewMode("media");
       this._showLivePicker = false;
       return;
     }
 
-    this._hideLiveQuickSwitchButton();
     this._setViewMode("live");
     this._showLivePicker = false;
 
@@ -4673,13 +4566,6 @@ class CameraGalleryCard extends LitElement {
       this._closeThumbMenu();
       if (cfg) await this._runCustomThumbAction(cfg, item, url);
     }
-  }
-
-  _isFrigateMediaItem(src) {
-    return (
-      isMediaSourceId(src) &&
-      isFrigateRoot(src)
-    );
   }
 
   _onThumbContextMenu(e, item) {
@@ -5119,10 +5005,6 @@ class CameraGalleryCard extends LitElement {
     return { items, usingMediaSource };
   }
 
-  _allKnownDays(itemsWithDay) {
-    return this._pipeline.getAllDays(itemsWithDay);
-  }
-
   _resolveItemMs(src) {
     return this._pipeline.resolveItemMs(src);
   }
@@ -5558,8 +5440,7 @@ class CameraGalleryCard extends LitElement {
       path.some((el) => el?.tagName === "VIDEO") ||
       this._pathHasClass(path, "viewtoggle") ||
       this._pathHasClass(path, "live-picker") ||
-      this._pathHasClass(path, "live-picker-backdrop") ||
-      this._pathHasClass(path, "live-quick-switch")
+      this._pathHasClass(path, "live-picker-backdrop")
     ) {
       return;
     }
@@ -5833,7 +5714,6 @@ class CameraGalleryCard extends LitElement {
     if (!prevConfig) {
       this._previewOpen = this.config.clean_mode ? false : true;
       this._showLivePicker = false;
-      this._showLiveQuickSwitch = false;
       this._aspectRatio = this._parseAspectRatio(nextConfig.aspect_ratio);
       const hasMedia = nextConfig.entities.length > 0 || nextConfig.media_sources.length > 0;
       const startMode = nextConfig.start_mode;
@@ -5877,13 +5757,11 @@ class CameraGalleryCard extends LitElement {
     );
 
     if (liveCameraConfigChanged) {
-      this._hideLiveQuickSwitchButton();
       this._teardownLiveView();
       this._signedWsPath = null;
     }
 
     if (!this._hasLiveConfig()) {
-      this._hideLiveQuickSwitchButton();
       this._showLivePicker = false;
       if (this._viewMode === "live") this._teardownLiveView();
       this._viewMode = "media";
@@ -6204,8 +6082,6 @@ class CameraGalleryCard extends LitElement {
       !!selected &&
       this._isVideoSmart(selectedUrl || selectedTitle, selectedMime, selectedCls);
 
-    const tsLabel = selected ? this._tsLabelFromFilename(selected) : "";
-
     const currentForNav = activeDay ?? newestDay;
     const dayIdx = currentForNav ? days.indexOf(currentForNav) : -1;
     const canPrev = dayIdx >= 0 && dayIdx < days.length - 1;
@@ -6219,10 +6095,6 @@ class CameraGalleryCard extends LitElement {
     const fsp = parseServiceParts(this.config?.frigate_delete_service);
 
     const canDelete = !!sp || !!fsp;
-    const canBulkDelete =
-      !!this.config?.allow_bulk_delete &&
-      (!!sp || !!fsp);
-
     const tsPosClass = this.config.bar_position === "bottom"
       ? "bottom"
       : this.config.bar_position === "hidden"
@@ -6440,8 +6312,7 @@ class CameraGalleryCard extends LitElement {
                 this._pathHasClass(path, "pnavbtn") ||
                 path.some((el) => el?.tagName === "VIDEO") ||
                 this._pathHasClass(path, "live-picker") ||
-                this._pathHasClass(path, "live-picker-backdrop") ||
-                this._pathHasClass(path, "live-quick-switch");
+                this._pathHasClass(path, "live-picker-backdrop");
 
               if (!isOnControls) {
                 e.preventDefault?.();
@@ -7137,7 +7008,6 @@ const CGC_ICONS = {
   'mdi:chevron-right': 'M8.59,16.58L13.17,12L8.59,7.41L10,6L16,12L10,18L8.59,16.58Z',
   'mdi:chevron-down': 'M7.41,8.58L12,13.17L16.59,8.58L18,10L12,16L6,10L7.41,8.58Z',
   'mdi:information-outline': 'M11,9H13V7H11M12,20C7.59,20 4,16.41 4,12C4,7.59 7.59,4 12,4C16.41,4 20,7.59 20,12C20,16.41 16.41,20 12,20M12,2A10,10 0 0,0 2,12A10,10 0 0,0 12,22A10,10 0 0,0 22,12A10,10 0 0,0 12,2M11,17H13V11H11V17Z',
-  'mdi:help-circle-outline': 'M11,18H13V16H11V18M12,2A10,10 0 0,0 2,12A10,10 0 0,0 12,22A10,10 0 0,0 22,12A10,10 0 0,0 12,2M12,20C7.59,20 4,16.41 4,12C4,7.59 7.59,4 12,4C16.41,4 20,7.59 20,12C20,16.41 16.41,20 12,20M12,6A4,4 0 0,0 8,10H10A2,2 0 0,1 12,8A2,2 0 0,1 14,10C14,12 11,11.75 11,15H13C13,12.75 16,12.5 16,10A4,4 0 0,0 12,6Z',
   'mdi:alert-outline': 'M11,15H13V17H11V15M11,7H13V13H11V7M12,2C6.47,2 2,6.5 2,12A10,10 0 0,0 12,22A10,10 0 0,0 22,12A10,10 0 0,0 12,2M12,20A8,8 0 0,1 4,12A8,8 0 0,1 12,4A8,8 0 0,1 20,12A8,8 0 0,1 12,20Z',
   'mdi:plus': 'M19,13H13V19H11V13H5V11H11V5H13V11H19V13Z',
   'mdi:backup-restore': 'M12,4C14.1,4 16.1,4.8 17.6,6.3C20.7,9.4 20.7,14.5 17.6,17.6C15.8,19.5 13.3,20.2 10.9,19.9L11.4,17.9C13.1,18.1 14.9,17.5 16.2,16.2C18.5,13.9 18.5,10.1 16.2,7.7C15.1,6.6 13.5,6 12,6V10.6L7,5.6L12,0.6V4M6.3,17.6C3.7,15 3.3,11 5.1,7.9L6.6,9.4C5.5,11.6 5.9,14.4 7.8,16.2C8.6,17 9.5,17.5 10.5,17.8L10,19.8C8.5,19.4 7.3,18.6 6.3,17.6Z',
@@ -7189,26 +7059,31 @@ const CGC_CONFIG_KEY_ORDER = [
   // ─── Source ───
   "source_mode", "entities", "media_sources", "frigate_url",
   "path_datetime_format", "max_media",
+  "frigate_cameras", "frigate_labels", "frigate_thumb_bbox",
+  "frigate_event_cluster", "frigate_event_cluster_gap_sec",
   // ─── Gallery ───
-  "start_mode", "url_id", "preview_position", "preview_height", "object_fit",
+  "start_mode", "url_id", "preview_position", "object_fit",
   "controls_mode", "clean_mode", "fullscreen_zoom", "gallery_fullscreen", "show_camera_title", "persistent_controls",
   "autoplay", "auto_muted",
   "show_today", "show_media_filter", "show_favorite", "show_live",
+  "preview_close_on_tap", "toolbar_order", "gallery_pills", "gallery_pills_align",
+  "gallery_chevrons_enabled",
   // ─── Live ───
-  "live_enabled", "live_auto_muted", "live_cameras", "live_layout", "live_fullscreen",
-  "live_grid_labels", "live_grid_columns", "live_grid_emphasis", "live_stream_urls", "live_go2rtc_url",
+  "live_enabled", "live_auto_muted", "live_cameras", "live_camera_entities", "live_layout", "live_fullscreen",
+  "live_grid_labels", "live_grid_columns", "live_grid_emphasis", "live_stream_url", "live_stream_name", "live_stream_urls",
+  "live_go2rtc_url", "live_go2rtc_stream", "live_pills", "live_chevrons_enabled",
   "tap_action", "live_mic_mode", "live_mic_audio_processing",
   "live_mic_shape", "live_mic_button_position", "live_native_talk",
   "live_mic_waveform_enabled", "live_mic_waveform_sensitivity",
-  "live_mic_ice_servers", "live_mic_force_relay",
+  "live_mic_ice_servers", "live_mic_force_relay", "live_mic_streams",
   "live_ptz_enabled", "live_ptz_position", "live_ptz_speed", "live_ptz_cameras",
-  "menu_buttons", "menu_button_style",
+  "menu_buttons",
   // ─── Thumbnails ───
   "thumb_layout", "thumb_bar_position", "thumb_size", "thumb_sort_order",
-  "thumbnail_frame_pct", "capture_video_thumbnails",
+  "thumbnail_frame_pct", "thumb_off_opacity", "capture_video_thumbnails",
   // ─── Styling ───
   "aspect_ratio", "bar_position", "bar_opacity", "talkback_opacity",
-  "chevron_opacity", "pill_size", "pill_gap", "row_gap", "card_height",
+  "chevron_opacity", "pill_size", "row_gap", "card_height",
   "style_variables",
   // ─── Filters / objects ───
   "object_filters", "object_colors", "entity_filter_map",
@@ -8898,12 +8773,6 @@ class CameraGalleryCardEditor extends HTMLElement {
       return Array.from(set).sort((a, b) => a.localeCompare(b));
     })();
 
-    const barOpacity = (() => {
-      const n = Number(c.bar_opacity);
-      if (!Number.isFinite(n)) return 45;
-      return Math.min(100, Math.max(0, n));
-    })();
-
     const thumbFramePct = (() => {
       const n = Number(c.thumbnail_frame_pct);
       if (!Number.isFinite(n)) return DEFAULT_THUMBNAIL_FRAME_PCT;
@@ -9142,18 +9011,6 @@ class CameraGalleryCardEditor extends HTMLElement {
         ${svgIcon(icon, 16)}
         <span>${label}</span>
       </button>
-    `;
-
-    const panelHead = (icon, title, subtitle) => `
-      <div class="panelhead">
-        <div class="panelicon">
-          ${svgIcon(icon, 20)}
-        </div>
-        <div class="panelhead-copy">
-          <div class="paneltitle">${title}</div>
-          ${subtitle ? `<div class="panelsubtitle">${subtitle}</div>` : ``}
-        </div>
-      </div>
     `;
 
     const mediaBrowserHtml = this._mediaBrowserOpen
@@ -11007,49 +10864,6 @@ class CameraGalleryCardEditor extends HTMLElement {
         .wrap { scrollbar-width: none; }
         .wrap::-webkit-scrollbar { display: none; }
 
-        .panelhead {
-          display: flex;
-          align-items: center;
-          gap: 4px;
-          padding-bottom: 6px;
-          min-width: 0;
-        }
-
-        .panelicon {
-          width: 40px;
-          height: 40px;
-          min-width: 40px;
-          border-radius: 14px;
-          display: grid;
-          place-items: center;
-          background: var(--ed-input-bg);
-          border: 1px solid var(--ed-input-border);
-          box-shadow: var(--ed-section-glow);
-        }
-
-        .panelicon .cgc-svg-icon {
-          color: var(--ed-text);
-        }
-
-        .panelhead-copy {
-          min-width: 0;
-          display: grid;
-          gap: 4px;
-        }
-
-        .paneltitle {
-          font-size: 16px;
-          font-weight: 1000;
-          color: var(--ed-text);
-          line-height: 1.2;
-        }
-
-        .panelsubtitle {
-          font-size: 12px;
-          color: var(--ed-text2);
-          line-height: 1.45;
-        }
-
         .row {
           display: grid;
           gap: 12px;
@@ -11974,11 +11788,6 @@ class CameraGalleryCardEditor extends HTMLElement {
           cursor: grab;
           transition: opacity 0.15s, box-shadow 0.15s;
         }
-        .livecam-tag-entity {
-          opacity: 0.45;
-          font-size: 10px;
-          font-weight: 500;
-        }
         .livecam-tag-del {
           border: none;
           background: none;
@@ -12072,18 +11881,6 @@ class CameraGalleryCardEditor extends HTMLElement {
 
         .objchip-icon .cgc-svg-icon {
           color: inherit;
-        }
-
-        .objchip-label {
-          min-width: 0;
-          overflow: hidden;
-          text-overflow: ellipsis;
-          white-space: nowrap;
-          color: inherit;
-        }
-
-        .objchip-check {
-          display: none;
         }
 
         .objchip-native-check {
@@ -12446,41 +12243,6 @@ class CameraGalleryCardEditor extends HTMLElement {
           gap: 4px;
         }
 
-        .hint-block {
-          display: grid;
-          gap: 8px;
-          align-items: start;
-        }
-
-        .hint-title {
-          display: flex;
-          align-items: center;
-          gap: 8px;
-          font-size: 12px;
-          color: var(--ed-text2);
-        }
-
-        .vars-list {
-          display: grid;
-          gap: 6px;
-          padding-left: 22px;
-        }
-
-        .vars-list div {
-          display: flex;
-          flex-wrap: wrap;
-          gap: 8px;
-          line-height: 1.45;
-        }
-
-        .vars-list code {
-          opacity: 1;
-        }
-
-        .vars-list span {
-          color: var(--ed-text2);
-        }
-
         .browser-open-title {
           font-size: 13px;
           font-weight: 950;
@@ -12594,14 +12356,6 @@ class CameraGalleryCardEditor extends HTMLElement {
           accent-color: var(--primary-color, #03a9f4);
         }
 
-        .radius-value {
-          font-size: 12px;
-          font-weight: 800;
-          color: var(--ed-text2);
-          min-width: 34px;
-          text-align: right;
-        }
-
         .radius-value-wrap {
           display: inline-flex;
           align-items: baseline;
@@ -12664,16 +12418,6 @@ class CameraGalleryCardEditor extends HTMLElement {
             width: 100%;
           }
 
-          .panelhead {
-            gap: 12px;
-          }
-
-          .panelicon {
-            width: 38px;
-            height: 38px;
-            min-width: 38px;
-          }
-
           .browser-modal {
             width: min(96vw, 760px);
             max-height: min(88vh, 760px);
@@ -12701,7 +12445,6 @@ class CameraGalleryCardEditor extends HTMLElement {
         .cgc-wizard-body { margin-top: 8px; display: flex; flex-direction: column; gap: 8px; }
         .cgc-wizard-row { display: flex; flex-direction: column; gap: 2px; }
         .cgc-wizard-row label { font-size: 12px; font-weight: 500; }
-        .cgc-wizard-hint { font-size: 11px; color: var(--secondary-text-color); }
         .cgc-wizard-prefix { font-size: 13px; color: var(--ed-text); white-space: nowrap; }
         .cgc-wizard-folder-row { display: flex; align-items: center; gap: 4px; }
         .ed-input {
@@ -12829,11 +12572,6 @@ class CameraGalleryCardEditor extends HTMLElement {
           background: transparent;
         }
 details summary { user-select: none; }
-        details summary .details-chevron { transition: transform 0.15s; margin-left: auto; }
-        details[open] summary .details-chevron { transform: rotate(90deg); }
-        .cgc-row-summary { cursor: pointer; list-style: none; display: flex; align-items: center; gap: 6px; padding: 0; }
-        .cgc-row-summary::-webkit-details-marker { display: none; }
-        .cgc-row-body { padding-top: 8px; }
         .ed-input-row { display: flex; align-items: center; gap: 6px; }
         .ed-suffix { font-size: 12px; color: var(--ed-text2); white-space: nowrap; }
         .cgc-wizard-btn {
@@ -15267,14 +15005,6 @@ details summary { user-select: none; }
       ? arr.map(String).map((s) => s.trim()).filter(Boolean)
       : [];
     return list.join("\n");
-  }
-
-  _esc(s) {
-    return String(s ?? "")
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;");
   }
 
 

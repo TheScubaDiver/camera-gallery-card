@@ -518,7 +518,7 @@ export const cameraGalleryCardConfigStruct = type({
   live_stream_urls: optional(array(liveStreamUrlEntry)),
   live_go2rtc_url: optional(string()),
   // Action fired when the single-camera live preview is tapped (HA action
-  // syntax). Unset keeps the built-in behaviour (show the quick-switch button).
+  // syntax). Unset means a tap does nothing beyond the card's own controls.
   tap_action: optional(tapAction),
   live_go2rtc_stream: optional(string()),
   live_mic_mode: defaulted(enums(MIC_MODES), DEFAULT_LIVE_MIC_MODE),
