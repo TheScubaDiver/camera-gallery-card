@@ -768,3 +768,46 @@ describe("Idempotence — running normalize on already-canonical output is a no-
     expect(second.config).toEqual(first.config);
   });
 });
+
+describe("tap_action", () => {
+  it("passes a perform-action config through untouched", () => {
+    const tap = {
+      action: "perform-action",
+      perform_action: "light.turn_on",
+      target: { entity_id: "light.porch" },
+      data: { brightness_pct: 50 },
+    };
+    const { config } = normalizeConfig({ ...minimalSensor, tap_action: tap });
+    expect(config.tap_action).toEqual(tap);
+  });
+
+  it.each(["more-info", "toggle", "none", "fullscreen", "snapshot", "refresh"])(
+    "accepts the %s action",
+    (action) => {
+      const { config } = normalizeConfig({ ...minimalSensor, tap_action: { action } });
+      expect(config.tap_action?.action).toBe(action);
+    }
+  );
+
+  it("accepts navigate/url with a confirmation prompt", () => {
+    const { config } = normalizeConfig({
+      ...minimalSensor,
+      tap_action: {
+        action: "navigate",
+        navigation_path: "/lovelace/cameras",
+        confirmation: { text: "Go?" },
+      },
+    });
+    expect(config.tap_action?.navigation_path).toBe("/lovelace/cameras");
+  });
+
+  it("is unset by default", () => {
+    expect(normalizeConfig(minimalSensor).config.tap_action).toBeUndefined();
+  });
+
+  it("rejects an unknown action type", () => {
+    expect(() =>
+      normalizeConfig({ ...minimalSensor, tap_action: { action: "explode" } })
+    ).toThrow();
+  });
+});
