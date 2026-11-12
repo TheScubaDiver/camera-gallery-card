@@ -93,6 +93,7 @@ import {
 } from "./data/pill-catalog";
 import { MIC_NOTIFICATION_ID, WebRtcMicClient } from "./data/webrtc-mic";
 import { syncLiveAudio } from "./data/live-audio";
+import { StreamWatchdog } from "./data/stream-watchdog";
 import {
   armWebkitExitResume,
   captureHandoff,
@@ -251,6 +252,7 @@ class CameraGalleryCard extends LitElement {
       _errorToast: { type: Object },
       _showDatePicker: { type: Boolean },
       _showLivePicker: { type: Boolean },
+      _streamLost: { type: Boolean },
       _suppressNextThumbClick: { type: Boolean },
       _swipeStartX: { type: Number },
       _swipeStartY: { type: Number },
@@ -328,6 +330,12 @@ class CameraGalleryCard extends LitElement {
     this._forceThumbReset = false;
     this._liveCard = null;
     this._liveCardConfigKey = "";
+    // Frozen-stream recovery (see data/stream-watchdog.ts).
+    this._streamWatch = new StreamWatchdog();
+    this._streamWatchTimer = null;
+    this._streamLost = false;
+    this._streamRecoveries = 0;
+    this._recoveryMuted = null;
     // Runtime override of `live_layout`. null = follow config; "single" =
     // user tapped a grid tile and we're temporarily in single-camera mode.
     this._liveLayoutOverride = null;
@@ -895,6 +903,7 @@ class CameraGalleryCard extends LitElement {
     this._exitOwnedFullscreen();
 
     this._stopMediaPoll();
+    this._stopStreamWatch();
     this._unsubscribeFrigateEvents();
     if (this._bulkHintTimer) clearTimeout(this._bulkHintTimer);
     if (this._scrollPillTimer) { clearTimeout(this._scrollPillTimer); this._scrollPillTimer = null; }
@@ -1725,6 +1734,15 @@ class CameraGalleryCard extends LitElement {
       },
       micStats: this._micClient?.stats() ?? null,
       micError: this._micClient?.error() ?? null,
+    });
+    sections.push({
+      title: "Stream recovery",
+      icon: "mdi:restart-alert",
+      rows: [
+        ["Auto-recover", this.config?.live_auto_recover === false ? "off" : "on"],
+        ["Rebuilds this session", String(this._streamRecoveries)],
+        ["Status", this._streamLost ? "stopped, gave up" : "ok"],
+      ],
     });
     sections.push({
       title: "Listening audio",
@@ -2622,6 +2640,100 @@ class CameraGalleryCard extends LitElement {
     }
   }
 
+  // ─── Frozen-stream recovery ───────────────────────────────────────
+  // Samples the live <video> once a second. The decisions live in
+  // data/stream-watchdog.ts; this only gathers the numbers and acts on the
+  // verdict. Single-camera live view only; grid tiles are not watched.
+  _startStreamWatch() {
+    if (this._streamWatchTimer) return;
+    this._streamWatchTimer = setInterval(() => this._tickStreamWatch(), 1000);
+  }
+
+  _stopStreamWatch() {
+    if (this._streamWatchTimer) {
+      clearInterval(this._streamWatchTimer);
+      this._streamWatchTimer = null;
+    }
+    this._resetStreamWatch();
+  }
+
+  _resetStreamWatch() {
+    this._streamWatch.reset();
+    if (this._streamLost) {
+      this._streamLost = false;
+      this.requestUpdate();
+    }
+  }
+
+  _tickStreamWatch() {
+    const watching = this._isLiveActive()
+      && !isGridLayout(this.config, this._liveLayoutOverride)
+      && this.config?.live_auto_recover !== false;
+    if (!watching) {
+      this._resetStreamWatch();
+      return;
+    }
+    const video = this._findLiveVideo();
+    // Never judge or rebuild while the user is on a screen we cannot restore:
+    // hidden tab, native video fullscreen, Picture-in-Picture, or talkback.
+    const blocked = document.hidden
+      || !!document.pictureInPictureElement
+      || (!!video && (document.fullscreenElement === video || !!video.webkitDisplayingFullscreen))
+      || this._micState !== "idle"
+      || this._nativeMicState !== "off";
+    const verdict = this._streamWatch.observe(
+      video
+        ? { t: Date.now(), key: video, currentTime: video.currentTime, paused: video.paused, ended: video.ended }
+        : null,
+      blocked,
+    );
+    if (verdict === "recover") {
+      this._recoverLiveStream();
+    } else if (verdict === "give-up") {
+      this._streamLost = true;
+      this.requestUpdate();
+    } else if (this._streamLost && !this._streamWatch.givenUp) {
+      // The stream moved again on its own, so the watchdog lifted its give-up.
+      this._streamLost = false;
+      this.requestUpdate();
+    }
+  }
+
+  // Rebuild the live player in place. Same path as a camera swap: full
+  // teardown (closes WebRTC/WS), keep card fullscreen, then mount again.
+  async _recoverLiveStream() {
+    this._streamRecoveries++;
+    // Keep the viewer's mute choice across the rebuild.
+    this._recoveryMuted = this._liveMuted;
+    this._teardownLiveView({ preserveCardFullscreen: true });
+    this._signedWsPath = null;
+    this.requestUpdate();
+    await this.updateComplete;
+    this._mountLiveCard();
+  }
+
+  // "Try again" on the stream-stopped notice: fresh set of attempts.
+  _retryLiveStream() {
+    this._streamWatch.reset();
+    this._streamLost = false;
+    this._recoverLiveStream();
+  }
+
+  _renderStreamLostBanner() {
+    if (!this._streamLost || !this._isLiveActive()) return html``;
+    return html`
+      <div class="snapshot-toast stream-lost" role="status" aria-live="polite">
+        <span>Stream stopped</span>
+        <button
+          type="button"
+          class="stream-lost-retry"
+          @pointerdown=${(e) => e.stopPropagation()}
+          @click=${(e) => { e.stopPropagation(); this._retryLiveStream(); }}
+        >Try again</button>
+      </div>
+    `;
+  }
+
   // Force-rebuild the live card so the underlying stream reconnects.
   // Works for both webrtc + ha-camera-stream paths because the next
   // render's _ensureLiveCard* call recreates the player from scratch.
@@ -3145,7 +3257,8 @@ class CameraGalleryCard extends LitElement {
     if (isNewMount) {
       card.hass = this._hass;
       injectLiveFillStyle(card);
-      this._liveMuted = this.config?.live_auto_muted !== false;
+      this._liveMuted = this._recoveryMuted ?? (this.config?.live_auto_muted !== false);
+      this._recoveryMuted = null;
       this._liveAudioSuspended = false;
       this._syncLiveMuted();
     }
@@ -3154,6 +3267,7 @@ class CameraGalleryCard extends LitElement {
     // config value, even when the stream was pre-warmed and the video
     // already has intrinsic dimensions.
     this._setupAutoAspectRatio();
+    this._startStreamWatch();
   }
 
   // Fully releases the live view: stops playback, closes WebRTC, detaches the
@@ -4239,6 +4353,7 @@ class CameraGalleryCard extends LitElement {
     // transitions otherwise leak the previous PC/WS, since _ensureLiveCard
     // doesn't know to close them. Keep card fullscreen while replacing media.
     this._teardownLiveView({ preserveCardFullscreen: true });
+    this._resetStreamWatch();
     this._signedWsPath = null;
     this._liveSelectedCamera = next;
 
@@ -6340,7 +6455,7 @@ class CameraGalleryCard extends LitElement {
                     : html`<img class="pimg" src=${selectedUrl} alt="" />`}
             ${this._hasLiveConfig() ? (() => {
               const liveCropStyle = this._getLiveCropStyle();
-              return html`<div id="live-card-host" class="live-card-host${isLive ? '' : ' live-host-hidden'}${liveCropStyle ? ' has-crop' : ''}" style="${liveCropStyle}"></div>${this._renderSnapshotToast()}`;
+              return html`<div id="live-card-host" class="live-card-host${isLive ? '' : ' live-host-hidden'}${liveCropStyle ? ' has-crop' : ''}" style="${liveCropStyle}"></div>${this._renderSnapshotToast()}${this._renderStreamLostBanner()}`;
             })() : html``}
 
             ${!noResultsForFilter && !isLive && this.config?.gallery_chevrons_enabled !== false && filtered.length > 1 && (this._pillsVisible || this.config?.persistent_controls) ? html`
@@ -7071,7 +7186,7 @@ const CGC_CONFIG_KEY_ORDER = [
   // ─── Live ───
   "live_enabled", "live_auto_muted", "live_cameras", "live_camera_entities", "live_layout", "live_fullscreen",
   "live_grid_labels", "live_grid_columns", "live_grid_emphasis", "live_stream_url", "live_stream_name", "live_stream_urls",
-  "live_go2rtc_url", "live_go2rtc_stream", "live_pills", "live_chevrons_enabled",
+  "live_go2rtc_url", "live_go2rtc_stream", "live_pills", "live_chevrons_enabled", "live_auto_recover",
   "tap_action", "live_mic_mode", "live_mic_audio_processing",
   "live_mic_shape", "live_mic_button_position", "live_native_talk",
   "live_mic_waveform_enabled", "live_mic_waveform_sensitivity",
@@ -10233,6 +10348,17 @@ class CameraGalleryCardEditor extends HTMLElement {
           c.live_chevrons_enabled !== false,
         )}
         <div class="row">
+          <div class="row-head">
+            <div>
+              <div class="lbl">Recover frozen streams</div>
+              <div class="desc">When the live picture stops moving for a few seconds, rebuild the stream automatically (up to 3 tries, then a "Try again" notice). Paused while the tab is hidden, in Picture-in-Picture, in native video fullscreen or during talkback.</div>
+            </div>
+            <div class="togrow">
+              <label class="cgc-switch"><input type="checkbox" id="liveautorecover" ${c.live_auto_recover !== false ? "checked" : ""}><span class="cgc-track"></span></label>
+            </div>
+          </div>
+        </div>
+        <div class="row">
           <div class="desc">Camera name sits on the left, action pills on the right — layout is fixed. Drag <code>⠿</code> to reorder the action pills, switch one off to hide it.</div>
         </div>
         <div class="pills-dnd-list" id="live-pills-dnd-list">
@@ -13173,6 +13299,11 @@ details summary { user-select: none; }
       // Default true at the struct level → drop the key when on, write
       // false when off. Keeps YAML minimal.
       this._set("live_chevrons_enabled", e.target.checked ? undefined : false);
+    });
+
+    $("liveautorecover")?.addEventListener("change", (e) => {
+      // Default true: drop the key when on, write false when off.
+      this._set("live_auto_recover", e.target.checked ? undefined : false);
     });
 
     $("gallerychevrons")?.addEventListener("change", (e) => {

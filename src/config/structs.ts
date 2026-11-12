@@ -489,6 +489,9 @@ export const cameraGalleryCardConfigStruct = type({
   // Show the left/right chevron arrows that switch cameras when ≥2 are
   // configured. Defaults to on. Disable for a clean kiosk look.
   live_chevrons_enabled: defaulted(boolean(), true),
+  // Rebuild the live stream when it freezes (video stops advancing). On by
+  // default; see data/stream-watchdog.ts for the timings.
+  live_auto_recover: defaulted(boolean(), true),
   // Gallery preview navigation chevrons — left/right arrows that walk
   // through the filtered clip list while the preview is open. Same
   // default-on / kiosk-off pattern as the live chevrons.
