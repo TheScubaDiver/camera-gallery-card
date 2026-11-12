@@ -255,6 +255,7 @@ export const FRIGATE_EVENT_CLUSTER_GAP_SEC_MAX = 600;
 export const DEFAULT_CONTROLS_MODE = "overlay" satisfies ControlsMode;
 export const DEFAULT_BROWSE_TIMEOUT_MS = 10000;
 export const DEFAULT_CLEAN_MODE = false;
+export const DEFAULT_FULLSCREEN_ZOOM = true;
 export const DEFAULT_DELETE_CONFIRM = true;
 export const DEFAULT_DELETE_PREFIX = "/config/www/";
 /**

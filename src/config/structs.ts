@@ -43,6 +43,7 @@ import {
   DEFAULT_THUMB_OFF_OPACITY,
   DEFAULT_BAR_POSITION,
   DEFAULT_FRIGATE_THUMB_BBOX,
+  DEFAULT_FULLSCREEN_ZOOM,
   DEFAULT_FRIGATE_EVENT_CLUSTER,
   DEFAULT_FRIGATE_EVENT_CLUSTER_GAP_SEC,
   FRIGATE_EVENT_CLUSTER_GAP_SEC_MAX,
@@ -519,6 +520,7 @@ export const cameraGalleryCardConfigStruct = type({
   preview_position: defaulted(enums(PREVIEW_POSITIONS), DEFAULT_PREVIEW_POSITION),
   clean_mode: defaulted(boolean(), false),
   preview_close_on_tap: defaulted(boolean(), false),
+  fullscreen_zoom: defaulted(boolean(), DEFAULT_FULLSCREEN_ZOOM),
 
   // ─── Misc ──────────────────────────────────────────────────
   max_media: defaulted(intInRange(MAX_MEDIA_MIN, MAX_MEDIA_MAX), DEFAULT_MAX_MEDIA),
