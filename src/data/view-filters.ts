@@ -126,25 +126,29 @@ export function matchesTypeFilter(opts: {
   return opts.isVideo(src) ? filterVideo : filterImage;
 }
 
-/**
- * Resolve which canonical object filter an `src` belongs to (`"person"`,
- * `"car"`, …) by scanning its filename + (sensor mode) the source sensor's
- * friendly text for aliases.
- *
- * Returns `null` when no filter matches. Pure — the card memoizes via its
- * own `_objectCache` Map so callers see at most one detection per src per
- * media-client `onChange` cycle (audit-fix #1).
- */
-export function detectObjectForSrc(opts: {
+/** Inputs for {@link detectObjectsForSrc} / {@link detectObjectForSrc}. */
+export interface DetectObjectOpts {
   src: string;
   sourceMode: SourceMode;
   visibleFilters: readonly string[];
   getSrcEntity: (src: string) => string | undefined;
   getSensorState: (entityId: string) => HassEntity | undefined;
   getMediaTitle: (src: string) => string | undefined;
-}): string | null {
+}
+
+/**
+ * Resolve every canonical object filter an `src` belongs to (`"person"`,
+ * `"car"`, …) by scanning its filename + (sensor mode) the source sensor's
+ * friendly text for aliases. A file tagged with several objects, e.g.
+ * `cam_1200_motorcycle_person.mp4`, yields all of them (#203).
+ *
+ * Results follow `visibleFilters` order; empty when nothing matches. Pure —
+ * the card memoizes via its own `_objectCache` Map so callers see at most one
+ * detection per src per media-client `onChange` cycle (audit-fix #1).
+ */
+export function detectObjectsForSrc(opts: DetectObjectOpts): string[] {
   const key = String(opts.src ?? "").trim();
-  if (!key) return null;
+  if (!key) return [];
 
   let sourceText: string;
   if (opts.sourceMode === "sensor") {
@@ -157,20 +161,27 @@ export function detectObjectForSrc(opts: {
   }
 
   const text = sourceText.toLowerCase();
-  for (const filter of opts.visibleFilters) {
-    const aliases = getFilterAliases(filter);
-    for (const alias of aliases) {
-      if (text.includes(alias)) return filter;
-    }
-  }
-  return null;
+  return opts.visibleFilters.filter((filter) =>
+    getFilterAliases(filter).some((alias) => text.includes(alias))
+  );
+}
+
+/**
+ * The primary object for `src`: the first match of
+ * {@link detectObjectsForSrc} in `visibleFilters` order, or `null`. Used where
+ * a single object is shown (thumbnail badge icon / colour).
+ */
+export function detectObjectForSrc(opts: DetectObjectOpts): string | null {
+  return detectObjectsForSrc(opts)[0] ?? null;
 }
 
 /**
  * Apply the active object-filter list to `src`. Sensor-mode delegates to
  * {@link matchesObjectFilterForFileSensor} (which scans sensor friendly-name
- * + alias hits); other modes consult the supplied `getObjectForSrc` lookup,
- * which is the card's memoized {@link detectObjectForSrc} caller.
+ * + alias hits); other modes consult the supplied `getObjectsForSrc` lookup,
+ * which is the card's memoized {@link detectObjectsForSrc} caller. An item
+ * passes when *any* of its detected objects is an active filter, so a file
+ * tagged with several objects shows up under each of them (#203).
  *
  * Empty/normalize-to-empty filter list passes everything through — "no
  * object filter engaged" matches the legacy behaviour.
@@ -181,7 +192,7 @@ export function matchesObjectFilter(opts: {
   sourceMode: SourceMode;
   getSrcEntity: (src: string) => string | undefined;
   getSensorState: (entityId: string) => HassEntity | undefined;
-  getObjectForSrc: (src: string) => string | null;
+  getObjectsForSrc: (src: string) => readonly string[];
 }): boolean {
   const active = normalizeFilterArray(opts.filters);
   if (!active.length) return true;
@@ -194,6 +205,5 @@ export function matchesObjectFilter(opts: {
     );
   }
 
-  const detected = opts.getObjectForSrc(opts.src);
-  return detected !== null && active.includes(detected);
+  return opts.getObjectsForSrc(opts.src).some((detected) => active.includes(detected));
 }

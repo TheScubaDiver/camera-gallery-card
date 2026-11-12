@@ -622,6 +622,8 @@ bicycle · bird · bus · car · cat · dog · motorcycle · person · truck · 
 
 Custom filters with a custom icon can be added via the editor.
 
+A filter matches when its name (or an alias, such as `persoon` for `person`) appears anywhere in the filename or media title. A file tagged with several objects, like `frontdoor_1200_motorcycle_person.mp4`, shows up under each of them. Its thumbnail badge uses the first match in your filter order.
+
 Object filter colors can be assigned per filter type in the editor.
 
 > [!TIP]
