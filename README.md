@@ -154,6 +154,7 @@ A few notes on the generic walker:
 - **Multi-camera grid layout** (`live_layout: grid`) — show all cameras at once, tap a tile to focus on one. The grid shapes itself to the camera count so there are no empty cells, every tile keeps the card's configured aspect ratio, and the card's height adapts to fit. Pin the column count with `live_grid_columns`, or leave it automatic (narrow cards drop to fewer columns on their own). Control where the larger tiles land with `live_grid_emphasis`: `bottom` (default), `top`, or `hero`
 - **RTSP streams** — add cameras by stream URL instead of a camera entity (see [Live cameras](#live-cameras))
 - **Frozen-stream recovery** — if the live picture stops moving for about six seconds the card rebuilds the stream by itself, up to three tries (a stream that is still connecting gets 15 seconds before it counts as stuck). After the last try a "Stream stopped — Try again" notice appears. It never acts while the tab is hidden, in Picture-in-Picture, in native video fullscreen, or during talkback, and it only watches single-camera live view (not grid tiles). Turn it off with `live_auto_recover: false` or in the editor's Live tab.
+- **Camera triggers** — motion, a person, the doorbell: the card switches to that camera's live view by itself and goes back afterwards. See [Camera triggers](#camera-triggers)
 - **Offline camera placeholder** — unavailable cameras show a clear "offline" tile instead of a black frame
 - **Keyboard navigation** — <kbd>←</kbd>/<kbd>→</kbd> to switch between cameras in single layout
 - **Tap action** — choose what a tap on the live picture does with `tap_action`: a standard Home Assistant action (`more-info`, `toggle`, `perform-action`, `navigate`, `url`) or the card's own `fullscreen`, `snapshot` or `refresh`
@@ -409,6 +410,7 @@ live_cameras:
 | `name` | Display name. Empty uses the entity's friendly name |
 | `mic` | go2rtc stream name that carries the camera's backchannel audio. See [Two-way audio](#two-way-audio-advanced) |
 | `crop` | Visible region in percent of the full picture: `x`, `y` (top-left corner), `w`, `h` (size). Easiest to set with **Crop view** in the editor |
+| `triggers` | Entities that switch the card to this camera when they turn active. See [Camera triggers](#camera-triggers) |
 
 Stream URLs play through the [AlexxIT/WebRTC](https://github.com/AlexxIT/WebRTC) integration, or through your own go2rtc server when you set `live_go2rtc_url` (for example `http://192.168.1.10:1984`). If Home Assistant runs on HTTPS, that go2rtc URL must be HTTPS too, or the browser blocks it.
 
@@ -451,6 +453,49 @@ What a tap does:
 - A `service`, when set, always wins over these defaults.
 
 In the editor (Live tab → Menu buttons), turn on **Show among live controls** for a button to set `placement: controls`. Turn it off to move the button back into the hamburger menu.
+
+---
+
+## Camera triggers
+
+Let the card switch to a camera on its own when something happens there, for example on a wall tablet: motion at the front door shows the front door camera, and after a while the card goes back to what it showed before.
+
+```yaml
+live_enabled: true
+live_cameras:
+  - entity: camera.front_door
+    triggers:
+      - binary_sensor.front_door_motion
+      - event.front_door_doorbell
+  - entity: camera.garden
+    triggers:
+      - binary_sensor.garden_person_occupancy
+live_triggers:               # optional, these are the defaults
+  hold_seconds: 30
+  cooldown_seconds: 10
+  return_to: previous
+```
+
+**What counts as a trigger.** An entity in a camera's `triggers` list fires when it turns active: `on`, `open`, `detected`, `occupied`, `home` or `ringing`. An `event.*` entity (a doorbell press, for instance) fires on every new event. Turning off or staying on does nothing.
+
+**What happens.** The card switches to that camera in single live view, also out of the gallery or the grid. When another trigger fires while it is showing, the last one wins and the timer starts over. `hold_seconds` after the last trigger the card goes back, unless someone tapped the card in the meantime: then it stays where they left it.
+
+| `live_triggers` key | Meaning |
+|---|---|
+| `hold_seconds` | How long to stay after the last trigger, 5–3600 [`30`] |
+| `cooldown_seconds` | Ignore repeat triggers for the same camera within this time, 0–3600 [`10`] |
+| `return_to` | `previous` (the view it came from), `gallery`, or `stay` (keep showing the camera) [`previous`] |
+| `frigate` | Also switch on new Frigate events [`false`]. See below |
+| `frigate_labels` | Only these Frigate labels trigger, e.g. `[person]`. Empty means all |
+
+**Frigate.** With `frigate: true`, a new Frigate event switches to `camera.<frigate camera name>` (the name the Frigate integration gives its camera entities), when that camera is in your live list. The card uses the Frigate instance of your Frigate media source, or Frigate's default `frigate` instance when the card has no Frigate media source.
+
+**When it does not switch.** The card leaves you alone while you are using it: in fullscreen, in Picture-in-Picture, during talkback, with a menu or bulk select open, and for 15 seconds after the last tap or key press on the card.
+
+In the editor: fill in **Triggers** on a camera under **Live → Basics → Cameras in picker**, and set the rest under **Live → Triggers**. Triggers for stream-URL cameras can only be set in YAML.
+
+> [!NOTE]
+> The card only reacts while the dashboard is open, for example on a tablet with a kiosk browser. It cannot wake a sleeping screen or open the dashboard; use a Home Assistant automation or your kiosk app for that.
 
 ---
 
@@ -548,11 +593,12 @@ Everything below can also be set in the visual editor. Defaults are shown in bra
 | `bar_opacity` | Opacity of the preview bar and pills, 0–100 % [`30`] |
 | **Live view** | |
 | `live_enabled` | Enable live mode [`false`] |
-| `live_cameras` | The live cameras, each with `entity` or `url` and optional `name`, `mic` and `crop`. See [Live cameras](#live-cameras) |
+| `live_cameras` | The live cameras, each with `entity` or `url` and optional `name`, `mic`, `crop` and `triggers`. See [Live cameras](#live-cameras) |
 | `live_layout` | `single` or `grid` (multi-camera) [`single`] |
 | `live_fullscreen` | `card` (keeps pills, PTZ and zoom) or `video` (platform player) [`card`] |
 | `live_auto_muted` | Start live view muted [`true`] |
 | `live_auto_recover` | Rebuild a frozen live stream automatically [`true`] |
+| `live_triggers` | Hold time, cooldown, return target and Frigate events for camera triggers. See [Camera triggers](#camera-triggers) |
 | `live_chevrons_enabled` | Show the arrows that switch cameras [`true`] |
 | `live_pills` | Turn live pills on or off and reorder them. See [Pills and toolbar](#pills-and-toolbar) |
 | `tap_action` | Action fired when the single-camera live preview is tapped, using standard HA action syntax: `more-info`, `toggle`, `perform-action`, `navigate`, `url` (plus `confirmation`, `target`, `data`), `none`, or the card's own `fullscreen`, `snapshot`, `refresh`. Unset: a tap only shows the controls |

@@ -1024,3 +1024,60 @@ describe("live_native_talk", () => {
     expect(() => normalizeConfig({ ...minimalSensor, live_native_talk: "yes" })).toThrow();
   });
 });
+
+describe("camera triggers config", () => {
+  it("keeps per-camera triggers, trimmed and without duplicates", () => {
+    const { config } = normalizeConfig({
+      live_enabled: true,
+      live_cameras: [
+        {
+          entity: "camera.door",
+          triggers: [
+            " binary_sensor.door_motion ",
+            "",
+            "binary_sensor.door_motion",
+            "event.doorbell",
+          ],
+        },
+        { entity: "camera.garden", triggers: [] },
+      ],
+    });
+    expect(config.live_cameras[0]?.triggers).toEqual([
+      "binary_sensor.door_motion",
+      "event.doorbell",
+    ]);
+    expect(config.live_cameras[1] && "triggers" in config.live_cameras[1]).toBe(false);
+  });
+
+  it("fills live_triggers defaults when the block is present", () => {
+    const { config } = normalizeConfig({
+      live_enabled: true,
+      live_cameras: [{ entity: "camera.door", triggers: ["binary_sensor.door_motion"] }],
+      live_triggers: {},
+    });
+    expect(config.live_triggers).toEqual({
+      frigate: false,
+      hold_seconds: 30,
+      cooldown_seconds: 10,
+      return_to: "previous",
+    });
+  });
+
+  it("leaves live_triggers out when it was not set", () => {
+    const { config } = normalizeConfig({
+      live_enabled: true,
+      live_cameras: [{ entity: "camera.door" }],
+    });
+    expect(config.live_triggers).toBeUndefined();
+  });
+
+  it("rejects an unknown return_to", () => {
+    expect(() =>
+      normalizeConfig({
+        live_enabled: true,
+        live_cameras: [{ entity: "camera.door" }],
+        live_triggers: { return_to: "home" },
+      })
+    ).toThrow();
+  });
+});

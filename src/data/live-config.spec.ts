@@ -18,6 +18,7 @@ import {
   isGridLayout,
   micStreamForCamera,
   STREAM_ID_PREFIX,
+  getTriggerCameras,
 } from "./live-config";
 
 function cfg(over: Partial<CameraGalleryCardConfig> = {}): CameraGalleryCardConfig {
@@ -910,5 +911,27 @@ describe("hasAnyMicStream", () => {
 
   it("true when only the legacy single-stream is set", () => {
     expect(hasAnyMicStream(cfg({ live_go2rtc_stream: "front_door" }))).toBe(true);
+  });
+});
+
+describe("getTriggerCameras", () => {
+  it("returns cameras with triggers under their live ids", () => {
+    const config = {
+      live_cameras: [
+        { entity: "camera.door", name: "", triggers: ["binary_sensor.door_motion"] },
+        { entity: "camera.garden", name: "" },
+        { url: "rtsp://a", name: "Shed", triggers: ["binary_sensor.shed", " "] },
+        { url: "rtsp://b", name: "Gate", triggers: ["event.gate"] },
+      ],
+    } as unknown as CameraGalleryCardConfig;
+    expect(getTriggerCameras(config)).toEqual([
+      { id: "camera.door", triggers: ["binary_sensor.door_motion"] },
+      { id: "__cgc_stream_0__", triggers: ["binary_sensor.shed"] },
+      { id: "__cgc_stream_1__", triggers: ["event.gate"] },
+    ]);
+  });
+
+  it("is empty without a config", () => {
+    expect(getTriggerCameras(null)).toEqual([]);
   });
 });
