@@ -410,6 +410,7 @@ live_cameras:
 | `name` | Display name. Empty uses the entity's friendly name |
 | `mic` | go2rtc stream name that carries the camera's backchannel audio. See [Two-way audio](#two-way-audio-advanced) |
 | `crop` | Visible region in percent of the full picture: `x`, `y` (top-left corner), `w`, `h` (size). Easiest to set with **Crop view** in the editor |
+| `triggers` | Entities that switch the card to this camera when they turn active. See [Camera triggers](#camera-triggers) |
 
 Stream URLs play through the [AlexxIT/WebRTC](https://github.com/AlexxIT/WebRTC) integration, or through your own go2rtc server when you set `live_go2rtc_url` (for example `http://192.168.1.10:1984`). If Home Assistant runs on HTTPS, that go2rtc URL must be HTTPS too, or the browser blocks it.
 
@@ -592,11 +593,12 @@ Everything below can also be set in the visual editor. Defaults are shown in bra
 | `bar_opacity` | Opacity of the preview bar and pills, 0–100 % [`30`] |
 | **Live view** | |
 | `live_enabled` | Enable live mode [`false`] |
-| `live_cameras` | The live cameras, each with `entity` or `url` and optional `name`, `mic` and `crop`. See [Live cameras](#live-cameras) |
+| `live_cameras` | The live cameras, each with `entity` or `url` and optional `name`, `mic`, `crop` and `triggers`. See [Live cameras](#live-cameras) |
 | `live_layout` | `single` or `grid` (multi-camera) [`single`] |
 | `live_fullscreen` | `card` (keeps pills, PTZ and zoom) or `video` (platform player) [`card`] |
 | `live_auto_muted` | Start live view muted [`true`] |
 | `live_auto_recover` | Rebuild a frozen live stream automatically [`true`] |
+| `live_triggers` | Hold time, cooldown, return target and Frigate events for camera triggers. See [Camera triggers](#camera-triggers) |
 | `live_chevrons_enabled` | Show the arrows that switch cameras [`true`] |
 | `live_pills` | Turn live pills on or off and reorder them. See [Pills and toolbar](#pills-and-toolbar) |
 | `tap_action` | Action fired when the single-camera live preview is tapped, using standard HA action syntax: `more-info`, `toggle`, `perform-action`, `navigate`, `url` (plus `confirmation`, `target`, `data`), `none`, or the card's own `fullscreen`, `snapshot`, `refresh`. Unset: a tap only shows the controls |
