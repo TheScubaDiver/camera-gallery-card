@@ -39,8 +39,7 @@ export function syncLiveAudio(root: Element, muted: boolean): LiveAudioSyncResul
     }
   }
   const player = elements.find((el) => el.localName === "ha-web-rtc-player") as
-    | HaWebRtcPlayer
-    | undefined;
+    HaWebRtcPlayer | undefined;
   if (!player)
     return { video: video ?? null, recovered: false, status: "Standard media mute control" };
   // Read the current internals on EVERY call; a reconnect replaces both.
