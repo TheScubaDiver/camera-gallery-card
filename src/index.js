@@ -83,8 +83,17 @@ import {
   hasAnyMicStream,
   hasLiveConfig,
   isGridLayout,
+  liveCameraRotation,
   micStreamForCamera,
 } from "./data/live-config";
+import {
+  isQuarterTurn,
+  normalizeRotation,
+  rotatedAspect,
+  rotationStyle,
+  screenToLocal,
+  snapshotGeometry,
+} from "./data/live-rotation";
 import {
   GALLERY_PILL_CATALOG,
   LIVE_PILL_CATALOG,
@@ -2064,11 +2073,41 @@ class CameraGalleryCard extends LitElement {
           const arH = ar.length === 2 && ar[1] > 0 ? ar[1] : 9;
           const newW = arW * w;
           const newH = arH * h;
-          return `${newW}/${newH}`;
+          return rotatedAspect(`${newW}/${newH}`, liveCameraRotation(active, this.config));
         }
       }
     }
-    return this._aspectRatio || "16/9";
+    return rotatedAspect(this._aspectRatio || "16/9", liveCameraRotation(active, this.config));
+  }
+
+  // CSS variables that rotate (and crop) the single-camera live picture, or
+  // "" when the active camera is not rotated. Grid tiles do their own.
+  _getLiveRotationStyle() {
+    if (isGridLayout(this.config, this._liveLayoutOverride)) return "";
+    const active = this._getEffectiveLiveCamera();
+    const rotation = liveCameraRotation(active, this.config);
+    if (!rotation) return "";
+    return rotationStyle(rotation);
+  }
+
+  // Rotation of the picture the zoom acts on (single live view only).
+  _zoomRotation() {
+    if (!this._isLiveActive() || isGridLayout(this.config, this._liveLayoutOverride)) return 0;
+    return liveCameraRotation(this._getEffectiveLiveCamera(), this.config);
+  }
+
+  // Grid tiles: rotation only (crop is single-camera only). The tile is the
+  // size container; its stream wrapper carries the rotation.
+  _applyTileRotation(tile, entity) {
+    const style = rotationStyle(liveCameraRotation(entity, this.config));
+    tile.classList.toggle("has-rot", !!style);
+    for (const name of ["--rot", "--rot-w", "--rot-h"]) {
+      tile.style.removeProperty(name);
+    }
+    for (const decl of style.split(";")) {
+      const i = decl.indexOf(":");
+      if (i > 0) tile.style.setProperty(decl.slice(0, i), decl.slice(i + 1));
+    }
   }
 
   _getLiveCropStyle() {
@@ -2198,8 +2237,12 @@ class CameraGalleryCard extends LitElement {
   _clampZoomPan() {
     const host = this._getZoomHost();
     if (!host) return;
-    const maxX = host.offsetWidth * (this._zoomScale - 1) / 2;
-    const maxY = host.offsetHeight * (this._zoomScale - 1) / 2;
+    // A quarter-turned live host is as wide on screen as it is tall in layout.
+    const quarter = isQuarterTurn(this._zoomRotation());
+    const w = quarter ? host.offsetHeight : host.offsetWidth;
+    const h = quarter ? host.offsetWidth : host.offsetHeight;
+    const maxX = w * (this._zoomScale - 1) / 2;
+    const maxY = h * (this._zoomScale - 1) / 2;
     this._zoomPanX = Math.max(-maxX, Math.min(maxX, this._zoomPanX));
     this._zoomPanY = Math.max(-maxY, Math.min(maxY, this._zoomPanY));
   }
@@ -2221,7 +2264,10 @@ class CameraGalleryCard extends LitElement {
       if (fsOverlay) { fsOverlay.style.cursor = ''; }
     } else {
       host.style.transformOrigin = 'center center';
-      host.style.transform = `translate(${this._zoomPanX}px, ${this._zoomPanY}px) scale(${this._zoomScale})`;
+      // The live host may be rotated (CSS `rotate`, applied before this
+      // transform), so express the on-screen pan in its own coordinates.
+      const pan = screenToLocal(this._zoomPanX, this._zoomPanY, this._zoomRotation());
+      host.style.transform = `translate(${pan.x}px, ${pan.y}px) scale(${this._zoomScale})`;
       if (this._isLiveActive()) host.style.cursor = this._zoomIsPanning ? 'grabbing' : 'grab';
       if (preview) {
         preview.style.touchAction = 'none';
@@ -2933,15 +2979,23 @@ class CameraGalleryCard extends LitElement {
     // cause (canvas tainted by a cross-origin stream).
     const TAINT_MSG = "Snapshot blocked (cross-origin stream)";
     try {
+      // A rotated camera saves the picture the way it is shown.
+      const geo = snapshotGeometry(
+        video.videoWidth,
+        video.videoHeight,
+        liveCameraRotation(this._getEffectiveLiveCamera?.(), this.config)
+      );
       const canvas = document.createElement("canvas");
-      canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
+      canvas.width = geo.width;
+      canvas.height = geo.height;
       const ctx = canvas.getContext("2d");
       if (!ctx) {
         this._showSnapshotToast("Snapshot failed (no canvas)");
         return;
       }
-      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      ctx.translate(geo.width / 2, geo.height / 2);
+      ctx.rotate(geo.radians);
+      ctx.drawImage(video, -video.videoWidth / 2, -video.videoHeight / 2, video.videoWidth, video.videoHeight);
       const cam = this._getEffectiveLiveCamera?.() || "camera";
       const safeName = String(cam).replace(/[^a-z0-9_.-]/gi, "_");
       const ts = new Date().toISOString().replace(/[:.]/g, "-");
@@ -3346,6 +3400,7 @@ class CameraGalleryCard extends LitElement {
         // reordered, so span alone can't fix placement — `_applyTileLayout`
         // also sets `order` to re-sort auto-placement without touching the DOM.
         this._applyTileLayout(existing, cameras.indexOf(entity), layout);
+        this._applyTileRotation(existing, entity);
         continue;
       }
 
@@ -3357,6 +3412,7 @@ class CameraGalleryCard extends LitElement {
       // either — `_applyTileLayout`'s `order` assignment fixes both cases.
       this._applyTileLayout(tile, cameras.indexOf(entity), layout);
       tile.addEventListener("click", () => this._onGridTileTap(entity));
+      this._applyTileRotation(tile, entity);
 
       const stream = document.createElement("ha-camera-stream");
       stream.stateObj = this._hass?.states?.[entity];
@@ -3364,7 +3420,12 @@ class CameraGalleryCard extends LitElement {
       stream.muted = true;
       stream.controls = false;
       stream.style.cssText = "display:block;width:100%;height:100%;object-fit:cover;";
-      tile.appendChild(stream);
+      // HA's stream element sizes itself to 100% of its parent from inside
+      // its own shadow root, so rotation goes on this wrapper instead.
+      const wrap = document.createElement("div");
+      wrap.className = "live-grid-stream";
+      wrap.appendChild(stream);
+      tile.appendChild(wrap);
 
       const label = document.createElement("div");
       label.className = "live-grid-label";
@@ -6583,7 +6644,7 @@ class CameraGalleryCard extends LitElement {
     const previewBlock = showPreviewSection
       ? html`
           <div
-            class="preview"
+            class="preview${isLive && this._getLiveRotationStyle() ? " cgc-rot-pane" : ""}"
             style="aspect-ratio:${this._getPreviewAspectRatio(isLive)}; touch-action:${isLive ? "auto" : "pan-y"};"
             @pointerdown=${(e) => {
               if (e?.isPrimary === false) return;
@@ -6623,8 +6684,9 @@ class CameraGalleryCard extends LitElement {
                     ? html`<div id="preview-video-host" class="preview-video-host"></div>`
                     : html`<img class="pimg" src=${selectedUrl} alt="" />`}
             ${this._hasLiveConfig() ? (() => {
+              const liveRotStyle = this._getLiveRotationStyle();
               const liveCropStyle = this._getLiveCropStyle();
-              return html`<div id="live-card-host" class="live-card-host${isLive ? '' : ' live-host-hidden'}${liveCropStyle ? ' has-crop' : ''}" style="${liveCropStyle}"></div>${this._renderSnapshotToast()}${this._renderStreamLostBanner()}`;
+              return html`<div id="live-card-host" class="live-card-host${isLive ? '' : ' live-host-hidden'}${liveCropStyle ? ' has-crop' : ''}${liveRotStyle ? ' has-rot' : ''}" style="${liveCropStyle}${liveRotStyle}"></div>${this._renderSnapshotToast()}${this._renderStreamLostBanner()}`;
             })() : html``}
 
             ${!noResultsForFilter && !isLive && this.config?.gallery_chevrons_enabled !== false && filtered.length > 1 && (this._pillsVisible || this.config?.persistent_controls) ? html`
@@ -10040,6 +10102,18 @@ class CameraGalleryCardEditor extends HTMLElement {
                           return (Array.isArray(entry?.triggers) ? entry.triggers : []).join(", ").replace(/"/g, "&quot;");
                         })()}" placeholder="binary_sensor.motion, event.doorbell" autocomplete="off" />
                       </div>
+                      <div class="livecam-fieldrow">
+                        <label>Rotation</label>
+                        <div class="segwrap">
+                          ${(() => {
+                            const entry = (Array.isArray(this._config.live_cameras) ? this._config.live_cameras : []).find((lc) => lc && lc.entity === id);
+                            const rot = normalizeRotation(entry?.rotation);
+                            return [0, 90, 180, 270]
+                              .map((r) => `<button type="button" class="seg ${rot === r ? "on" : ""}" data-rotcam="${id}" data-rot="${r}">${r}°</button>`)
+                              .join("");
+                          })()}
+                        </div>
+                      </div>
                       ${this._renderLivecamCropInline(id)}
                       <div class="livecam-actions">
                         <button type="button" class="livecam-row-del" data-delcam="${id}">${svgIcon('mdi:delete-outline', 14)}<span>Remove camera</span></button>
@@ -11924,6 +11998,28 @@ class CameraGalleryCardEditor extends HTMLElement {
           color: var(--ed-text2);
           width: 80px;
           flex-shrink: 0;
+        }
+        /* Compact segmented control inside a camera row (e.g. Rotation):
+           fill the row instead of shrinking to the labels, smaller pills. */
+        .livecam-fieldrow .segwrap {
+          flex: 1;
+          gap: 4px;
+          padding: 3px;
+          border-radius: 10px;
+          background: var(--ed-seg-bg);
+          border: 1px solid var(--ed-seg-border);
+        }
+        .livecam-fieldrow .seg {
+          padding: 6px 0;
+          border-radius: 7px;
+          font-size: 12px;
+          border-color: transparent;
+          background: transparent;
+          font-variant-numeric: tabular-nums;
+        }
+        .livecam-fieldrow .seg.on {
+          background: var(--ed-seg-on-bg);
+          color: var(--ed-seg-on-txt);
         }
         .livecam-row-del {
           appearance: none;
@@ -14489,6 +14585,27 @@ details summary { user-select: none; }
         liveCams[idx] = entry;
         this._config = this._stripAlwaysTrueKeys({ ...this._config, live_cameras: liveCams });
         this._fire();
+      });
+    });
+
+    // Rotation per camera — writes `live_cameras[].rotation`; 0 removes it.
+    this.shadowRoot.querySelectorAll("[data-rotcam]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const id = btn.dataset.rotcam;
+        const rot = normalizeRotation(btn.dataset.rot);
+        const liveCams = Array.isArray(this._config.live_cameras) ? [...this._config.live_cameras] : [];
+        let idx = liveCams.findIndex((lc) => lc && lc.entity === id);
+        if (idx < 0) {
+          liveCams.push({ entity: id });
+          idx = liveCams.length - 1;
+        }
+        const entry = { ...liveCams[idx] };
+        if (rot) entry.rotation = rot;
+        else delete entry.rotation;
+        liveCams[idx] = entry;
+        this._config = this._stripAlwaysTrueKeys({ ...this._config, live_cameras: liveCams });
+        this._fire();
+        this._scheduleRender();
       });
     });
 

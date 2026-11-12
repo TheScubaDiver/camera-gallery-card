@@ -155,6 +155,7 @@ A few notes on the generic walker:
 - **RTSP streams** — add cameras by stream URL instead of a camera entity (see [Live cameras](#live-cameras))
 - **Frozen-stream recovery** — if the live picture stops moving for about six seconds the card rebuilds the stream by itself, up to three tries (a stream that is still connecting gets 15 seconds before it counts as stuck). After the last try a "Stream stopped — Try again" notice appears. It never acts while the tab is hidden, in Picture-in-Picture, in native video fullscreen, or during talkback, and it only watches single-camera live view (not grid tiles). Turn it off with `live_auto_recover: false` or in the editor's Live tab.
 - **Camera triggers** — motion, a person, the doorbell: the card switches to that camera's live view by itself and goes back afterwards. See [Camera triggers](#camera-triggers)
+- **Rotation per camera** — turn a camera's picture by 90, 180 or 270 degrees, for a camera mounted upside down on a ceiling or on its side. See [Camera rotation](#camera-rotation)
 - **Offline camera placeholder** — unavailable cameras show a clear "offline" tile instead of a black frame
 - **Keyboard navigation** — <kbd>←</kbd>/<kbd>→</kbd> to switch between cameras in single layout
 - **Tap action** — choose what a tap on the live picture does with `tap_action`: a standard Home Assistant action (`more-info`, `toggle`, `perform-action`, `navigate`, `url`) or the card's own `fullscreen`, `snapshot` or `refresh`
@@ -411,6 +412,7 @@ live_cameras:
 | `mic` | go2rtc stream name that carries the camera's backchannel audio. See [Two-way audio](#two-way-audio-advanced) |
 | `crop` | Visible region in percent of the full picture: `x`, `y` (top-left corner), `w`, `h` (size). Easiest to set with **Crop view** in the editor |
 | `triggers` | Entities that switch the card to this camera when they turn active. See [Camera triggers](#camera-triggers) |
+| `rotation` | Turn the live picture clockwise: `0` (default), `90`, `180` or `270`. See [Camera rotation](#camera-rotation) |
 
 Stream URLs play through the [AlexxIT/WebRTC](https://github.com/AlexxIT/WebRTC) integration, or through your own go2rtc server when you set `live_go2rtc_url` (for example `http://192.168.1.10:1984`). If Home Assistant runs on HTTPS, that go2rtc URL must be HTTPS too, or the browser blocks it.
 
@@ -496,6 +498,23 @@ In the editor: fill in **Triggers** on a camera under **Live → Basics → Came
 
 > [!NOTE]
 > The card only reacts while the dashboard is open, for example on a tablet with a kiosk browser. It cannot wake a sleeping screen or open the dashboard; use a Home Assistant automation or your kiosk app for that.
+
+---
+
+## Camera rotation
+
+Turn a camera's live picture for a camera that hangs upside down or on its side. Set it per camera in the editor (**Live → Basics → Cameras in picker**, expand a camera, **Rotation**) or in YAML:
+
+```yaml
+live_cameras:
+  - entity: camera.garage
+    rotation: 180     # 0 (default), 90, 180 or 270, clockwise
+```
+
+- **Where it applies:** single-camera live view, card fullscreen and grid tiles, plus the **snapshot** pill, which saves the picture rotated.
+- **Order:** the crop is taken from the camera's own picture first, then the result is rotated. A crop you drew before keeps showing the same part of the scene.
+- **90 and 270 degrees** turn the picture on its side, so the live view takes the rotated shape: a 16:9 camera becomes a tall 9:16 view. Grid tiles keep their size and fill it with the rotated picture.
+- **Not rotated:** recorded clips in the gallery, the platform player with `live_fullscreen: video`, and the PTZ arrows. With a rotated PTZ camera, the arrows still move the camera in its own directions.
 
 ---
 
@@ -593,7 +612,7 @@ Everything below can also be set in the visual editor. Defaults are shown in bra
 | `bar_opacity` | Opacity of the preview bar and pills, 0–100 % [`30`] |
 | **Live view** | |
 | `live_enabled` | Enable live mode [`false`] |
-| `live_cameras` | The live cameras, each with `entity` or `url` and optional `name`, `mic`, `crop` and `triggers`. See [Live cameras](#live-cameras) |
+| `live_cameras` | The live cameras, each with `entity` or `url` and optional `name`, `mic`, `crop`, `triggers` and `rotation`. See [Live cameras](#live-cameras) |
 | `live_layout` | `single` or `grid` (multi-camera) [`single`] |
 | `live_fullscreen` | `card` (keeps pills, PTZ and zoom) or `video` (platform player) [`card`] |
 | `live_auto_muted` | Start live view muted [`true`] |
