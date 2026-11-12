@@ -76,10 +76,11 @@ FileTrack is a fork of the archived [files integration by TarheelGrad1998](https
 ### Gallery
 
 - Image & video preview
-- **Fullscreen image viewer** — tap to open in fullscreen, rotates to landscape on mobile, with pinch-to-zoom, pan, double-tap and mouse wheel zoom
+- **Fullscreen image viewer** — tap to open in fullscreen, rotates to landscape on mobile, with pinch-to-zoom, pan, double-tap and mouse wheel zoom (turn zoom off with `fullscreen_zoom: false`)
 - **Video clip fullscreen** — the card's own overlay by default (keeps your place in the clip); optionally the platform's native player via `gallery_fullscreen: video`
 - Timeline thumbnails with lazy loading
-- Day grouping
+- Day grouping, with a **date picker** and Today button to jump between days
+- **Scroll time pill** — while you scroll the thumbnails, a small pill shows the date and time of the items in view
 - Filename timestamp parsing
 - Object filter buttons with custom icon support
 - Object detection pill in timestamp bar
@@ -87,10 +88,13 @@ FileTrack is a fork of the archived [files integration by TarheelGrad1998](https
 - Mobile friendly
 - Media type icon (image / video)
 - Cover / Contain option for media display
+- **Preview-only mode** (`clean_mode`) — the card shows either the gallery or the preview, never both. Tap a thumbnail to open it full size; the back button returns to the gallery
 - **Favorites** — star any item with a tap; filter the timeline to show only favorites
-- **Prev / next + keyboard navigation** — arrow buttons in the fullscreen viewer, plus <kbd>←</kbd>/<kbd>→</kbd> on desktop
-- **Runtime mute pill** — tap-to-mute pill on the video preview, independent of the global auto-mute toggle
+- **Prev / next navigation** — chevron arrows on the preview (hide them with `gallery_chevrons_enabled: false`), <kbd>←</kbd>/<kbd>→</kbd> in the fullscreen viewer on desktop, and on touch screens swipe left or right on a preview image
+- **Swipe to delete** — on touch screens, swipe a thumbnail to the left to delete it (only when a delete service is set up for that item)
+- **Preview pills** — configurable buttons over the preview: object indicator, index counter (`3/12`), auto-play all (plays the following clips one after another), mute, playback speed (1×, 2×, 0.5×), Picture-in-Picture, fullscreen and the time read-out. Turn each one on or off and reorder them in the editor (see [Pills and toolbar](#pills-and-toolbar))
 - **Custom menu actions** — add your own entries to the long-press menu that call a Home Assistant action with the item's path or URL (see [Custom menu actions](#custom-menu-actions))
+- **Sync entity** — set `sync_entity` to an `input_text` helper and the card writes the file name of the item you are viewing into it, for use in automations
 
 <img width="490" height="407" alt="Scherm­afbeelding 2026-03-29 om 17 05 49" src="https://github.com/user-attachments/assets/6817a0ae-5d57-4ebf-8c8d-b5452c66ad66" />
 
@@ -138,22 +142,25 @@ A few notes on the generic walker:
 ### Live view
 
 - Native Home Assistant **WebRTC live preview**
-- Redesigned live view layout: camera name on the left, controls on the right
+- Live view layout: camera name on the left, controls on the right
 - **Controls mode** — choose between `overlay` (controls fade out after inactivity) or `fixed` (always visible)
+- **Live pills** — mute, camera picker, Picture-in-Picture, fullscreen, snapshot (saves a JPEG of the current frame) and refresh stream. Turn each one on or off and reorder them in the editor (see [Pills and toolbar](#pills-and-toolbar))
 - **Native fullscreen** — set `live_fullscreen: video` to open the live stream in the platform's own player instead of the card overlay (grid layout always uses the card)
 - **Pinch to zoom in card fullscreen** — touch, trackpad, and Ctrl + scroll wheel; pan with the mouse after zooming in
 - **Aspect ratio toggle** — quickly switch between 16:9, 4:3 and 1:1, remembered per camera
 - Live badge
-- **Multiple live cameras** — configure several cameras and switch between them using chevron arrows
+- **Multiple live cameras** — configure several cameras and switch between them using chevron arrows (hide them with `live_chevrons_enabled: false`) or the camera picker. The first camera in the list opens first. See [Live cameras](#live-cameras)
+- **Crop per camera** — zoom into a region of a camera's picture, e.g. only the doormat of a wide-angle doorbell. Set it visually with **Crop view** in the editor's Live tab
 - **Multi-camera grid layout** (`live_layout: grid`) — show all cameras at once, tap a tile to focus on one. The grid shapes itself to the camera count so there are no empty cells, every tile keeps the card's configured aspect ratio, and the card's height adapts to fit. Pin the column count with `live_grid_columns`, or leave it automatic (narrow cards drop to fewer columns on their own). Control where the larger tiles land with `live_grid_emphasis`: `bottom` (default), `top`, or `hero`
-- **Multiple RTSP streams** — configure multiple named RTSP streams via `live_stream_urls`
+- **RTSP streams** — add cameras by stream URL instead of a camera entity (see [Live cameras](#live-cameras))
 - **Frozen-stream recovery** — if the live picture stops moving for about six seconds the card rebuilds the stream by itself, up to three tries (a stream that is still connecting gets 15 seconds before it counts as stuck). After the last try a "Stream stopped — Try again" notice appears. It never acts while the tab is hidden, in Picture-in-Picture, in native video fullscreen, or during talkback, and it only watches single-camera live view (not grid tiles). Turn it off with `live_auto_recover: false` or in the editor's Live tab.
 - **Offline camera placeholder** — unavailable cameras show a clear "offline" tile instead of a black frame
 - **Keyboard navigation** — <kbd>←</kbd>/<kbd>→</kbd> to switch between cameras in single layout
-- Default live camera
+- **Tap action** — choose what a tap on the live picture does with `tap_action`: a standard Home Assistant action (`more-info`, `toggle`, `perform-action`, `navigate`, `url`) or the card's own `fullscreen`, `snapshot` or `refresh`
+- **PTZ overlay** — a joystick with zoom and home buttons for cameras that can pan and tilt. Built-in support for EZVIZ, Reolink, Frigate and ONVIF, plus a manual mode that calls any service (see [Manual service PTZ](#manual-service-ptz))
 - Camera friendly names and entity IDs in selector
 - Auto-teardown of stream + push-to-talk on view switch (no audio/bandwidth leak)
-- **Two-way audio (talkback)** — tap the mic pill in live view to speak through a camera's backchannel speaker. Per-camera, with tap-to-toggle or push-to-talk modes. Active talkback temporarily unmutes listening, then restores your previous setting; manual speaker choices take priority. *Advanced setup* — see [Two-way audio](#two-way-audio-advanced) below.
+- **Two-way audio (talkback)** — tap the mic pill in live view to speak through a camera's backchannel speaker. Per-camera, with tap-to-toggle or push-to-talk modes, a full-width bar or a compact round button (`live_mic_shape`), and a live waveform while you talk. Active talkback temporarily unmutes listening, then restores your previous setting; manual speaker choices take priority. *Advanced setup* — see [Two-way audio](#two-way-audio-advanced) below.
 
 Listening audio recovery reuses existing Home Assistant WebRTC receiver
 tracks to allow speaker unmute after muted startup. It depends on
@@ -176,14 +183,19 @@ tests do not establish real camera audio or device fullscreen behavior.
 - **Direct REST API** (`frigate_url`, optional) — even faster if your Frigate is reachable from the browser
 - Automatic fallback: if REST fails, WS path takes over
 - Automatic Frigate snapshot thumbnails
+- **Bounding boxes on thumbnails** (`frigate_thumb_bbox: true`) — uses Frigate's annotated snapshot as the thumbnail. Requires `snapshots.bounding_box: true` in your Frigate camera config
+- **Event clustering** (`frigate_event_cluster: true`) — events for the same camera and label that follow each other within `frigate_event_cluster_gap_sec` seconds (default 30) collapse into one thumbnail with a count badge. Tap the badge to expand the cluster
+- **Server-side scoping** — `frigate_cameras` and `frigate_labels` limit which events the card loads at all (see [Frigate, scoped to one camera](#frigate-scoped-to-one-camera))
 - **Frigate clip delete** via `rest_command` — see [Delete setup](#delete-setup)
 
 ### Thumbnails
 
 - Automatic frame capture for **all** video sources in media source mode
   - Frigate cameras: Frigate snapshot
-  - All other sources (NAS, Blue Iris, etc.): first-frame capture
-- Sensor mode: first-frame capture
+  - All other sources (NAS, Blue Iris, etc.): a frame captured from the clip
+- Sensor mode: a frame captured from the clip
+- **Choose the frame** — `thumbnail_frame_pct` picks where in the clip the frame is taken: `0` (default) is the first frame, `100` the last
+- **Save bandwidth** — `capture_video_thumbnails: false` skips frame capture entirely and only shows thumbnails the server provides. Useful on slow or metered connections
 - **Paired image + video** — when a snapshot and clip share the same filename stem they're shown as one item, with the image used as the thumbnail
   - Snapshots stamped a few seconds off their clip pair too (Reolink FTP: `Cam_00_20261012111141.jpg` + `Cam_00_20261012111139.mp4`), when `path_datetime_format` dates both files, their names differ only in the timestamp digits, and the times are within 15s. A clip that started before the snapshot wins over a closer one that started after it
 
@@ -197,13 +209,16 @@ tests do not establish real camera audio or device fullscreen behavior.
 
 ### Editor
 
-Built-in Lovelace editor with tabs:
+Built-in Lovelace editor. Each tab is split into sections you can fold open and closed:
 
-- **General**
-- **Viewer**
-- **Live**
-- **Thumbnails**
-- **Styling**
+| Tab | Sections |
+|---|---|
+| **Source** | View (default view, deep-link id), Source (source mode, sensors, media folders, create a FileTrack sensor), Frigate (shown in media and combined mode) |
+| **Gallery** | Display, Playback, Controls (preview pills), Long-press actions |
+| **Live** | Basics, Streams, Two-way audio, PTZ, Menu buttons, Controls (live pills, chevrons, frozen-stream recovery) |
+| **Thumbnails** | Layout, Toolbar, Filters, Video frame |
+| **Styling** | Colors, radius, opacity and spacing (see [Styling](#styling)) |
+| **Advanced** | Path parsing (with auto-detect), Delete services, Diagnostics, Export YAML |
 
 Features:
 
@@ -211,35 +226,64 @@ Features:
 - Media folder browser (starts at root)
 - Field validation
 - Object filter picker
-- Controls mode dropdown (Overlay / Fixed)
-- Menu buttons tab — configure action buttons with entity, icon, label and on/off icon
-- Frigate URL field — set the direct Frigate API URL (shown in media and combined mode)
-- Deep-link id field — set `url_id` for notification deep-links, see [Notification deep-links](#notification-deep-links)
-- **Auto-detect path datetime format** — scans your sources and suggests a working format
+- **Auto-detect path datetime format** — scans your sources and suggests a working format (Advanced → Path parsing)
+- **Visual crop tool** per live camera (Live tab)
+- Drag-and-drop ordering of pills and toolbar buttons
+- **Export YAML** — copy the card's current config to the clipboard
 - Cleanup of legacy config keys
 - Live preview in the HA card picker
-- Create new FileTrack sensor from the General tab
+- Create a new FileTrack sensor from the Source tab
 
 ### Debug mode
 
-Enable **Debug mode** in the General tab to surface a debug pill in live view. Tapping it opens a diagnostics modal with card version, HA info, Frigate state, runtime queue stats, and the active source/path. Useful for support questions and issue reports.
+Turn on **Debug mode** under **Advanced → Diagnostics** to show a debug pill in live view. Tapping it opens a diagnostics report with card version, HA info, Frigate state, runtime queue stats, and the active source/path. Useful for support questions and issue reports.
 
 ### Styling
 
-The **Styling** tab provides a visual editor for colors and border radius.
+The **Styling** tab provides a visual editor for colors, border radius, opacity and spacing.
 
 <details>
 <summary>Show styling sections</summary>
 
 | Section | Options |
 |---|---|
-| Card | Background, Border color, Border radius |
-| Preview bar | Bar text color, Pill color |
-| Thumbnails | Bar background, Bar text color, Border radius |
+| Card | Background, Border color, Border radius, Height (`card_height`) |
+| Pills | Text / icon color, Background, Size (`pill_size`), Opacity (`bar_opacity`) |
+| Thumbnails | Bar background, Bar text color, Border radius, Unselected opacity (`thumb_off_opacity`) |
 | Filter buttons | Background, Icon color, Active background, Active icon color, Border radius |
-| Today / Date / Live | Text color, Chevron color, Live active color, Border radius |
+| Today / Date / Live | Text color, Chevron color, Live active color, Delete button color, Border radius |
+| Two-way audio | Background, Opacity (`talkback_opacity`) |
+| Live navigation | Background, Opacity (`chevron_opacity`) |
+| Layout | Row spacing (`row_gap`) |
 
 </details>
+
+### Pills and toolbar
+
+The buttons over the preview, over the live view and in the gallery toolbar can each be switched off and reordered. The editor does this for you (Gallery → Controls, Live → Controls, Thumbnails → Toolbar). In YAML you only list the ones you want to change; everything else keeps its default.
+
+```yaml
+gallery_pills:
+  playback_speed:
+    enabled: false
+  pip:
+    order: 5          # lower numbers show first
+gallery_pills_align: left   # left, center (default) or right
+live_pills:
+  snapshot:
+    enabled: false
+toolbar_order:
+  live: 5             # put the Live button first
+show_media_filter: false
+```
+
+| Area | Key | Ids (default order) |
+|---|---|---|
+| Preview | `gallery_pills` | `object_indicator`, `index_counter`, `autoplay_all`, `mute`, `playback_speed`, `pip`, `fullscreen`, `video_time` |
+| Live view | `live_pills` | `mute`, `picker`, `pip`, `fullscreen`, `snapshot`, `refresh` |
+| Gallery toolbar | `toolbar_order` (order), `show_*` (on/off) | `today` (`show_today`), `media_filter` (`show_media_filter`), `favorite` (`show_favorite`), `live` (`show_live`) |
+
+Each pill takes `enabled` (default `true`) and `order` (a number; the defaults are spaced by 10, so `15` lands between the first two). `gallery_pills_align` only applies when `controls_mode` is `overlay`. Some live pills only appear when they make sense: the camera picker needs at least two cameras, and the hamburger menu, PTZ and debug pills have their own settings.
 
 ---
 
@@ -256,7 +300,7 @@ shell_command:
   gallery_delete: 'rm -f "{{ path }}"'
 ```
 
-Then in the card editor: **General → Delete services → Sensor** → pick `shell_command.gallery_delete`.
+Then in the card editor: **Advanced → Delete services → File sensor** → pick `shell_command.gallery_delete`.
 
 > [!NOTE]
 > Sensor delete is path-based. The path must start with `/config/www/` (or resolve from `/local/`). Media-source URIs without a filesystem mapping can't use this path.
@@ -272,7 +316,7 @@ rest_command:
     method: DELETE
 ```
 
-Then in the card editor: **General → Delete services → Frigate** → pick `rest_command.delete_frigate`.
+Then in the card editor: **Advanced → Delete services → Frigate** → pick `rest_command.delete_frigate`.
 
 > [!TIP]
 > Frigate's DELETE event endpoint wipes the clip, snapshot, and thumbnail in one call. The card hides paired items together after a successful delete.
@@ -342,9 +386,40 @@ shell_command:
 
 ---
 
+## Live cameras
+
+`live_cameras` is the list of cameras for live view. Each entry is either a Home Assistant camera entity or an RTSP stream URL, and per-camera settings sit on the same entry. The first camera in the list opens first. The editor's Live tab writes this list for you.
+
+```yaml
+live_enabled: true
+live_cameras:
+  - entity: camera.front_door
+    name: Front door            # optional, overrides the friendly name
+    mic: front_door             # optional, go2rtc stream for two-way audio
+  - entity: camera.garden
+    crop: { x: 20, y: 30, w: 50, h: 50 }   # optional, set with Crop view
+  - url: rtsp://user:pass@192.168.1.20:554/stream1
+    name: Shed
+```
+
+| Key | Description |
+|---|---|
+| `entity` | Camera entity. Use either `entity` or `url`, not both |
+| `url` | RTSP stream URL, for a camera without an entity in Home Assistant |
+| `name` | Display name. Empty uses the entity's friendly name |
+| `mic` | go2rtc stream name that carries the camera's backchannel audio. See [Two-way audio](#two-way-audio-advanced) |
+| `crop` | Visible region in percent of the full picture: `x`, `y` (top-left corner), `w`, `h` (size). Easiest to set with **Crop view** in the editor |
+
+Stream URLs play through the [AlexxIT/WebRTC](https://github.com/AlexxIT/WebRTC) integration, or through your own go2rtc server when you set `live_go2rtc_url` (for example `http://192.168.1.10:1984`). If Home Assistant runs on HTTPS, that go2rtc URL must be HTTPS too, or the browser blocks it.
+
+> [!NOTE]
+> Older configs used `live_camera_entities`, `live_stream_urls`, `live_stream_url` / `live_stream_name` and `live_mic_streams` for the same information. They still work: the card converts them into `live_cameras` when it loads, and the editor saves the new form the next time you save. The old `live_camera_entity` (default camera) is folded in too, by moving that camera to the top of the list.
+
+---
+
 ## Live menu buttons
 
-`menu_buttons` adds action buttons to the live view. You can add them in the editor's Menu buttons tab or in YAML.
+`menu_buttons` adds action buttons to the live view. You can add them in the editor (Live tab → Menu buttons) or in YAML.
 
 ```yaml
 menu_buttons:
@@ -375,7 +450,7 @@ What a tap does:
 - **Everything else** is toggled.
 - A `service`, when set, always wins over these defaults.
 
-In the editor's Menu buttons tab, turn on **Show among live controls** for a button to set `placement: controls`. Turn it off to move the button back into the hamburger menu.
+In the editor (Live tab → Menu buttons), turn on **Show among live controls** for a button to set `placement: controls`. Turn it off to move the button back into the hamburger menu.
 
 ---
 
@@ -393,7 +468,7 @@ Set a `url_id` in the editor's **Source → View** section (or `url_id: porch` i
 |---|---|
 | `cgc_id` | Must match the card's `url_id` exactly, or the whole query string is ignored |
 | `cgc_view` | `live` or `gallery` — which screen to open |
-| `cgc_camera` | An entry from the card's own live camera list — a camera entity, or a `live_stream_urls` stream — opens live view on that camera |
+| `cgc_camera` | An entry from the card's own live camera list — a camera entity, or `__cgc_stream_<n>__` for the n-th stream-URL camera, counting from 0 — opens live view on that camera |
 
 A worked example, e.g. from a motion automation:
 
@@ -420,82 +495,112 @@ data:
 
 ## Configuration options
 
+Everything below can also be set in the visual editor. Defaults are shown in brackets.
+
 <details>
 <summary>Show all configuration options</summary>
 
 | Option | Description |
 |------|------|
 | **Source** | |
-| `source_mode` | `sensor`, `media`, or `combined` |
-| `entity / entities` | Sensor source(s) |
-| `media_source / media_sources` | Media browser source(s) |
-| `path_datetime_format` | Format pattern for parsing timestamps from paths. Needed in **all source modes** for day grouping and time sort. Exceptions: Frigate sources (`media-source://frigate/...`) carry their own event-id timestamps, and Reolink sources (`media-source://reolink/...`) are parsed intrinsically by the dedicated engine |
-| `max_media` | Max media items |
+| `source_mode` | `sensor`, `media`, or `combined`. Left out, the card picks `media` when only media sources are set, otherwise `sensor` |
+| `entities` | Sensor source(s) with a `fileList` attribute (sensor and combined mode). A single `entity` is accepted too |
+| `media_sources` | Media browser source(s), e.g. `media-source://frigate/...` (media and combined mode). A single `media_source` is accepted too |
+| `path_datetime_format` | Format pattern for parsing timestamps from paths. Needed in **all source modes** for day grouping and time sort. Exceptions: Frigate sources (`media-source://frigate/...`) carry their own event-id timestamps, and Reolink sources (`media-source://reolink/...`) are parsed intrinsically by the dedicated engine. See [Path datetime format](#path-datetime-format) |
+| `max_media` | Max media items per day, 1–500 [`50`] |
 | **Frigate** | |
 | `frigate_url` | Optional direct Frigate REST API URL (e.g. `http://192.168.1.x:5000`). If omitted, the card uses the HA Frigate integration via WebSocket |
 | `frigate_cameras` | Server-side camera filter for Frigate sources (list of camera names, e.g. `[frontdoor]`). Empty/omitted means all cameras — Frigate's own default. Works with both the WS and REST (`frigate_url`) paths |
 | `frigate_labels` | Server-side label filter for Frigate sources (list of labels, e.g. `[cat]`). Empty/omitted means all labels |
-| **Gallery view** | |
-| `start_mode` | Default view: `gallery` or `live` |
+| `frigate_thumb_bbox` | Use Frigate's snapshot with bounding boxes as the thumbnail [`false`]. Needs `snapshots.bounding_box: true` in Frigate |
+| `frigate_event_cluster` | Collapse events for the same camera and label that follow each other closely into one thumbnail [`false`] |
+| `frigate_event_cluster_gap_sec` | Maximum gap in seconds between clustered events, 1–600 [`30`] |
+| **Gallery** | |
+| `start_mode` | Default view: `gallery` or `live` [`gallery`] |
 | `url_id` | Opt-in id for notification deep-links. See [Notification deep-links](#notification-deep-links) |
-| `preview_position` | `top` or `bottom` |
-| `clean_mode` | Hide overlays when preview is closed |
-| `object_fit` | Media display mode: `cover` or `contain` |
-| `aspect_ratio` | Preview aspect ratio: `16:9`, `4:3`, or `1:1` |
-| `autoplay` | Auto-play videos in gallery |
-| `auto_muted` | Auto-mute videos in gallery |
-| `gallery_fullscreen` | Clip fullscreen: `overlay` (default, the card's viewer; continues where the clip was) or `video` (the platform's own player) |
+| `preview_position` | `top` or `bottom` [`top`] |
+| `clean_mode` | Preview-only mode: show either the gallery or the preview, not both [`false`] |
+| `object_fit` | Media display mode: `cover` or `contain` [`cover`] |
+| `aspect_ratio` | Preview aspect ratio: `16:9`, `4:3`, or `1:1` [`16:9`] |
+| `autoplay` | Auto-play videos in gallery [`false`] |
+| `auto_muted` | Start gallery videos muted [`true`] |
+| `gallery_fullscreen` | Clip fullscreen: `overlay` (the card's viewer; continues where the clip was) or `video` (the platform's own player) [`overlay`] |
+| `fullscreen_zoom` | Pinch, double-tap and wheel zoom in the fullscreen image viewer [`true`] |
+| `gallery_chevrons_enabled` | Show the prev/next arrows on the preview [`true`] |
+| `gallery_pills` | Turn preview pills on or off and reorder them. See [Pills and toolbar](#pills-and-toolbar) |
+| `gallery_pills_align` | Preview pill row alignment: `left`, `center`, or `right` [`center`] |
+| `sync_entity` | An `input_text` helper that receives the file name of the item you are viewing |
+| **Gallery toolbar** | |
+| `show_today` | Show the Today button [`true`] |
+| `show_media_filter` | Show the video / image filter [`true`]. Only appears when the gallery holds both videos and images |
+| `show_favorite` | Show the favorites filter [`true`] |
+| `show_live` | Show the Live button [`true`] |
+| `toolbar_order` | Reorder the toolbar buttons. See [Pills and toolbar](#pills-and-toolbar) |
 | **Thumbnails** | |
-| `thumb_layout` | `horizontal` or `vertical` |
-| `thumb_size` | Thumbnail size in px |
-| `thumb_bar_position` | Thumb timestamp bar position |
-| `thumb_sort_order` | `newest_first` or `oldest_first` |
-| `bar_position` | Preview timestamp bar position |
-| `bar_opacity` | Preview timestamp bar opacity |
+| `thumb_layout` | `horizontal` or `vertical` [`horizontal`] |
+| `thumb_size` | Thumbnail size in px, 40–220 [`86`] |
+| `thumb_bar_position` | Thumbnail timestamp bar: `top`, `bottom`, or `hidden` [`bottom`] |
+| `thumb_sort_order` | `newest` or `oldest` first [`newest`] |
+| `thumb_off_opacity` | Opacity of thumbnails that are not selected, 0–100 % [`30`] |
+| `thumbnail_frame_pct` | Where in a clip the thumbnail frame is taken, 0 (first frame) – 100 (last frame) [`0`] |
+| `capture_video_thumbnails` | Capture a frame from clips that have no server thumbnail [`true`]. Turn off to save bandwidth |
+| `bar_position` | Preview timestamp bar: `top`, `bottom`, or `hidden` [`top`] |
+| `bar_opacity` | Opacity of the preview bar and pills, 0–100 % [`30`] |
 | **Live view** | |
-| `live_enabled` | Enable live mode |
-| `live_camera_entity` | Default camera entity for live view |
-| `live_camera_entities` | Camera entities visible in the live picker |
-| `live_layout` | `single` or `grid` (multi-camera) |
-| `live_fullscreen` | `card` (default, keeps pills, PTZ and zoom) or `video` (platform player) |
-| `tap_action` | Action fired when the single-camera live preview is tapped, using standard HA action syntax: `more-info`, `toggle`, `perform-action`, `navigate`, `url` (plus `confirmation`, `target`, `data`), `none`, or the card's own `fullscreen`, `snapshot`, `refresh`. Unset keeps the default behaviour |
-| `live_grid_labels` | Show camera name labels in grid mode |
+| `live_enabled` | Enable live mode [`false`] |
+| `live_cameras` | The live cameras, each with `entity` or `url` and optional `name`, `mic` and `crop`. See [Live cameras](#live-cameras) |
+| `live_layout` | `single` or `grid` (multi-camera) [`single`] |
+| `live_fullscreen` | `card` (keeps pills, PTZ and zoom) or `video` (platform player) [`card`] |
+| `live_auto_muted` | Start live view muted [`true`] |
+| `live_auto_recover` | Rebuild a frozen live stream automatically [`true`] |
+| `live_chevrons_enabled` | Show the arrows that switch cameras [`true`] |
+| `live_pills` | Turn live pills on or off and reorder them. See [Pills and toolbar](#pills-and-toolbar) |
+| `tap_action` | Action fired when the single-camera live preview is tapped, using standard HA action syntax: `more-info`, `toggle`, `perform-action`, `navigate`, `url` (plus `confirmation`, `target`, `data`), `none`, or the card's own `fullscreen`, `snapshot`, `refresh`. Unset: a tap only shows the controls |
+| `live_grid_labels` | Show camera name labels in grid mode [`true`] |
 | `live_grid_columns` | Pin the grid's column count (1–8). Omit for automatic — narrow cards automatically use fewer columns |
-| `live_grid_emphasis` | Where the larger tiles land: `bottom` (default), `top`, or `hero`. See [Multi-camera grid layout](#live-view) |
-| `live_stream_urls` | Array of named RTSP streams: `[{url, name}]` |
-| `live_auto_muted` | Auto-mute audio in live view |
-| `controls_mode` | Live controls display: `overlay` or `fixed` |
-| `show_camera_title` | Show camera name in controls bar |
-| `persistent_controls` | Always show controls (don't fade out) |
+| `live_grid_emphasis` | Where the larger tiles land: `bottom`, `top`, or `hero` [`bottom`]. See [Live view](#live-view) |
+| `live_go2rtc_url` | Optional URL of your own go2rtc server, used for stream-URL cameras |
+| `controls_mode` | Controls display: `overlay` (fade out) or `fixed` (always visible) [`overlay`] |
+| `show_camera_title` | Show camera name in controls bar [`true`] |
+| `persistent_controls` | Keep the controls visible instead of fading them out [`false`] |
 | `menu_buttons` | Configurable action buttons in the hamburger menu or among the live controls. See [Live menu buttons](#live-menu-buttons) |
-| `live_mic_streams` | Per-camera map of go2rtc backchannel streams. See [Two-way audio](#two-way-audio-advanced) |
-| `live_native_talk` | Use Home Assistant's own two-way audio (2026.11+) for cameras that support it and have no go2rtc mic stream (default: `true`) |
-| `live_go2rtc_stream` | Legacy single-camera fallback for talkback |
-| `live_go2rtc_url` | Optional direct go2rtc URL for the live video fast-path |
-| `live_mic_mode` | Mic interaction model: `toggle` (default) or `ptt` |
-| `live_mic_audio_processing` | Per-mic Web Audio constraints |
+| **Two-way audio** | |
+| `live_native_talk` | Use Home Assistant's own two-way audio (2026.11+) for cameras that support it and have no go2rtc mic stream [`true`] |
+| `live_mic_mode` | `toggle` (tap to start and stop) or `ptt` (press and hold) [`toggle`] |
+| `live_mic_shape` | `bar` (full width) or `button` (compact round button) [`bar`] |
+| `live_mic_button_position` | Position of the round button: `left`, `center`, or `right` [`center`] |
+| `live_mic_waveform_enabled` | Show a waveform while you talk [`true`] |
+| `live_mic_waveform_sensitivity` | Waveform sensitivity: `low`, `medium`, or `high` [`medium`] |
+| `live_mic_audio_processing` | Echo cancellation, noise suppression and auto gain: `{ echo_cancellation, noise_suppression, auto_gain_control }`, each [`true`] |
 | `live_mic_ice_servers` | Advanced. Override built-in STUN list with custom STUN/TURN |
-| `live_mic_force_relay` | Advanced. Force `iceTransportPolicy: "relay"` (TURN-only) |
-| `live_ptz_enabled` | Enable the PTZ joystick overlay |
-| `live_ptz_position` | PTZ overlay corner: `top-left`, `top-right`, `bottom-left`, or `bottom-right` |
-| `live_ptz_speed` | Global PTZ speed (1–9) for integrations that support it |
-| `live_ptz_cameras` | Per-camera PTZ configuration, including built-in and manual-service dispatchers. See [Manual service PTZ](#manual-service-ptz) |
+| `live_mic_force_relay` | Advanced. Force `iceTransportPolicy: "relay"` (TURN-only) [`false`] |
+| **PTZ** | |
+| `live_ptz_enabled` | Enable the PTZ joystick overlay [`false`] |
+| `live_ptz_position` | PTZ overlay corner: `top-left`, `top-right`, `bottom-left`, or `bottom-right` [`bottom-left`] |
+| `live_ptz_speed` | Global PTZ speed, 1–9, for integrations that support it [`5`] |
+| `live_ptz_cameras` | Per-camera PTZ configuration. `type`: `ezviz` (default), `reolink`, `frigate`, `onvif` or `service`. See [Manual service PTZ](#manual-service-ptz) |
 | **Filters** | |
-| `object_filters` | Filter buttons (built-in and custom) |
+| `object_filters` | Filter buttons (built-in and custom). See [Object filters](#object-filters) |
 | `object_colors` | Color per object filter |
 | **Delete** | |
 | `delete_service` | Sensor file delete service (`shell_command.*`) |
 | `frigate_delete_service` | Frigate clip delete service (`rest_command.*`) |
-| `delete_confirm` | Show confirmation before deleting (default: `true`) |
-| `allow_bulk_delete` | Enable bulk delete (default: `true`) |
+| `delete_confirm` | Show confirmation before deleting [`true`] |
+| `allow_bulk_delete` | Enable bulk delete [`true`] |
 | **Thumbnail menu** | |
 | `thumb_actions` | Extra long-press menu entries that call an HA action. See [Custom menu actions](#custom-menu-actions) |
-| **Layout & misc** | |
-| `card_height` | Card height in px |
-| `pill_size` | Pill text size (px) — pills scale around this |
-| `row_gap` | Vertical spacing between rows (preview / controls / topbar / filters / thumbnails) in px. Default `8`, range 0–40 |
-| `debug_enabled` | Show debug pill with diagnostics in live view |
-| `style_variables` | Custom CSS variable overrides |
+| **Layout & styling** | |
+| `card_height` | Height in px of the thumbnail list in vertical layout, 0–1200. `0` uses the default of 320 px [`0`] |
+| `pill_size` | Pill text size in px, 10–28 — pills scale around this [`14`] |
+| `row_gap` | Vertical spacing between rows (preview / controls / topbar / filters / thumbnails) in px, 0–40 [`8`] |
+| `talkback_opacity` | Opacity of the talkback bar, 0–100 % [`30`] |
+| `chevron_opacity` | Opacity of the live camera arrows, 0–100 % [`30`] |
+| `style_variables` | Custom CSS variable overrides. See [Styling / CSS variables](#styling--css-variables) |
+| `debug_enabled` | Show debug pill with diagnostics in live view [`false`] |
+| **Legacy (still read, converted on load)** | |
+| `live_camera_entities`, `live_stream_urls`, `live_stream_url`, `live_stream_name`, `live_mic_streams` | Older ways to list live cameras and mic streams. Converted into `live_cameras`. See [Live cameras](#live-cameras) |
+| `live_camera_entity` | Old default camera. Moved to the top of `live_cameras` |
+| `live_go2rtc_stream` | Old single go2rtc mic stream, used only when no camera has a `mic` |
 
 </details>
 
@@ -511,13 +616,12 @@ Multi-camera setup with mic on the two cameras that actually have speakers:
 type: custom:camera-gallery-card
 source_mode: media
 live_enabled: true
-live_camera_entities:
-  - camera.front_door     # mic-capable doorbell
-  - camera.driveway       # mic-capable PTZ
-  - camera.backyard       # no speaker, intentionally omitted from the map
-live_mic_streams:
-  camera.front_door: front_door     # go2rtc streams: key
-  camera.driveway: driveway
+live_cameras:
+  - entity: camera.front_door   # mic-capable doorbell
+    mic: front_door             # go2rtc streams: key
+  - entity: camera.driveway     # mic-capable PTZ
+    mic: driveway
+  - entity: camera.backyard     # no speaker, so no mic
 live_mic_mode: ptt        # press-and-hold; omit for tap-to-toggle
 ```
 
@@ -530,8 +634,8 @@ For cameras controlled by a script or another Home Assistant service, use `type:
 ```yaml
 type: custom:camera-gallery-card
 live_enabled: true
-live_camera_entities:
-  - camera.some_camera_with_ptz
+live_cameras:
+  - entity: camera.some_camera_with_ptz
 live_ptz_enabled: true
 live_ptz_cameras:
   camera.some_camera_with_ptz:
@@ -569,7 +673,7 @@ Optional `data_zoom_in` and `data_zoom_out` objects together enable the zoom con
 
 ### Minimal — sensor mode
 
-For users with file sensors (FileTrack) pointing at local camera storage. **Create the FileTrack sensors first** via *Settings → Devices & Services → FileTrack* (or use the editor's **Create new FileTrack sensor** button on the General tab) — the entity ids below should match what you created.
+For users with file sensors (FileTrack) pointing at local camera storage. **Create the FileTrack sensors first** via *Settings → Devices & Services → FileTrack* (or use the editor's **Create new FileTrack sensor** button on the Source tab) — the entity ids below should match what you created.
 
 ```yaml
 type: custom:camera-gallery-card
@@ -599,9 +703,9 @@ media_sources:
 path_datetime_format: YYYY/MM/DD/HHmmss
 frigate_delete_service: rest_command.delete_frigate
 live_enabled: true
-live_camera_entities:
-  - camera.frontdoor
-  - camera.driveway
+live_cameras:
+  - entity: camera.frontdoor
+  - entity: camera.driveway
 live_layout: single
 object_filters:
   - person
@@ -626,8 +730,8 @@ frigate_cameras:
 frigate_labels:
   - cat
 live_enabled: true
-live_camera_entities:
-  - camera.frig_kittycam_coral
+live_cameras:
+  - entity: camera.frig_kittycam_coral
 ```
 
 Grid mode, showing all cameras at once instead of one at a time:
@@ -660,8 +764,8 @@ source_mode: media
 media_sources:
   - media-source://reolink/CAM|01JVCNA6DC12AMNF2QE2SWXNK3|0
 live_enabled: true
-live_camera_entities:
-  - camera.deurbel
+live_cameras:
+  - entity: camera.deurbel
 ```
 
 How it works under the hood:
@@ -699,9 +803,9 @@ All visual styling can be customized via the **Styling** tab in the editor.
 |---|---|---|
 | `--cgc-card-bg` | Card background | theme card color |
 | `--cgc-card-border-color` | Card border | theme divider color |
-| `--r` | Card border radius | `10px` |
-| `--cgc-tsbar-txt` | Preview bar text color | `#fff` |
-| `--cgc-pill-bg` | Preview pill background | theme secondary bg |
+| `--cgc-card-radius` | Card border radius | `10px` |
+| `--cgc-tsbar-txt` | Pill and preview bar text / icon color | `#fff` |
+| `--cgc-pill-bg` | Pill background | `#000` |
 | `--cgc-tbar-bg` | Thumbnail bar background | theme secondary bg |
 | `--cgc-tbar-txt` | Thumbnail bar text color | theme text color |
 | `--cgc-thumb-radius` | Thumbnail border radius | `10px` |
@@ -713,6 +817,9 @@ All visual styling can be customized via the **Styling** tab in the editor.
 | `--cgc-ctrl-txt` | Today/date/live text color | theme secondary text |
 | `--cgc-ctrl-chevron` | Date navigation chevron color | theme text color |
 | `--cgc-live-active-bg` | Live button active background | error color |
+| `--cgc-delete-bg` | Delete button background | live active color |
+| `--cgc-talkback-bg` | Two-way audio bar background | pill background |
+| `--cgc-chevron-bg` | Live camera arrow background | pill background |
 | `--cgc-ctrl-radius` | Controls bar border radius | `10px` |
 | `--cgc-pill-size` | Pill text size (px). Fixed-mode pill height scales as `2 ×` this value | `14px` |
 
@@ -747,7 +854,7 @@ Object filter colors can be assigned per filter type in the editor.
 The card extracts timestamps from a single configurable pattern, `path_datetime_format`, that matches the *tail* of each item's path (or media-source URI). The `/` character separates directory levels; the leaf segment matches the filename.
 
 > [!WARNING]
-> `path_datetime_format` is needed in **all source modes** (sensor, media, combined) — without it, items load but have no dates: no day grouping, no day navigation, no time sort. The only built-in exception is Frigate via `media-source://frigate/...` URIs, which carry their own event-id timestamps. Use the editor's **Auto-detect path datetime format** button (General tab) if you're unsure what to set.
+> `path_datetime_format` is needed in **all source modes** (sensor, media, combined) — without it, items load but have no dates: no day grouping, no day navigation, no time sort. The only built-in exception is Frigate via `media-source://frigate/...` URIs, which carry their own event-id timestamps. Use the editor's **Auto-detect path datetime format** button (Advanced → Path parsing) if you're unsure what to set.
 
 | Token | Meaning |
 |------|------|
@@ -830,15 +937,15 @@ Reolink SD-card exports and Dahua/Amcrest filenames carry two same-format timest
 The camera entity is unavailable in Home Assistant. Check it in *Developer Tools → States* — it must report a live state to stream.
 
 **Frigate clips don't appear.**
-The `path_datetime_format` must match Frigate's path layout. Use the editor's **Auto-detect path datetime format** button (General tab) to let the card propose the right pattern, or see [Path datetime format](#path-datetime-format) for examples.
+The `path_datetime_format` must match Frigate's path layout. Use the editor's **Auto-detect path datetime format** button (Advanced → Path parsing) to let the card propose the right pattern, or see [Path datetime format](#path-datetime-format) for examples.
 
 **Items load but aren't grouped by day (no dates, no day navigation).**
-`path_datetime_format` is missing or doesn't match your filenames. The card needs it to extract dates from paths — without a match, items stay undated and the timeline loses day grouping, day navigation and time-based sort. The only built-in exception is Frigate via `media-source://frigate/...` URIs, which carry their own event-id timestamps. Use **Auto-detect** in the editor's General tab, or see [Path datetime format](#path-datetime-format).
+`path_datetime_format` is missing or doesn't match your filenames. The card needs it to extract dates from paths — without a match, items stay undated and the timeline loses day grouping, day navigation and time-based sort. The only built-in exception is Frigate via `media-source://frigate/...` URIs, which carry their own event-id timestamps. Use **Auto-detect** in the editor (Advanced → Path parsing), or see [Path datetime format](#path-datetime-format).
 
 **Delete does nothing / errors.**
 Check that the `shell_command` or `rest_command` you point to is actually defined in `configuration.yaml` and that you restarted (or reloaded YAML) afterwards. Variable names like `{{ path }}` and `{{ event_id }}` must be **exact** — the card passes those names, renaming them breaks the call.
 
-**Need more info?** Enable **Debug mode** in the General tab — a debug pill appears in live view; tap it for a diagnostics modal with version, HA info, Frigate state and runtime stats. Attach the contents when filing an [issue](https://github.com/TheScubaDiver/camera-gallery-card/issues).
+**Need more info?** Turn on **Debug mode** under **Advanced → Diagnostics** — a debug pill appears in live view; tap it for a diagnostics report with version, HA info, Frigate state and runtime stats. Attach the contents when filing an [issue](https://github.com/TheScubaDiver/camera-gallery-card/issues).
 
 ---
 
@@ -868,7 +975,7 @@ Setup is more involved than the rest of the card. A go2rtc mic stream set for a 
 
 **Configuration:**
 
-- `live_mic_streams: { <camera_id>: <go2rtc_stream_key> }` — map of cameras → go2rtc stream keys. The mic pill appears only on cameras present in this map.
+- `mic: <go2rtc_stream_key>` on a camera in [`live_cameras`](#live-cameras) — the go2rtc stream that carries that camera's backchannel. The mic pill appears only on cameras with a `mic`. You can also set it in the editor under **Live → Two-way audio**.
 - Optional `live_mic_mode: ptt` for push-to-talk (default is tap-to-toggle).
 - Optional `live_mic_audio_processing` to tweak echo cancellation, noise suppression, AGC.
 - Optional `live_mic_ice_servers` / `live_mic_force_relay` if you're behind symmetric NAT and need a TURN relay.
@@ -888,7 +995,7 @@ live_mic_ice_servers:
 # live_mic_force_relay: true   # only if direct ICE never succeeds
 ```
 
-**Caveat for `live_stream_urls` (synthetic ids).** When you put mic config on a stream-URL entry, the key is `__cgc_stream_<N>__` where `N` is the position in `live_stream_urls`. If you reorder the array, the keys point at the wrong streams. Use the editor (it re-binds the inputs to the visible names) or stick to entity-keyed entries for stability.
+Older configs set the mic streams in a separate `live_mic_streams` map. That still works and is converted into `mic` on each camera when the card loads.
 
 See the [Two-way audio YAML example](#two-way-audio-talkback) for a working config.
 
