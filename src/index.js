@@ -9540,12 +9540,80 @@ class CameraGalleryCardEditor extends HTMLElement {
         </div>
       `;
 
+      // ── Long-press actions (`thumb_actions`, #243)
+      const thumbActions = Array.isArray(this._config.thumb_actions) ? this._config.thumb_actions : [];
+      const escTa = (v) =>
+        String(v ?? "")
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/"/g, "&quot;");
+      const taLabel = (txt) => `<div style="font-size:0.75em;opacity:0.6;margin-bottom:2px;">${txt}</div>`;
+      const thumbActionsBody = `
+        <div class="row">
+          <div class="desc">Extra entries in the long-press (right-click) menu of a thumbnail. Each one calls a Home Assistant action with details of the pressed item, for example a script that archives the clip. In <b>Data</b> you can use <code>{path}</code>, <code>{media_id}</code>, <code>{url}</code> and <code>{filename}</code>; they are filled in per item.</div>
+          ${thumbActions.length ? `
+            <div class="menubtn-list">
+              ${thumbActions.map((a, i) => `
+                <div class="menubtn-card">
+                  <div class="menubtn-card-header">
+                    <span style="flex:1;font-size:0.82em;opacity:0.65;">${escTa(a?.name || "Action " + (i + 1))}</span>
+                    <button type="button" class="livecam-tag-del" data-ta-del="${i}" title="Remove">×</button>
+                  </div>
+                  <div class="menubtn-fields">
+                    <div>
+                      ${taLabel("Name")}
+                      <div class="field"><input type="text" class="ed-input" data-ta="${i}" data-ta-field="name" value="${escTa(a?.name)}" placeholder="Archive" autocomplete="off" /></div>
+                    </div>
+                    <div>
+                      ${taLabel("Icon")}
+                      <div class="field">
+                        <input type="text" class="ed-input" data-ta="${i}" data-ta-field="icon" value="${escTa(a?.icon)}" placeholder="mdi:archive-arrow-down" autocomplete="off" />
+                        <div class="suggestions" data-ta-icon-sugg="${i}" hidden></div>
+                      </div>
+                    </div>
+                    <div style="grid-column:1/-1;">
+                      ${taLabel("Action")}
+                      <div class="field"><input type="text" class="ed-input" data-ta="${i}" data-ta-field="perform_action" value="${escTa(a?.perform_action)}" placeholder="script.archive_clip" autocomplete="off" spellcheck="false" /></div>
+                    </div>
+                    <div style="grid-column:1/-1;">
+                      ${taLabel("Data (JSON)")}
+                      <textarea class="ed-input" data-ta-data="${i}" rows="3" spellcheck="false" placeholder='{"path":"{path}"}' style="width:100%;box-sizing:border-box;resize:vertical;font-family:monospace;font-size:0.78em;">${escTa(a?.data && typeof a.data === "object" ? JSON.stringify(a.data, null, 2) : "")}</textarea>
+                    </div>
+                    <div style="grid-column:1/-1;display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:2px;">
+                      <span style="font-size:0.82em;">Ask for confirmation</span>
+                      <label class="cgc-switch"><input type="checkbox" data-ta-confirm="${i}" ${a?.confirmation ? "checked" : ""}><span class="cgc-track"></span></label>
+                    </div>
+                  </div>
+                </div>
+              `).join("")}
+            </div>
+          ` : ""}
+          <div style="margin-top:8px;border:1px solid var(--ed-input-border);border-radius:var(--ed-radius-input,8px);padding:8px 10px;">
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;">
+              <div>
+                ${taLabel("Name")}
+                <div class="field"><input type="text" class="ed-input" id="ta-add-name" placeholder="Archive" autocomplete="off" /></div>
+              </div>
+              <div>
+                ${taLabel("Action")}
+                <div class="field"><input type="text" class="ed-input" id="ta-add-action" placeholder="script.archive_clip" autocomplete="off" spellcheck="false" /></div>
+              </div>
+              <div style="grid-column:1/-1;display:flex;align-items:flex-end;">
+                <button type="button" id="ta-add-btn" class="actionbtn" style="width:100%;justify-content:center;">+ Add action</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      `;
+
       return `
         <div class="tabpanel" data-panel="gallery">
           ${v2ExpandToggle}
           ${v2Collapsible("display",  "Display",  true,  displayBody,  "mdi:image-outline")}
           ${v2Collapsible("playback", "Playback", false, playbackBody, "mdi:play-circle-outline")}
           ${v2Collapsible("controls", "Controls", hasPillOverrides, pillsBody, "mdi:tune-vertical")}
+          ${v2Collapsible("thumbactions", "Long-press actions", thumbActions.length > 0, thumbActionsBody, "mdi:dots-horizontal")}
         </div>
       `;
     };
@@ -14216,6 +14284,130 @@ details summary { user-select: none; }
         if (menubtnIconInput) menubtnIconInput.value = "";
         this._scheduleRender();
       });
+    }
+
+    // ── Long-press actions (`thumb_actions`, #243) ──
+    const _getThumbActions = () =>
+      Array.isArray(this._config.thumb_actions) ? this._config.thumb_actions.map((a) => ({ ...a })) : [];
+    const _setThumbActions = (arr, rerender) => {
+      if (arr.length) {
+        this._set("thumb_actions", arr);
+      } else {
+        const next = { ...this._config };
+        delete next.thumb_actions;
+        this._config = next;
+        this._fire();
+      }
+      if (rerender) this._scheduleRender();
+    };
+    const SERVICE_RE = /^[a-z0-9_]+\.[a-z0-9_]+$/i;
+
+    this.shadowRoot.querySelectorAll("input[data-ta][data-ta-field]").forEach((input) => {
+      const i = Number(input.dataset.ta);
+      const field = input.dataset.taField;
+      if (field === "icon") {
+        const sugg = this.shadowRoot.querySelector(`[data-ta-icon-sugg="${i}"]`);
+        wireIconInput(input, sugg, (ic) => {
+          input.value = ic;
+          if (sugg) sugg.hidden = true;
+          const arr = _getThumbActions();
+          if (!arr[i]) return;
+          arr[i].icon = ic;
+          _setThumbActions(arr);
+        });
+      }
+      input.addEventListener("input", () => input.setCustomValidity(""), _sig);
+      input.addEventListener("change", () => {
+        const arr = _getThumbActions();
+        if (!arr[i]) return;
+        const val = input.value.trim();
+        if ((field === "name" || field === "perform_action") && !val) {
+          input.setCustomValidity("Required");
+          input.reportValidity();
+          return;
+        }
+        if (field === "perform_action" && !SERVICE_RE.test(val)) {
+          input.setCustomValidity("Use domain.service, e.g. script.archive_clip");
+          input.reportValidity();
+          return;
+        }
+        if (val) arr[i][field] = val;
+        else delete arr[i][field];
+        _setThumbActions(arr, field === "name");
+      }, _sig);
+    });
+
+    this.shadowRoot.querySelectorAll("textarea[data-ta-data]").forEach((el) => {
+      const i = Number(el.dataset.taData);
+      el.addEventListener("input", () => el.setCustomValidity(""), _sig);
+      el.addEventListener("change", () => {
+        const arr = _getThumbActions();
+        if (!arr[i]) return;
+        const raw = String(el.value || "").trim();
+        if (!raw) {
+          delete arr[i].data;
+          _setThumbActions(arr);
+          return;
+        }
+        let value;
+        try {
+          value = JSON.parse(raw);
+          if (!value || typeof value !== "object" || Array.isArray(value)) {
+            throw new Error("Data must be a JSON object, e.g. {\"path\":\"{path}\"}");
+          }
+        } catch (err) {
+          el.setCustomValidity(err instanceof Error ? err.message : "Invalid JSON object");
+          el.reportValidity();
+          return;
+        }
+        arr[i].data = value;
+        _setThumbActions(arr);
+      }, _sig);
+    });
+
+    this.shadowRoot.querySelectorAll("input[data-ta-confirm]").forEach((input) => {
+      input.addEventListener("change", () => {
+        const i = Number(input.dataset.taConfirm);
+        const arr = _getThumbActions();
+        if (!arr[i]) return;
+        if (input.checked) arr[i].confirmation = true;
+        else delete arr[i].confirmation;
+        _setThumbActions(arr);
+      }, _sig);
+    });
+
+    this.shadowRoot.querySelectorAll("[data-ta-del]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const arr = _getThumbActions();
+        arr.splice(Number(btn.dataset.taDel), 1);
+        _setThumbActions(arr, true);
+      }, _sig);
+    });
+
+    const taAddBtn = $("ta-add-btn");
+    if (taAddBtn) {
+      taAddBtn.addEventListener("click", () => {
+        const nameEl = $("ta-add-name");
+        const actionEl = $("ta-add-action");
+        const name = (nameEl?.value || "").trim();
+        const perform_action = (actionEl?.value || "").trim();
+        if (!name) {
+          nameEl?.setCustomValidity("Required");
+          nameEl?.reportValidity();
+          return;
+        }
+        if (!SERVICE_RE.test(perform_action)) {
+          actionEl?.setCustomValidity("Use domain.service, e.g. script.archive_clip");
+          actionEl?.reportValidity();
+          return;
+        }
+        const arr = _getThumbActions();
+        arr.push({ name, perform_action, data: { path: "{path}" } });
+        _setThumbActions(arr, true);
+      }, _sig);
+      [$("ta-add-name"), $("ta-add-action")].forEach((el) =>
+        el?.addEventListener("input", () => el.setCustomValidity(""), _sig)
+      );
     }
 
     // Drag-and-drop reorder voor live_camera_entities chips (mouse + touch)
