@@ -363,6 +363,11 @@ export const cameraGalleryCardConfigStruct = type({
   // ─── Media source ──────────────────────────────────────────
   media_sources: defaulted(array(string()), []),
   frigate_url: optional(string()),
+  // Server-side camera/label scoping for Frigate sources (REST and WS both
+  // support this natively) — empty means "all", matching Frigate's own
+  // default. See `fetchFrigateEvents` / `fetchFrigateEventsViaWs`.
+  frigate_cameras: defaulted(array(string()), []),
+  frigate_labels: defaulted(array(string()), []),
   frigate_thumb_bbox: defaulted(boolean(), DEFAULT_FRIGATE_THUMB_BBOX),
   frigate_event_cluster: defaulted(boolean(), DEFAULT_FRIGATE_EVENT_CLUSTER),
   frigate_event_cluster_gap_sec: defaulted(

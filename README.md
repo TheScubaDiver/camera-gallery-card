@@ -284,6 +284,8 @@ Then in the card editor: **General → Delete services → Frigate** → pick `r
 | `max_media` | Max media items |
 | **Frigate** | |
 | `frigate_url` | Optional direct Frigate REST API URL (e.g. `http://192.168.1.x:5000`). If omitted, the card uses the HA Frigate integration via WebSocket |
+| `frigate_cameras` | Server-side camera filter for Frigate sources (list of camera names, e.g. `[frontdoor]`). Empty/omitted means all cameras — Frigate's own default. Works with both the WS and REST (`frigate_url`) paths |
+| `frigate_labels` | Server-side label filter for Frigate sources (list of labels, e.g. `[cat]`). Empty/omitted means all labels |
 | **Gallery view** | |
 | `start_mode` | Default view: `gallery` or `live` |
 | `preview_position` | `top` or `bottom` |
@@ -399,6 +401,28 @@ live_layout: single
 object_filters:
   - person
   - car
+```
+
+### Frigate, scoped to one camera
+
+Multiple cameras configured in Frigate, but this card instance should only
+ever show one of them (e.g. a dedicated per-camera dashboard page)?
+`frigate_cameras` / `frigate_labels` filter server-side, before the gallery
+ever sees the other cameras' events — unlike `object_filters`, which only
+controls which filter *buttons* are shown and has to be tapped manually.
+
+```yaml
+type: custom:camera-gallery-card
+source_mode: media
+media_sources:
+  - media-source://frigate/main/event-search/clips
+frigate_cameras:
+  - frig_kittycam_coral
+frigate_labels:
+  - cat
+live_enabled: true
+live_camera_entities:
+  - camera.frig_kittycam_coral
 ```
 
 ### Reolink NVR / Doorbell / camera

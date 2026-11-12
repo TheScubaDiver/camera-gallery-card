@@ -835,7 +835,8 @@ export class MediaSourceClient {
       const rawEvents: FrigateEvent[] | null = await fetchFrigateEventsViaWs(
         hass,
         inst,
-        FRIGATE_WS_LIMIT
+        FRIGATE_WS_LIMIT,
+        { cameras: config.frigate_cameras, labels: config.frigate_labels }
       );
       if (!rawEvents) continue;
       const clusters = clusterOn
@@ -931,7 +932,10 @@ export class MediaSourceClient {
       Math.max((config.max_media ?? DEFAULT_MAX_MEDIA) * 2, 100)
     );
 
-    const rawEvents = await fetchFrigateEvents(base, limit);
+    const rawEvents = await fetchFrigateEvents(base, limit, {
+      cameras: config.frigate_cameras,
+      labels: config.frigate_labels,
+    });
     if (!rawEvents) return null;
     const clusterOn = !!config.frigate_event_cluster;
     const gapSec = Number(config.frigate_event_cluster_gap_sec) || 0;
