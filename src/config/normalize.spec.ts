@@ -686,6 +686,25 @@ describe("Audit fix #5/#6 — malformed array entries become validation errors",
       })
     ).toThrow(/invalid config/);
   });
+
+  it("accepts menu_buttons placement (#215) and keeps it", () => {
+    const menu_buttons = [
+      { entity: "input_select.doorbell_reply", icon: "mdi:message", placement: "controls" },
+      { entity: "light.porch", icon: "mdi:lightbulb", placement: "menu" },
+      { entity: "light.hall", icon: "mdi:lightbulb" },
+    ];
+    const { config } = normalizeConfig({ ...minimalSensor, menu_buttons });
+    expect(config.menu_buttons).toEqual(menu_buttons);
+  });
+
+  it("rejects an unknown menu_buttons placement", () => {
+    expect(() =>
+      normalizeConfig({
+        ...minimalSensor,
+        menu_buttons: [{ entity: "light.a", icon: "mdi:a", placement: "top" }],
+      })
+    ).toThrow(/invalid config/);
+  });
 });
 
 describe("Audit fix #2/#3 — aspect_ratio + controls_mode strictly enumerated", () => {

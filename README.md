@@ -155,7 +155,7 @@ tests do not establish real camera audio or device fullscreen behavior.
 
 ### Actions
 
-- **Menu buttons** — configure custom action buttons (toggle, navigate, perform action, etc.) accessible via a hamburger menu during live view
+- **Menu buttons** — configure custom action buttons (toggle, navigate, perform action, etc.) in the hamburger menu during live view, or directly among the live controls. A button on an `input_select` / `select` entity opens a list of its options (see [Live menu buttons](#live-menu-buttons))
 - Delete (sensor files + Frigate clips)
 - Multiple delete with red selection style
 - Download
@@ -333,6 +333,43 @@ shell_command:
 
 ---
 
+## Live menu buttons
+
+`menu_buttons` adds action buttons to the live view. You can add them in the editor's Menu buttons tab or in YAML.
+
+```yaml
+menu_buttons:
+  - entity: input_select.doorbell_reply
+    icon: mdi:message-reply-text
+    title: Auto-reply
+    placement: controls        # show it among the live controls
+  - entity: light.porch
+    icon: mdi:lightbulb-outline
+    icon_on: mdi:lightbulb
+    color_on: "#f5a623"        # stays in the hamburger menu (the default)
+```
+
+| Key | Description |
+|---|---|
+| `entity` | Entity the button acts on (required) |
+| `icon` / `icon_on` | Icon, and the icon while the entity is "on" |
+| `color_on` / `color_off` | Button background while on / off |
+| `title` | Label (default: the entity's friendly name) |
+| `service` | Action to call instead of the default, in `domain.service` form. It is called with the button's `entity_id` |
+| `state_on` | State that counts as "on" (default: `on`, `open`, `unlocked`, `playing`, `home`, …) |
+| `placement` | `menu` (default) puts the button in the hamburger menu. `controls` shows it directly among the live control pills |
+
+What a tap does:
+
+- **`input_select` / `select` entities** open a list of their options, with the current one checked. Picking one calls `select_option`. This works well for things like a doorbell auto-reply message or a chime sound.
+- **Automations** are triggered, and **scripts** are run.
+- **Everything else** is toggled.
+- A `service`, when set, always wins over these defaults.
+
+`placement` is YAML-only for now. The editor keeps it when you edit a button there.
+
+---
+
 ## Notification deep-links
 
 Opt-in URL parameters so an HA notification action can open this exact card straight into live view or the gallery. Nothing here does anything until you set `url_id` — without it the card ignores the query string entirely, which matters because the query string is page-scoped and would otherwise be picked up by every camera-gallery-card on the dashboard at once.
@@ -419,7 +456,7 @@ data:
 | `controls_mode` | Live controls display: `overlay` or `fixed` |
 | `show_camera_title` | Show camera name in controls bar |
 | `persistent_controls` | Always show controls (don't fade out) |
-| `menu_buttons` | Configurable action buttons in the hamburger menu |
+| `menu_buttons` | Configurable action buttons in the hamburger menu or among the live controls. See [Live menu buttons](#live-menu-buttons) |
 | `live_mic_streams` | Per-camera map of go2rtc backchannel streams. See [Two-way audio](#two-way-audio-advanced) |
 | `live_go2rtc_stream` | Legacy single-camera fallback for talkback |
 | `live_go2rtc_url` | Optional direct go2rtc URL for the live video fast-path |

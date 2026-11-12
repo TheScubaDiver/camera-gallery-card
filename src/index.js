@@ -36,6 +36,13 @@ import { REOLINK_LOGO_DATA_URL } from "./assets/reolink-logo";
 import { collectMediaSamples, scoreSamples } from "./data/path-format-detect";
 import { CombinedSourceClient } from "./data/combined-source";
 import { canDeleteItem, deleteItem } from "./data/delete-service";
+import {
+  isMenuButtonOn,
+  menuButtonLabel,
+  menuButtonTap,
+  selectOptionCall,
+  splitMenuButtons,
+} from "./data/menu-buttons";
 import { filenameFromUrl, resolveDownloadTarget } from "./data/download-target";
 import { galleryState, SKELETON_THUMB_COUNT } from "./data/gallery-state";
 import {
@@ -526,6 +533,9 @@ class CameraGalleryCard extends LitElement {
     this._cardFullscreenGeneration = 0;
     this._imgFsOpen = false;
     this._hamburgerOpen = false;
+    // Entity id of the input_select / select button whose option list is
+    // open in the live menu panel (#215), or null for the regular menu.
+    this._menuSelectEntity = null;
 
     // Pinch-to-zoom state (alleen actief in fullscreen live mode)
     this._zoomScale = 1;
@@ -4197,8 +4207,7 @@ class CameraGalleryCard extends LitElement {
     ) return;
 
     if (this._hamburgerOpen && !this._pathHasClass(path, "live-hamburger-wrap")) {
-      this._hamburgerOpen = false;
-      this._showPills(2500);
+      this._closeLiveMenu();
       return;
     }
 
@@ -4272,6 +4281,51 @@ class CameraGalleryCard extends LitElement {
       default:
         return false;
     }
+  }
+
+  // ─── Live menu buttons (menu_buttons) ─────────────────────────────
+
+  /** Display state for one `menu_buttons` entry. */
+  _menuButtonView(btn) {
+    const state = this._hass?.states?.[btn.entity];
+    const isOn = isMenuButtonOn(btn, state);
+    return {
+      isOn,
+      icon: isOn && btn.icon_on ? btn.icon_on : btn.icon,
+      bg: isOn ? btn.color_on || "" : btn.color_off || "",
+      label: menuButtonLabel(btn, state),
+    };
+  }
+
+  /** Tap on a menu button: call its service, or open its option list (#215). */
+  _onMenuButtonTap(btn) {
+    const tap = menuButtonTap(btn, this._hass?.states?.[btn.entity]);
+    if (tap.kind === "select") {
+      const alreadyOpen = this._hamburgerOpen && this._menuSelectEntity === btn.entity;
+      if (alreadyOpen) {
+        this._closeLiveMenu();
+        return;
+      }
+      this._menuSelectEntity = btn.entity;
+      this._hamburgerOpen = true;
+      this._showPills();
+      this.requestUpdate();
+      return;
+    }
+    const { domain, service, data } = tap.call;
+    this._hass?.callService(domain, service, data);
+  }
+
+  _pickMenuSelectOption(entityId, option) {
+    const { domain, service, data } = selectOptionCall(entityId, option);
+    this._hass?.callService(domain, service, data);
+    this._closeLiveMenu();
+  }
+
+  _closeLiveMenu() {
+    this._hamburgerOpen = false;
+    this._menuSelectEntity = null;
+    this._showPills(2500);
   }
 
   _toggleLiveMode() {
@@ -6084,6 +6138,9 @@ class CameraGalleryCard extends LitElement {
     `;
     const livePillSettings = resolvePillSettings(LIVE_PILL_CATALOG, this.config?.live_pills);
     const livePillIds = sortPillsByOrder(LIVE_PILL_CATALOG, livePillSettings);
+    const { controls: controlMenuButtons, menu: panelMenuButtons } = splitMenuButtons(
+      this.config.menu_buttons
+    );
     const livePillsRight = html`
       <div class="live-pills-right">
         ${this.config?.live_layout === "grid" && this._liveLayoutOverride === "single" ? html`
@@ -6108,43 +6165,68 @@ class CameraGalleryCard extends LitElement {
           </button>
         ` : html``}
         ${livePillIds.map((id) => this._renderLivePillById(id)).filter((tpl) => tpl != null)}
-        ${(this.config.menu_buttons ?? []).length ? html`
+        ${controlMenuButtons.map((btn) => {
+          // `placement: controls` buttons (#215) sit among the pills. The
+          // wrap class keeps an open option list from closing on their tap.
+          const { isOn, icon, bg, label } = this._menuButtonView(btn);
+          return html`
+            <div class="live-hamburger-wrap" @pointerdown=${(e) => e.stopPropagation()}>
+              <button
+                class="gallery-pill live-pill-btn ${isOn ? "active" : ""}"
+                title="${label}"
+                aria-label="${label}"
+                style="${bg ? `background:${bg}` : ""}"
+                @click=${(e) => { e.stopPropagation(); this._onMenuButtonTap(btn); }}
+              >
+                <ha-icon icon="${icon}"></ha-icon>
+              </button>
+            </div>
+          `;
+        })}
+        ${panelMenuButtons.length ? html`
           <div class="live-hamburger-wrap" @pointerdown=${(e) => e.stopPropagation()}>
-            <button class="gallery-pill live-pill-btn ${this._hamburgerOpen ? 'active' : ''}" @click=${(e) => { e.stopPropagation(); this._hamburgerOpen = !this._hamburgerOpen; if (!this._hamburgerOpen) this._showPills(2500); }}>
+            <button class="gallery-pill live-pill-btn ${this._hamburgerOpen && !this._menuSelectEntity ? 'active' : ''}" @click=${(e) => { e.stopPropagation(); const open = !(this._hamburgerOpen && !this._menuSelectEntity); this._menuSelectEntity = null; this._hamburgerOpen = open; if (!open) this._showPills(2500); }}>
               <ha-icon icon="mdi:menu"></ha-icon>
             </button>
           </div>
         ` : html``}
       </div>
     `;
-    const hamburgerPanel = (this.config.menu_buttons ?? []).length && this._hamburgerOpen ? html`
-      <div class="live-menu-backdrop" @pointerdown=${(e) => e.stopPropagation()} @click=${() => { this._hamburgerOpen = false; this._showPills(2500); }}></div>
+    const selectBtn = this._menuSelectEntity
+      ? (this.config.menu_buttons ?? []).find((b) => b.entity === this._menuSelectEntity)
+      : null;
+    const selectTap = selectBtn ? menuButtonTap(selectBtn, this._hass?.states?.[selectBtn.entity]) : null;
+    const hamburgerPanel = this._hamburgerOpen && (selectTap?.kind === "select" || panelMenuButtons.length) ? html`
+      <div class="live-menu-backdrop" @pointerdown=${(e) => e.stopPropagation()} @click=${() => this._closeLiveMenu()}></div>
       <div class="live-menu-panel" @pointerdown=${(e) => e.stopPropagation()}>
-        ${(this.config.menu_buttons ?? []).map(btn => {
-          const state = this._hass?.states[btn.entity];
-          const stateVal = state?.state ?? "";
-          const ON_STATES = new Set(["on","open","opening","unlocked","playing","paused","home","true","heat","cool","heat_cool","fan_only","dry","auto"]);
-          const isOn = btn.state_on ? stateVal === btn.state_on : ON_STATES.has(stateVal);
-          const domain = btn.entity.split(".")[0];
-          const [svcDomain, svcName] = btn.service
-            ? btn.service.split(".")
-            : domain === "automation" ? ["automation","trigger"]
-            : domain === "script"     ? ["script","turn_on"]
-            : ["homeassistant","toggle"];
-          const icon = (isOn && btn.icon_on) ? btn.icon_on : btn.icon;
-          const bg = isOn ? (btn.color_on || "") : (btn.color_off || "");
-          const label = btn.title || state?.attributes?.friendly_name || btn.entity;
-          return html`
-            <button class="live-menu-panel-btn ${isOn ? "active" : ""}"
-              @click=${() => this._hass?.callService(svcDomain, svcName, { entity_id: btn.entity })}
-              title="${label}">
-              <div class="panel-btn-icon" style="${bg ? `background:${bg}` : ""}">
-                <ha-icon icon="${icon}"></ha-icon>
-              </div>
-              <span class="live-menu-panel-lbl">${label}</span>
-            </button>
-          `;
-        })}
+        ${selectTap?.kind === "select"
+          ? selectTap.options.map((option) => {
+              // Option list for an input_select / select button (#215).
+              const isCurrent = option === selectTap.current;
+              return html`
+                <button class="live-menu-panel-btn ${isCurrent ? "active" : ""}"
+                  @click=${() => this._pickMenuSelectOption(selectBtn.entity, option)}
+                  title="${option}">
+                  <div class="panel-btn-icon">
+                    <ha-icon icon="${isCurrent ? "mdi:check-circle" : "mdi:circle-outline"}"></ha-icon>
+                  </div>
+                  <span class="live-menu-panel-lbl">${option}</span>
+                </button>
+              `;
+            })
+          : panelMenuButtons.map((btn) => {
+              const { isOn, icon, bg, label } = this._menuButtonView(btn);
+              return html`
+                <button class="live-menu-panel-btn ${isOn ? "active" : ""}"
+                  @click=${() => this._onMenuButtonTap(btn)}
+                  title="${label}">
+                  <div class="panel-btn-icon" style="${bg ? `background:${bg}` : ""}">
+                    <ha-icon icon="${icon}"></ha-icon>
+                  </div>
+                  <span class="live-menu-panel-lbl">${label}</span>
+                </button>
+              `;
+            })}
       </div>
     ` : html``;
 

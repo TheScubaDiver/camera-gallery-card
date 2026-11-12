@@ -29,6 +29,8 @@ import {
 } from "superstruct";
 import type { Struct } from "superstruct";
 
+import { MENU_BUTTON_PLACEMENTS } from "../data/menu-buttons";
+
 import {
   ASPECT_RATIOS,
   TAP_ACTIONS,
@@ -384,6 +386,9 @@ const menuButton = object({
   title: optional(string()),
   service: optional(string()),
   state_on: optional(string()),
+  // `controls` renders the button directly among the live control pills
+  // instead of inside the hamburger menu (#215). Absent = menu.
+  placement: optional(enums(MENU_BUTTON_PLACEMENTS)),
 });
 
 /**
