@@ -192,6 +192,22 @@ const liveCameraEntry = object({
   name: defaulted(string(), ""),
   mic: optional(string()),
   crop: optional(liveCameraCrop),
+  // Entities that switch the card to this camera when they turn active
+  // (motion, occupancy, a doorbell event). See data/live-triggers.ts.
+  triggers: optional(array(string())),
+});
+
+/**
+ * Card-wide settings for camera triggers. Which entity triggers which camera
+ * lives on the camera entries (`live_cameras[].triggers`); this holds how
+ * long to stay and where to go back to, plus the Frigate event switch.
+ */
+const liveTriggers = object({
+  frigate: defaulted(boolean(), false),
+  frigate_labels: optional(array(string())),
+  hold_seconds: defaulted(intInRange(5, 3600), 30),
+  cooldown_seconds: defaulted(intInRange(0, 3600), 10),
+  return_to: defaulted(enums(["previous", "gallery", "stay"]), "previous"),
 });
 
 /**
@@ -492,6 +508,9 @@ export const cameraGalleryCardConfigStruct = type({
   // Rebuild the live stream when it freezes (video stops advancing). On by
   // default; see data/stream-watchdog.ts for the timings.
   live_auto_recover: defaulted(boolean(), true),
+  // Camera triggers: hold time, cooldown, return target, Frigate events.
+  // Optional so an unset config round-trips without gaining the key.
+  live_triggers: optional(liveTriggers),
   // Gallery preview navigation chevrons — left/right arrows that walk
   // through the filtered clip list while the preview is open. Same
   // default-on / kiosk-off pattern as the live chevrons.

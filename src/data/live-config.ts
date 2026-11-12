@@ -614,3 +614,24 @@ export function friendlyCameraName(opts: {
   const label = raw.replace(/_/g, " ").trim();
   return label ? label.charAt(0).toUpperCase() + label.slice(1) : id;
 }
+
+/**
+ * Cameras with their trigger entities, keyed by the same ids the live view
+ * uses: the entity id for entity cameras, `__cgc_stream_<n>__` for stream
+ * cameras. Cameras without triggers are left out.
+ */
+export function getTriggerCameras(
+  config: CameraGalleryCardConfig | null | undefined
+): { id: string; triggers: string[] }[] {
+  const out: { id: string; triggers: string[] }[] = [];
+  let streamIdx = 0;
+  for (const c of getCanonicalLiveCameras(config)) {
+    const url = String(c?.url ?? "").trim();
+    const id = url ? `${STREAM_ID_PREFIX}_${streamIdx++}__` : String(c?.entity ?? "").trim();
+    const triggers = Array.isArray(c?.triggers)
+      ? c.triggers.map((t) => String(t ?? "").trim()).filter(Boolean)
+      : [];
+    if (id && triggers.length > 0) out.push({ id, triggers });
+  }
+  return out;
+}

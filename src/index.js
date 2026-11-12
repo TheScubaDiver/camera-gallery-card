@@ -78,6 +78,7 @@ import {
   getLiveCameraOptions,
   getStreamEntries,
   getStreamEntryById,
+  getTriggerCameras,
   gridLayout,
   hasAnyMicStream,
   hasLiveConfig,
@@ -94,6 +95,12 @@ import {
 import { MIC_NOTIFICATION_ID, WebRtcMicClient } from "./data/webrtc-mic";
 import { syncLiveAudio } from "./data/live-audio";
 import { StreamWatchdog } from "./data/stream-watchdog";
+import {
+  buildTriggerMap,
+  frigateEventCamera,
+  isTriggerActivation,
+  LiveTriggerController,
+} from "./data/live-triggers";
 import {
   armWebkitExitResume,
   captureHandoff,
@@ -332,6 +339,12 @@ class CameraGalleryCard extends LitElement {
     this._liveCardConfigKey = "";
     // Frozen-stream recovery (see data/stream-watchdog.ts).
     this._streamWatch = new StreamWatchdog();
+    // Camera triggers (data/live-triggers.ts). Built lazily from config.
+    this._liveTriggers = null;
+    this._liveTriggersKey = null;
+    this._triggerMap = new Map();
+    this._triggerTimer = null;
+    this._onCardInteraction = () => this._liveTriggers?.userInteracted(Date.now());
     this._streamWatchTimer = null;
     this._streamLost = false;
     this._streamRecoveries = 0;
@@ -875,6 +888,10 @@ class CameraGalleryCard extends LitElement {
     window.addEventListener("keydown", this._onPtzKeyDown);
     window.addEventListener("keyup", this._onPtzKeyUp);
     document.addEventListener("visibilitychange", this._onPtzVisibilityChange);
+    // Capture phase so every tap or key press on the card counts, including
+    // ones a control stops from bubbling.
+    this.addEventListener("pointerdown", this._onCardInteraction, true);
+    this.addEventListener("keydown", this._onCardInteraction, true);
     if (navigator.maxTouchPoints > 0) this._showPills(5000);
     this._startMediaPoll();
     // Idempotent — if hass isn't set yet, returns early; the firstHass branch
@@ -904,6 +921,10 @@ class CameraGalleryCard extends LitElement {
 
     this._stopMediaPoll();
     this._stopStreamWatch();
+    this.removeEventListener("pointerdown", this._onCardInteraction, true);
+    this.removeEventListener("keydown", this._onCardInteraction, true);
+    this._stopTriggerTimer();
+    this._liveTriggers?.reset();
     this._unsubscribeFrigateEvents();
     if (this._bulkHintTimer) clearTimeout(this._bulkHintTimer);
     if (this._scrollPillTimer) { clearTimeout(this._scrollPillTimer); this._scrollPillTimer = null; }
@@ -988,6 +1009,8 @@ class CameraGalleryCard extends LitElement {
     // Forward hass to live card immediately — no re-render needed just for token refresh
     if (this._liveCard) this._liveCard.hass = hass;
 
+    this._checkTriggerEntities(oldHass, hass);
+
     // Only re-render when an entity we actually display has changed state
     const sensorIds = this._sensorClient.getEntityIds();
     const cameraIds = getLiveCameraEntityIds(this.config);
@@ -1034,8 +1057,12 @@ class CameraGalleryCard extends LitElement {
     const conn = this._hass?.connection;
     if (!conn) return;
     const sm = this.config?.source_mode;
-    if (sm !== "media" && sm !== "combined") return;
-    const instanceId = this._frigateInstanceId();
+    const mediaMode = sm === "media" || sm === "combined";
+    const frigateTriggers = this.config?.live_triggers?.frigate === true && this._hasLiveConfig();
+    if (!mediaMode && !frigateTriggers) return;
+    // Without a Frigate media source, fall back to Frigate's default client
+    // id so live-only cards can still use Frigate triggers.
+    const instanceId = this._frigateInstanceId() || (frigateTriggers ? "frigate" : null);
     if (!instanceId) return;
     try {
       this._frigateEventsUnsub = await conn.subscribeMessage(
@@ -1076,7 +1103,10 @@ class CameraGalleryCard extends LitElement {
     } catch (_) {
       return;
     }
+    if (payload?.type === "new") this._onFrigateTrigger(payload);
     if (payload?.type !== "end") return;
+    const sm = this.config?.source_mode;
+    if (sm !== "media" && sm !== "combined") return;
 
     // Bypass freshness gate so the next ensureLoaded re-runs calendar
     // discovery and re-fetches the visible day.
@@ -2638,6 +2668,142 @@ class CameraGalleryCard extends LitElement {
     } catch (_) {
       // user dismissed prompt or PiP unsupported
     }
+  }
+
+  // ─── Camera triggers ──────────────────────────────────────────────
+  // A trigger entity turning active (or a new Frigate event) switches the
+  // card to that camera's live view; after the hold time it goes back. The
+  // decisions live in data/live-triggers.ts; this gathers state and acts.
+  _ensureLiveTriggers() {
+    const settings = this.config?.live_triggers ?? null;
+    const cameras = getTriggerCameras(this.config);
+    const key = JSON.stringify([settings, cameras]);
+    if (key === this._liveTriggersKey) return this._liveTriggers;
+    this._liveTriggersKey = key;
+    this._stopTriggerTimer();
+    this._triggerMap = buildTriggerMap(cameras);
+    const wanted = this._triggerMap.size > 0 || settings?.frigate === true;
+    this._liveTriggers = wanted
+      ? new LiveTriggerController({
+          holdMs: (settings?.hold_seconds ?? 30) * 1000,
+          cooldownMs: (settings?.cooldown_seconds ?? 10) * 1000,
+          returnTo: settings?.return_to ?? "previous",
+        })
+      : null;
+    return this._liveTriggers;
+  }
+
+  _checkTriggerEntities(oldHass, hass) {
+    if (!oldHass || !this._hasLiveConfig() || !this._ensureLiveTriggers()) return;
+    for (const [entityId, cameras] of this._triggerMap) {
+      const before = oldHass.states?.[entityId];
+      const after = hass.states?.[entityId];
+      if (before === after) continue;
+      if (isTriggerActivation(entityId, before?.state, after?.state)) {
+        this._fireLiveTrigger(cameras[0]);
+      }
+    }
+  }
+
+  _onFrigateTrigger(payload) {
+    if (this.config?.live_triggers?.frigate !== true || !this._hasLiveConfig()) return;
+    const camera = frigateEventCamera(
+      payload,
+      this._getLiveCameraOptions(),
+      this.config.live_triggers.frigate_labels ?? []
+    );
+    if (camera) this._fireLiveTrigger(camera);
+  }
+
+  _triggerBlocked() {
+    return !!(
+      document.fullscreenElement ||
+      document.webkitFullscreenElement ||
+      document.pictureInPictureElement ||
+      this._liveFullscreen ||
+      this._imgFsOpen ||
+      this._livePipActive ||
+      this._galleryPipActive ||
+      this._micState !== "idle" ||
+      this._nativeMicState !== "off" ||
+      this._selectMode ||
+      this._thumbMenuOpen
+    );
+  }
+
+  _fireLiveTrigger(camera) {
+    const controller = this._ensureLiveTriggers();
+    if (!controller || !camera) return;
+    if (!this._getLiveCameraOptions().includes(camera)) return;
+    const grid = isGridLayout(this.config, this._liveLayoutOverride);
+    const result = controller.fire(camera, Date.now(), {
+      blocked: this._triggerBlocked(),
+      currentView: {
+        mode: this._viewMode,
+        camera: this._getEffectiveLiveCamera(),
+        layoutOverride: this._liveLayoutOverride,
+      },
+      showingCamera: this._isLiveActive() && !grid ? this._getEffectiveLiveCamera() : null,
+    });
+    if (result.action === "ignore") return;
+    if (result.action === "switch") this._showTriggeredCamera(camera);
+    this._startTriggerTimer();
+  }
+
+  _showTriggeredCamera(camera) {
+    if (!this._isLiveActive()) {
+      this._liveSelectedCamera = camera;
+      if (this.config?.live_layout === "grid") this._liveLayoutOverride = "single";
+      this._setViewMode("live");
+      return;
+    }
+    if (isGridLayout(this.config, this._liveLayoutOverride)) {
+      this._onGridTileTap(camera);
+      return;
+    }
+    if (this._getEffectiveLiveCamera() !== camera) this._selectLiveCamera(camera);
+  }
+
+  _startTriggerTimer() {
+    if (this._triggerTimer) return;
+    this._triggerTimer = setInterval(() => this._tickLiveTriggers(), 1000);
+  }
+
+  _stopTriggerTimer() {
+    if (this._triggerTimer) {
+      clearInterval(this._triggerTimer);
+      this._triggerTimer = null;
+    }
+  }
+
+  _tickLiveTriggers() {
+    const controller = this._liveTriggers;
+    if (!controller) {
+      this._stopTriggerTimer();
+      return;
+    }
+    const result = controller.tick(Date.now());
+    if (result.action === "none") return;
+    this._stopTriggerTimer();
+    if (result.action === "return" && result.to === "gallery") this._setViewMode("media");
+    else if (result.action === "return") this._restoreTriggerView(result.view);
+  }
+
+  _restoreTriggerView(view) {
+    if (!view) return;
+    if (view.mode !== "live") {
+      this._setViewMode("media");
+      this._liveSelectedCamera = view.camera;
+      this._liveLayoutOverride = view.layoutOverride;
+      return;
+    }
+    if (!this._isLiveActive()) return;
+    if (this.config?.live_layout === "grid" && view.layoutOverride !== "single") {
+      this._liveSelectedCamera = view.camera;
+      this._returnToGrid();
+      return;
+    }
+    if (this._getEffectiveLiveCamera() !== view.camera) this._selectLiveCamera(view.camera);
   }
 
   // ─── Frozen-stream recovery ───────────────────────────────────────
@@ -5953,6 +6119,9 @@ class CameraGalleryCard extends LitElement {
     }
 
     if (changedProps.has("config")) {
+      // Frigate triggers may need the event subscription even without a
+      // Frigate media source. Idempotent when already subscribed.
+      this._subscribeFrigateEvents();
       // Sync runtime gallery mute with config default whenever config
       // changes — the pill toggle then overrides for this session.
       this._galleryMuted =
@@ -7188,7 +7357,7 @@ const CGC_CONFIG_KEY_ORDER = [
   "live_grid_labels", "live_grid_columns", "live_grid_emphasis", "live_stream_url", "live_stream_name", "live_stream_urls",
   "live_go2rtc_url", "live_go2rtc_stream", "live_pills", "live_chevrons_enabled", "live_auto_recover",
   "tap_action", "live_mic_mode", "live_mic_audio_processing",
-  "live_mic_shape", "live_mic_button_position", "live_native_talk",
+  "live_mic_shape", "live_mic_button_position", "live_native_talk", "live_triggers",
   "live_mic_waveform_enabled", "live_mic_waveform_sensitivity",
   "live_mic_ice_servers", "live_mic_force_relay", "live_mic_streams",
   "live_ptz_enabled", "live_ptz_position", "live_ptz_speed", "live_ptz_cameras",
@@ -9864,6 +10033,13 @@ class CameraGalleryCardEditor extends HTMLElement {
                         <label>Mic stream</label>
                         <input type="text" class="ed-input livecam-mic-input" data-mic-cam="${id}" value="${mic.replace(/"/g, "&quot;")}" placeholder="go2rtc stream (empty = no mic)" autocomplete="off" />
                       </div>
+                      <div class="livecam-fieldrow">
+                        <label>Triggers</label>
+                        <input type="text" class="ed-input livecam-trig-input" data-trig-cam="${id}" value="${(() => {
+                          const entry = (Array.isArray(this._config.live_cameras) ? this._config.live_cameras : []).find((lc) => lc && lc.entity === id);
+                          return (Array.isArray(entry?.triggers) ? entry.triggers : []).join(", ").replace(/"/g, "&quot;");
+                        })()}" placeholder="binary_sensor.motion, event.doorbell" autocomplete="off" />
+                      </div>
                       ${this._renderLivecamCropInline(id)}
                       <div class="livecam-actions">
                         <button type="button" class="livecam-row-del" data-delcam="${id}">${svgIcon('mdi:delete-outline', 14)}<span>Remove camera</span></button>
@@ -9969,6 +10145,55 @@ class CameraGalleryCardEditor extends HTMLElement {
       `;
 
       // ── Two-way audio collapsible
+      const lt = this._config.live_triggers || {};
+      const hasTriggers =
+        !!this._config.live_triggers ||
+        (Array.isArray(this._config.live_cameras) &&
+          this._config.live_cameras.some((lc) => Array.isArray(lc?.triggers) && lc.triggers.length > 0));
+      const ltReturn = lt.return_to || "previous";
+      const triggersBody = `
+        <div class="row">
+          <div class="desc">Switch to a camera's live view when something happens there, then go back. Pick the entities per camera under <strong>Basics → Cameras in picker</strong>: expand a camera and fill in <em>Triggers</em> (motion or occupancy sensors, a doorbell <code>event</code>, any entity that turns <code>on</code>). Only works while the dashboard is open; the card cannot wake a sleeping screen.</div>
+        </div>
+        <div class="row">
+          <div class="row-head">
+            <div>
+              <div class="lbl">Frigate events</div>
+              <div class="desc">A new Frigate event switches to <code>camera.&lt;frigate camera name&gt;</code>, when that camera is in the live list.</div>
+            </div>
+            <div class="togrow">
+              <label class="cgc-switch"><input type="checkbox" id="live-trig-frigate" ${lt.frigate ? "checked" : ""}><span class="cgc-track"></span></label>
+            </div>
+          </div>
+          ${lt.frigate ? `
+          <div class="field" style="margin-top:8px;">
+            <input type="text" class="ed-input" id="live-trig-frigate-labels" placeholder="Only these labels, e.g. person, car (empty = all)" autocomplete="off" value="${(Array.isArray(lt.frigate_labels) ? lt.frigate_labels : []).join(", ").replace(/"/g, "&quot;")}" />
+          </div>` : ""}
+        </div>
+        <div class="row">
+          <div class="lbl">Stay on the camera (seconds)</div>
+          <div class="desc">How long after the last trigger the card goes back. A tap on the card in the meantime keeps it where it is.</div>
+          <div class="field">
+            <input type="number" class="ed-input" id="live-trig-hold" min="5" max="3600" step="1" value="${lt.hold_seconds ?? 30}" />
+          </div>
+        </div>
+        <div class="row">
+          <div class="lbl">Cooldown per camera (seconds)</div>
+          <div class="desc">Ignore repeat triggers for the same camera within this time.</div>
+          <div class="field">
+            <input type="number" class="ed-input" id="live-trig-cooldown" min="0" max="3600" step="1" value="${lt.cooldown_seconds ?? 10}" />
+          </div>
+        </div>
+        <div class="row">
+          <div class="lbl">Afterwards</div>
+          <div class="desc"><code>Previous</code> returns to the view it came from. <code>Gallery</code> always goes to the gallery. <code>Stay</code> keeps showing the camera.</div>
+          <div class="segwrap">
+            <button class="seg ${ltReturn === "previous" ? "on" : ""}" data-livetrigreturn="previous">Previous</button>
+            <button class="seg ${ltReturn === "gallery" ? "on" : ""}" data-livetrigreturn="gallery">Gallery</button>
+            <button class="seg ${ltReturn === "stay" ? "on" : ""}" data-livetrigreturn="stay">Stay</button>
+          </div>
+        </div>
+      `;
       const twoWayBody = `
         <div class="row">
           <div class="desc">Global settings for talkback. Per-camera mic streams are configured in the <strong>Cameras</strong> section above — expand a camera and fill in its <em>Mic stream</em> (the go2rtc stream name under <code>streams:</code> in <code>go2rtc.yaml</code>) to enable the talk button on that camera.</div>
@@ -10393,6 +10618,7 @@ class CameraGalleryCardEditor extends HTMLElement {
           ${liveTabHeader}
           ${v2Collapsible("basics",   "Basics",        true,                 basicsBody,        "mdi:tune")}
           ${v2Collapsible("streams",  "Streams",       hasStreamUrls,        streamsBody,       "mdi:link-variant")}
+          ${v2Collapsible("triggers", "Triggers",      hasTriggers,          triggersBody,      "mdi:doorbell-video")}
           ${v2Collapsible("twoway",   "Two-way audio", hasMic,               twoWayBody,        "mdi:microphone-outline")}
           ${v2Collapsible("ptz",      "PTZ",           hasPtz,               ptzBody,           "mdi:arrow-all")}
           ${v2Collapsible("menu",     "Menu buttons",  hasMenuButtons,       menuButtonsBody,   "mdi:dots-horizontal")}
@@ -13782,6 +14008,33 @@ details summary { user-select: none; }
     });
 
     // HA two-way audio (2026.11): on by default, so only `false` is written.
+    $("live-trig-frigate")?.addEventListener("change", (e) => {
+      this._setLiveTriggers({ frigate: !!e.target.checked });
+      this._scheduleRender();
+    });
+    $("live-trig-frigate-labels")?.addEventListener("change", (e) => {
+      const labels = [...new Set(String(e.target.value || "").split(/[\s,]+/).map((s) => s.trim()).filter(Boolean))];
+      this._setLiveTriggers({ frigate_labels: labels });
+    });
+    $("live-trig-hold")?.addEventListener("change", (e) => {
+      const raw = Number(e.target.value);
+      const v = Number.isFinite(raw) ? Math.min(3600, Math.max(5, Math.round(raw))) : 30;
+      e.target.value = v;
+      this._setLiveTriggers({ hold_seconds: v });
+    });
+    $("live-trig-cooldown")?.addEventListener("change", (e) => {
+      const raw = Number(e.target.value);
+      const v = Number.isFinite(raw) ? Math.min(3600, Math.max(0, Math.round(raw))) : 10;
+      e.target.value = v;
+      this._setLiveTriggers({ cooldown_seconds: v });
+    });
+    this.shadowRoot.querySelectorAll("[data-livetrigreturn]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        this._setLiveTriggers({ return_to: btn.dataset.livetrigreturn });
+        this._scheduleRender();
+      });
+    });
+
     $("live-native-talk")?.addEventListener("change", (e) => {
       if (e.target.checked) {
         const next = { ...this._config };
@@ -14215,6 +14468,27 @@ details summary { user-select: none; }
           summary.textContent = value || "no mic";
           summary.classList.toggle("none", !value);
         }
+      });
+    });
+
+    // Trigger entities per camera — comma or space separated entity ids,
+    // written to `live_cameras[].triggers`. Empty removes the key.
+    this.shadowRoot.querySelectorAll("[data-trig-cam]").forEach((inp) => {
+      inp.addEventListener("change", (e) => {
+        const id = e.target.dataset.trigCam;
+        const ids = [...new Set(String(e.target.value || "").split(/[\s,]+/).map((s) => s.trim()).filter(Boolean))];
+        const liveCams = Array.isArray(this._config.live_cameras) ? [...this._config.live_cameras] : [];
+        let idx = liveCams.findIndex((lc) => lc && lc.entity === id);
+        if (idx < 0) {
+          liveCams.push({ entity: id });
+          idx = liveCams.length - 1;
+        }
+        const entry = { ...liveCams[idx] };
+        if (ids.length) entry.triggers = ids;
+        else delete entry.triggers;
+        liveCams[idx] = entry;
+        this._config = this._stripAlwaysTrueKeys({ ...this._config, live_cameras: liveCams });
+        this._fire();
       });
     });
 
@@ -14994,6 +15268,21 @@ details summary { user-select: none; }
     this._config = this._stripAlwaysTrueKeys(next);
     this._fire();
     this._scheduleRender();
+  }
+
+  // Merge a patch into `live_triggers`, dropping values that equal the
+  // defaults so an untouched block disappears from the YAML again.
+  _setLiveTriggers(patch) {
+    const merged = { ...(this._config.live_triggers || {}), ...patch };
+    const DEFAULTS = { frigate: false, hold_seconds: 30, cooldown_seconds: 10, return_to: "previous" };
+    for (const [k, v] of Object.entries(DEFAULTS)) if (merged[k] === v) delete merged[k];
+    if (Array.isArray(merged.frigate_labels) && merged.frigate_labels.length === 0) delete merged.frigate_labels;
+    if (!merged.frigate) delete merged.frigate_labels;
+    const next = { ...this._config };
+    if (Object.keys(merged).length) next.live_triggers = merged;
+    else delete next.live_triggers;
+    this._config = this._stripAlwaysTrueKeys(next);
+    this._fire();
   }
 
   _set(key, value) {

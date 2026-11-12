@@ -62,6 +62,16 @@ export interface LiveCameraEntryInput {
   name?: string;
   mic?: string;
   crop?: LiveCameraCropInput;
+  triggers?: string[];
+}
+
+/** Card-wide camera-trigger settings — input shape. See `liveTriggers` in structs.ts. */
+export interface LiveTriggersInput {
+  frigate?: boolean;
+  frigate_labels?: string[];
+  hold_seconds?: number;
+  cooldown_seconds?: number;
+  return_to?: string;
 }
 
 /** Per-camera crop rectangle (0–100 % of source frame). See `liveCameraCrop` in structs.ts. */
@@ -143,6 +153,7 @@ export interface InputConfig {
   live_enabled?: boolean;
   live_auto_muted?: boolean;
   live_auto_recover?: boolean;
+  live_triggers?: LiveTriggersInput;
   live_camera_entities?: string[];
   live_camera_entity?: string;
   live_cameras?: LiveCameraEntryInput[];
@@ -676,6 +687,20 @@ function preMigrateConfig(input: InputConfig): PreMigrated {
         if (url) built["url"] = url;
         built["name"] = name;
         if (mic) built["mic"] = mic;
+        // Trigger entities: trim, drop empties and duplicates, keep order.
+        const trigRaw = r["triggers"];
+        if (Array.isArray(trigRaw)) {
+          const seen = new Set<string>();
+          const triggers: string[] = [];
+          for (const v of trigRaw) {
+            const id = typeof v === "string" ? v.trim() : "";
+            if (id && !seen.has(id)) {
+              seen.add(id);
+              triggers.push(id);
+            }
+          }
+          if (triggers.length > 0) built["triggers"] = triggers;
+        }
         // Carry over the per-camera crop rectangle. Each field is clamped
         // to [0, 100]; missing fields default to the no-crop full frame.
         const cropRaw = r["crop"];
