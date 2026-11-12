@@ -125,4 +125,11 @@ describe("menuButtonLabel", () => {
     expect(menuButtonLabel({ entity: "light.a" }, state)).toBe("Porch");
     expect(menuButtonLabel({ entity: "light.a" }, undefined)).toBe("light.a");
   });
+
+  it("uses Home Assistant's display name when hass.formatEntityName exists", () => {
+    const state = st("light.a", "on", { friendly_name: "Porch" });
+    const hass = { formatEntityName: () => "Veranda · Lamp" };
+    expect(menuButtonLabel({ entity: "light.a" }, state, hass)).toBe("Veranda · Lamp");
+    expect(menuButtonLabel({ entity: "light.a", title: "Lamp" }, state, hass)).toBe("Lamp");
+  });
 });
