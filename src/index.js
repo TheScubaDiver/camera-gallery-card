@@ -56,6 +56,7 @@ import {
 import {
   friendlyCameraName as liveFriendlyCameraName,
   getAllLiveCameraEntities,
+  getEditorCameraEntities,
   getGridCameraEntities,
   getLiveCameraEntityIds,
   getLiveCameraOptions,
@@ -107,6 +108,7 @@ import {
   DEFAULT_AUTOPLAY,
   DEFAULT_BAR_OPACITY,
   DEFAULT_CLEAN_MODE,
+  DEFAULT_FULLSCREEN_ZOOM,
   DEFAULT_DELETE_CONFIRM,
   DEFAULT_DELETE_SERVICE,
   DEFAULT_LIVE_AUTO_MUTED,
@@ -447,6 +449,9 @@ class CameraGalleryCard extends LitElement {
     // `updated()`) so the newest clip opens regardless of thumb_sort_order.
     this._pendingUrlGallerySelectNewest = false;
     this._liveMuted = false;
+    // Bumped whenever mounted/pending live media becomes stale (teardown,
+    // camera switch). Awaited setup steps compare against it before commit.
+    this._liveViewGeneration = 0;
     this._livePipActive = false;
     this._galleryPipActive = false;
     this._galleryPlaying = false;
@@ -493,6 +498,9 @@ class CameraGalleryCard extends LitElement {
     // override sticks until the next config change.
     this._galleryMuted = true;
     this._liveFullscreen = false;
+    // Bumped whenever a fullscreen entry/exit becomes stale (genuine exit,
+    // teardown). Pending native entries compare against it before acting.
+    this._cardFullscreenGeneration = 0;
     this._imgFsOpen = false;
     this._hamburgerOpen = false;
 
@@ -508,6 +516,7 @@ class CameraGalleryCard extends LitElement {
     this._zoomPanStartY = 0;
     this._zoomPanBaseX = 0;
     this._zoomPanBaseY = 0;
+    this._lastFsTapTime = 0;
 
 
     this._onLiveCameraKeydown = (e) => {
@@ -588,11 +597,21 @@ class CameraGalleryCard extends LitElement {
     };
 
     this._onFullscreenChange = () => {
-      const isFs = document.fullscreenElement === this || document.webkitFullscreenElement === this;
+      // A container's shadow root retargets document.fullscreenElement to
+      // its host. The root containing this card retains the card target.
+      const root = this.getRootNode();
+      const element = root.fullscreenElement || root.webkitFullscreenElement || document.fullscreenElement || document.webkitFullscreenElement;
+      const isFs = element === this;
       if (isFs) {
+        this._liveFallbackCleanup?.();
+        this._liveFullscreen = false;
         this.setAttribute('data-live-fs', '');
         this._showPills();
+      } else if (this._liveFallbackCleanup) {
+        // Unrelated native exit events must not dismiss CSS/top-layer fullscreen.
+        if (document.fullscreenElement || document.webkitFullscreenElement) this._exitCardFullscreenFallback();
       } else if (!document.fullscreenElement && !document.webkitFullscreenElement) {
+        if (this.hasAttribute('data-live-fs')) this._cardFullscreenGeneration++;
         this.removeAttribute('data-live-fs');
         this._liveFullscreen = false;
         this._resetZoom();
@@ -601,8 +620,22 @@ class CameraGalleryCard extends LitElement {
     };
 
     this._onZoomTouchStart = (e) => {
-      if (!this._isLiveActive() && !this._previewOpen) return;
+      if (!this._isZoomAllowed()) return;
       if (isGridLayout(this.config, this._liveLayoutOverride)) return;
+
+      // Handle double-tap zoom for fullscreen image
+      if (this._imgFsOpen && e.touches.length === 1) {
+        const now = Date.now();
+        const touch = e.touches[0];
+        if (now - (this._lastFsTapTime || 0) < 300) {
+          e.preventDefault();
+          this._lastFsTapTime = 0;
+          this._toggleFullscreenZoom(touch.clientX, touch.clientY);
+          return;
+        }
+        this._lastFsTapTime = now;
+      }
+
       if (e.touches.length === 2) {
         e.preventDefault();
         this._zoomIsPinching = true;
@@ -622,13 +655,13 @@ class CameraGalleryCard extends LitElement {
     };
 
     this._onZoomTouchMove = (e) => {
-      if (!this._isLiveActive() && !this._previewOpen) return;
+      if (!this._isZoomAllowed()) return;
       if (isGridLayout(this.config, this._liveLayoutOverride)) return;
       if (this._zoomIsPinching && e.touches.length >= 2) {
         e.preventDefault();
         const t = e.touches;
         const dist = Math.hypot(t[1].clientX - t[0].clientX, t[1].clientY - t[0].clientY);
-        this._zoomScale = Math.max(1, Math.min(5, this._zoomPinchScale * (dist / this._zoomPinchDist)));
+        this._zoomScale = Math.max(1, Math.min(8, this._zoomPinchScale * (dist / this._zoomPinchDist)));
         if (this._zoomScale <= 1) { this._zoomPanX = 0; this._zoomPanY = 0; }
         else this._clampZoomPan();
         this._applyZoom();
@@ -648,7 +681,7 @@ class CameraGalleryCard extends LitElement {
     };
 
     this._onZoomMouseDown = (e) => {
-      if ((!this._isLiveActive() && !this._previewOpen) || this._zoomScale <= 1) return;
+      if (!this._isZoomAllowed() || this._zoomScale <= 1) return;
       if (isGridLayout(this.config, this._liveLayoutOverride)) return;
       e.preventDefault();
       this._zoomIsPanning = true;
@@ -672,7 +705,7 @@ class CameraGalleryCard extends LitElement {
     };
 
     this._onZoomWheel = (e) => {
-      if (!this._isLiveActive() && !this._previewOpen) return;
+      if (!this._isZoomAllowed()) return;
       if (isGridLayout(this.config, this._liveLayoutOverride)) return;
       const host = this._getZoomHost();
       if (!host) return;
@@ -681,7 +714,7 @@ class CameraGalleryCard extends LitElement {
       e.preventDefault();
       const factor = e.deltaY > 0 ? 0.9 : 1.1;
       const oldScale = this._zoomScale;
-      const newScale = Math.max(1, Math.min(5, oldScale * factor));
+      const newScale = Math.max(1, Math.min(8, oldScale * factor));
       if (newScale !== oldScale) {
         const lcX = r.left + r.width / 2 - this._zoomPanX;
         const lcY = r.top + r.height / 2 - this._zoomPanY;
@@ -804,6 +837,7 @@ class CameraGalleryCard extends LitElement {
     // in `set hass` then catches it. Covers disconnect→reconnect cycles where
     // _hass stays set but the previous subscription was torn down.
     this._subscribeFrigateEvents();
+    this.requestUpdate(); // Remount live media after a disconnect/reconnect.
   }
 
   disconnectedCallback() {
@@ -822,7 +856,7 @@ class CameraGalleryCard extends LitElement {
     window.removeEventListener('keydown', this._onLiveCameraKeydown);
     window.removeEventListener("keydown", this._onPtzKeyDown);
     window.removeEventListener("keyup", this._onPtzKeyUp);
-    if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+    this._exitOwnedFullscreen();
 
     this._stopMediaPoll();
     this._unsubscribeFrigateEvents();
@@ -1696,7 +1730,9 @@ class CameraGalleryCard extends LitElement {
       return this._liveCard;
     }
 
+    const generation = this._liveViewGeneration;
     await customElements.whenDefined("ha-camera-stream");
+    if (generation !== this._liveViewGeneration || !this._isLiveActive()) return null;
     const player = document.createElement("ha-camera-stream");
     player.stateObj = this._hass?.states?.[entity];
     player.hass = this._hass;
@@ -1740,11 +1776,14 @@ class CameraGalleryCard extends LitElement {
     try {
       return await promise;
     } finally {
-      if (this._liveCardPending?.key === key) this._liveCardPending = null;
+      // Match on the promise, not the key: a newer call for the same key has
+      // its own in-flight entry that must survive this one's completion.
+      if (this._liveCardPending?.promise === promise) this._liveCardPending = null;
     }
   }
 
   async _ensureLiveCardFromUrlImpl(url, key) {
+    const generation = this._liveViewGeneration;
     const video = document.createElement("video");
     video.autoplay = true;
     video.muted = true;
@@ -1775,6 +1814,7 @@ class CameraGalleryCard extends LitElement {
         const now = Date.now();
         if (!this._signedWsPath || now - this._signedWsPathTs > 25_000) {
           const signed = await this._hass.callWS({ type: "auth/sign_path", path: "/api/webrtc/ws" });
+          if (generation !== this._liveViewGeneration) return null;
           this._signedWsPath = signed.path;
           this._signedWsPathTs = now;
         }
@@ -1853,9 +1893,11 @@ class CameraGalleryCard extends LitElement {
         }
       };
     } catch (err) {
+      if (generation !== this._liveViewGeneration) return null;
       console.warn("[CGC] RTSP stream failed:", err);
     }
 
+    if (generation !== this._liveViewGeneration || !this._isLiveActive()) return null;
     this._liveCard = video;
     this._liveCardConfigKey = key;
     return video;
@@ -2052,7 +2094,16 @@ class CameraGalleryCard extends LitElement {
     this._applyZoom();
   }
 
+  _isZoomAllowed() {
+    if (this._imgFsOpen) return this.config?.fullscreen_zoom !== false;
+    if (this._isLiveActive() || this._previewOpen) return true;
+    return false;
+  }
+
   _getZoomHost() {
+    if (this._imgFsOpen && this.config?.fullscreen_zoom !== false) {
+      return this.renderRoot?.querySelector('.img-fs-overlay img');
+    }
     if (this._isLiveActive()) return this.renderRoot?.querySelector('#live-card-host');
     if (this._previewOpen) return this.renderRoot?.querySelector('#preview-video-host')
                                 ?? this.renderRoot?.querySelector('.pimg');
@@ -2071,8 +2122,10 @@ class CameraGalleryCard extends LitElement {
   _applyZoom() {
     const host = this._getZoomHost();
     const preview = this.renderRoot?.querySelector('.preview');
+    const fsOverlay = this.renderRoot?.querySelector('.img-fs-overlay');
     if (!host) {
       if (preview) { preview.style.touchAction = ''; preview.style.cursor = ''; }
+      if (fsOverlay) { fsOverlay.style.cursor = ''; }
       return;
     }
     if (this._zoomScale <= 1) {
@@ -2080,6 +2133,7 @@ class CameraGalleryCard extends LitElement {
       host.style.transformOrigin = '';
       if (this._isLiveActive()) host.style.cursor = '';
       if (preview) { preview.style.touchAction = ''; preview.style.cursor = ''; }
+      if (fsOverlay) { fsOverlay.style.cursor = ''; }
     } else {
       host.style.transformOrigin = 'center center';
       host.style.transform = `translate(${this._zoomPanX}px, ${this._zoomPanY}px) scale(${this._zoomScale})`;
@@ -2088,6 +2142,28 @@ class CameraGalleryCard extends LitElement {
         preview.style.touchAction = 'none';
         preview.style.cursor = this._zoomIsPanning ? 'grabbing' : 'grab';
       }
+      if (fsOverlay) {
+        fsOverlay.style.cursor = this._zoomIsPanning ? 'grabbing' : 'grab';
+      }
+    }
+  }
+
+  _toggleFullscreenZoom(clientX, clientY) {
+    const host = this._getZoomHost();
+    if (!host) return;
+    if (this._zoomScale > 1) {
+      this._resetZoom();
+    } else {
+      const r = host.getBoundingClientRect();
+      const newScale = 2.5;
+      const lcX = r.left + r.width / 2;
+      const lcY = r.top + r.height / 2;
+      const k = newScale;
+      this._zoomPanX = (clientX - lcX) * (1 - k);
+      this._zoomPanY = (clientY - lcY) * (1 - k);
+      this._zoomScale = newScale;
+      this._clampZoomPan();
+      this._applyZoom();
     }
   }
 
@@ -2114,17 +2190,14 @@ class CameraGalleryCard extends LitElement {
     // unaffected because the video.webkitEnterFullscreen path runs first.
     const isAndroidWebView = /Android/.test(ua) && (/Home Assistant\//.test(ua) || /; wv\)/.test(ua));
 
-    // Uitgang fullscreen
-    if (document.fullscreenElement || document.webkitFullscreenElement || this._liveFullscreen) {
-      if (document.fullscreenElement || document.webkitFullscreenElement) {
-        (document.exitFullscreen || document.webkitExitFullscreen).call(document).catch(() => {});
+    // Exit only fullscreen owned by this card, not another dashboard card.
+    if (this._ownsFullscreen() || video?.webkitDisplayingFullscreen || this._liveFullscreen) {
+      if (this._ownsFullscreen() || video?.webkitDisplayingFullscreen) {
+        this._cardFullscreenGeneration++;
+        this._exitOwnedFullscreen(video);
         return;
       }
-      // CSS-fallback exit
-      this._liveFullscreen = false;
-      this._resetZoom();
-      this.removeAttribute("data-live-fs");
-      this.requestUpdate();
+      this._exitCardFullscreenFallback();
       return;
     }
 
@@ -2134,15 +2207,166 @@ class CameraGalleryCard extends LitElement {
       return;
     }
 
-    // Android WebView: skip native API, go to CSS fallback (zie boven)
-    if (!isAndroidWebView && document.fullscreenEnabled) {
-      this.requestFullscreen().catch(() => {});
+    this._enterCardFullscreen(isAndroidWebView);
+  }
+
+  _enterCardFullscreen(isAndroidWebView) {
+    // Card fullscreen belongs to the live view, not an individual camera:
+    // a camera swap neither bumps the generation nor restarts the entry.
+    const generation = this._cardFullscreenGeneration;
+    const fallback = () => {
+      // A pending entry must not resurrect fullscreen after a genuine exit
+      // or teardown; a rejected entry falls back to the CSS/top-layer path
+      // (e.g. popup cards where transformed ancestors clip fixed layout).
+      if (!this._isLiveActive() || generation !== this._cardFullscreenGeneration) return;
+      this._enterCardFullscreenFallback();
+    };
+    // Android WebView: skip the native API and take the CSS/top-layer path.
+    if (!isAndroidWebView && document.fullscreenEnabled && this.requestFullscreen) {
+      try {
+        Promise.resolve(this.requestFullscreen()).then(() => {
+          if (generation !== this._cardFullscreenGeneration || !this._isLiveActive()) this._exitOwnedFullscreen();
+        }, fallback);
+      } catch (_) { fallback(); }
       return;
     }
+    fallback();
+  }
 
-    // CSS fallback (Android WebView, or no native fullscreen support).
+  _isVideoFullscreen(video) {
+    // Document retargets fullscreen inside shadow DOM to the card host.
+    return document.fullscreenElement === video || video.getRootNode?.().fullscreenElement === video;
+  }
+
+  _ownsFullscreen() {
+    // Start in the card's containing root, not the document: nested cards
+    // otherwise see only an ancestor container as the fullscreen target.
+    const root = this.getRootNode();
+    let element = root.fullscreenElement || root.webkitFullscreenElement || document.fullscreenElement || document.webkitFullscreenElement;
+    while (element) {
+      if (element === this) return true;
+      element = element.parentElement || element.getRootNode?.().host;
+    }
+    return false;
+  }
+
+  _exitOwnedFullscreen(video) {
+    if (this._ownsFullscreen()) {
+      const exit = document.exitFullscreen || document.webkitExitFullscreen;
+      try { Promise.resolve(exit?.call(document)).catch(() => {}); } catch (_) {}
+    }
+    // iOS native video fullscreen is not represented by document.fullscreenElement.
+    if (video?.webkitDisplayingFullscreen && typeof video.webkitExitFullscreen === "function") {
+      try { video.webkitExitFullscreen(); } catch (_) {}
+    }
+  }
+
+  _liveFullscreenAncestors() {
+    const ancestors = [];
+    for (let element = this; element; element = element.parentElement || element.getRootNode?.().host) {
+      ancestors.push(element);
+    }
+    return ancestors;
+  }
+
+  _liveFullscreenContainerHidden(ancestors) {
+    return ancestors.some((element) => {
+      const style = getComputedStyle(element);
+      // Bubble closes via transform, not display:none. Observe its local state
+      // without altering Bubble CSS, history, or any other popup/card.
+      return element.hidden || element.getAttribute("aria-hidden") === "true" ||
+        style.display === "none" || style.visibility === "hidden" || style.visibility === "collapse" ||
+        (element.classList.contains("bubble-pop-up") &&
+          (element.classList.contains("is-popup-closed") || element.classList.contains("is-closing")));
+    });
+  }
+
+  _exitCardFullscreenFallback() {
+    this._cardFullscreenGeneration++;
+    this._liveFallbackCleanup?.();
+    this._liveFullscreen = false;
+    this.removeAttribute("data-live-fs");
+    this._resetZoom();
+    this.requestUpdate();
+  }
+
+  _enterCardFullscreenFallback() {
+    this._liveFallbackCleanup?.();
+    const ancestors = this._liveFullscreenAncestors();
+    if (this._liveFullscreenContainerHidden(ancestors)) return;
+    let focus = document.activeElement;
+    while (focus?.shadowRoot?.activeElement) focus = focus.shadowRoot.activeElement;
+    const tabindex = this.getAttribute("tabindex");
+    let popover = false;
+    const exit = () => this._exitCardFullscreenFallback();
+    const onKey = (event) => {
+      if (event.key !== "Escape" || event.defaultPrevented) return;
+      // Route only to the focused/event-owning card, never a background
+      // fallback whose global listener happened to be registered first.
+      let active = document.activeElement;
+      while (active?.shadowRoot?.activeElement) active = active.shadowRoot.activeElement;
+      while (active && active !== this) active = active.parentElement || active.getRootNode?.().host;
+      if (!event.composedPath().includes(this) && active !== this) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      exit();
+    };
+    const onToggle = () => {
+      if (popover && this._liveFallbackCleanup === cleanup && !this.matches(":popover-open")) exit();
+    };
+    const observer = new MutationObserver(() => {
+      if (this._liveFullscreenContainerHidden(ancestors)) exit();
+    });
+    const cleanup = () => {
+      // Clear ownership first: hidePopover's deferred toggle must be harmless.
+      this._liveFallbackCleanup = null;
+      this.removeAttribute("data-live-fs-fallback");
+      observer.disconnect();
+      window.removeEventListener("keydown", onKey, true);
+      window.removeEventListener("popstate", exit);
+      window.removeEventListener("hashchange", exit);
+      this.removeEventListener("toggle", onToggle);
+      if (popover) {
+        try { this.hidePopover(); } catch (_) {}
+        this.removeAttribute("popover");
+        this.removeAttribute("data-live-fs-popover");
+      }
+      if (tabindex === null) this.removeAttribute("tabindex");
+      else this.setAttribute("tabindex", tabindex);
+      if (focus?.isConnected && !this._liveFullscreenContainerHidden(ancestors)) {
+        try { focus.focus({ preventScroll: true }); } catch (_) {}
+      }
+    };
+    this._liveFallbackCleanup = cleanup;
     this._liveFullscreen = true;
     this.setAttribute("data-live-fs", "");
+    this.setAttribute("data-live-fs-fallback", "");
+    // Same host, same shadow/media tree: no disconnect/reparent/stream restart.
+    // Manual popovers avoid light-dismiss closing an underlying Bubble popup.
+    if (!this.hasAttribute("popover") && typeof this.showPopover === "function" && typeof this.hidePopover === "function") {
+      this.setAttribute("popover", "manual");
+      this.setAttribute("data-live-fs-popover", "");
+      try {
+        this.showPopover();
+        popover = this.matches(":popover-open");
+      } catch (_) {}
+      if (!popover) {
+        try { this.hidePopover(); } catch (_) {}
+        this.removeAttribute("popover");
+        this.removeAttribute("data-live-fs-popover");
+      }
+    }
+    // Back follows HA/Bubble's normal navigation; never add or replace history.
+    window.addEventListener("keydown", onKey, true);
+    window.addEventListener("popstate", exit);
+    window.addEventListener("hashchange", exit);
+    this.addEventListener("toggle", onToggle);
+    for (const element of ancestors) observer.observe(element, {
+      attributes: true, attributeFilter: ["class", "style", "hidden", "aria-hidden"],
+    });
+    this.setAttribute("tabindex", "-1");
+    try { this.focus({ preventScroll: true }); } catch (_) {}
+    this._showPills();
     this.requestUpdate();
   }
 
@@ -2419,6 +2643,7 @@ class CameraGalleryCard extends LitElement {
   }
 
   _openImageFullscreen() {
+    this._resetZoom();
     this._imgFsOpen = true;
     try { this._previewVideoEl?.pause(); } catch (_) {}
     try { screen.orientation?.lock?.("landscape"); } catch (_) {}
@@ -2444,6 +2669,7 @@ class CameraGalleryCard extends LitElement {
   }
 
   _closeImageFullscreen() {
+    this._resetZoom();
     this._imgFsOpen = false;
     if (this._onImgFsKeydown) {
       window.removeEventListener("keydown", this._onImgFsKeydown);
@@ -2645,13 +2871,14 @@ class CameraGalleryCard extends LitElement {
     // Single mode — clean up any leftover grid tiles first.
     this._clearLiveGrid();
 
+    const generation = this._liveViewGeneration;
     const effectiveCam = this._getEffectiveLiveCamera();
     const streamEntry = this._getStreamEntryById(effectiveCam);
     const isStreamUrl = !!streamEntry;
     const card = isStreamUrl
       ? await this._ensureLiveCardFromUrl(streamEntry.url)
       : await this._ensureLiveCard();
-    if (!card) return;
+    if (!card || generation !== this._liveViewGeneration || !this._isLiveActive()) return;
 
     const isNewMount = card.parentElement !== host;
 
@@ -2689,7 +2916,24 @@ class CameraGalleryCard extends LitElement {
   // URL-fast-path holds a PC + WS on `this` that won't close just by removing
   // the <video>, and `display:none` doesn't pause playback either — so a card
   // left mounted in media mode keeps streaming and audible (issue #109).
-  _teardownLiveView() {
+  _teardownLiveView({ preserveCardFullscreen = false } = {}) {
+    this._liveViewGeneration++;
+    const video = this._findLiveVideo();
+    // A camera swap keeps the card host in fullscreen without exit/re-entry.
+    // Descendant/native video fullscreen cannot survive removing that player.
+    const keepFullscreen = preserveCardFullscreen && this._isLiveActive() &&
+      !this.renderRoot?.fullscreenElement && !this.renderRoot?.webkitFullscreenElement &&
+      !video?.webkitDisplayingFullscreen;
+    if (!keepFullscreen) {
+      // Genuine exit: invalidate any pending entry, and exit only fullscreen
+      // this card owns — never another dashboard card's.
+      this._cardFullscreenGeneration++;
+      this._exitOwnedFullscreen(video);
+      this._liveFallbackCleanup?.();
+      this._liveFullscreen = false;
+      this.removeAttribute("data-live-fs");
+      this._resetZoom();
+    }
     if (this._autoAspectObs) {
       clearInterval(this._autoAspectObs);
       this._autoAspectObs = null;
@@ -2697,7 +2941,6 @@ class CameraGalleryCard extends LitElement {
     this._autoAspectVideo = null;
 
     // Pause first so audio stops before we wait on element removal.
-    const video = this._findLiveVideo();
     if (video) {
       try { video.pause(); } catch (_) {}
       try { video.srcObject = null; } catch (_) {}
@@ -3691,8 +3934,8 @@ class CameraGalleryCard extends LitElement {
     this._hideLiveQuickSwitchButton();
     // Full teardown of the current card before swapping cameras: URL→entity
     // transitions otherwise leak the previous PC/WS, since _ensureLiveCard
-    // doesn't know to close them.
-    this._teardownLiveView();
+    // doesn't know to close them. Keep card fullscreen while replacing media.
+    this._teardownLiveView({ preserveCardFullscreen: true });
     this._signedWsPath = null;
     this._liveSelectedCamera = next;
 
@@ -3776,7 +4019,76 @@ class CameraGalleryCard extends LitElement {
       return;
     }
 
+    if (this._runTapAction(path)) return;
+
     this._showLiveQuickSwitchButton();
+  }
+
+  // Fires `tap_action` (HA action syntax) for a tap on the single-camera live
+  // preview. Returns true when an action consumed the tap. Taps on pills / nav
+  // buttons keep their own behaviour, and grid tiles keep "tap to focus".
+  _runTapAction(path) {
+    const cfg = this.config?.tap_action;
+    if (!cfg || !cfg.action || cfg.action === "none") return false;
+    if (this.config?.live_layout === "grid" && this._liveLayoutOverride !== "single") return false;
+    if (
+      this._pathHasClass(path, "gallery-pill") ||
+      this._pathHasClass(path, "pnavbtn") ||
+      this._pathHasClass(path, "pnav") ||
+      this._pathHasClass(path, "live-hamburger-wrap")
+    ) return false;
+
+    if (cfg.confirmation) {
+      const text = (typeof cfg.confirmation === "object" && cfg.confirmation.text) || "Are you sure?";
+      if (!window.confirm(text)) return true;
+    }
+
+    const hass = this._hass;
+    const entity = cfg.entity || this._liveSelectedCamera;
+    switch (cfg.action) {
+      case "more-info":
+        if (!entity) return false;
+        this.dispatchEvent(new CustomEvent("hass-more-info", {
+          bubbles: true, composed: true, detail: { entityId: entity },
+        }));
+        return true;
+      case "toggle":
+        if (!entity) return false;
+        hass?.callService("homeassistant", "toggle", { entity_id: entity });
+        return true;
+      case "perform-action":
+      case "call-service": {
+        const svc = cfg.perform_action || cfg.service;
+        if (!svc || !svc.includes(".")) return false;
+        const [domain, name] = svc.split(".");
+        hass?.callService(domain, name, { ...(cfg.data || cfg.service_data || {}) }, cfg.target);
+        return true;
+      }
+      case "navigate":
+        if (!cfg.navigation_path) return false;
+        if (cfg.navigation_replace) history.replaceState(null, "", cfg.navigation_path);
+        else history.pushState(null, "", cfg.navigation_path);
+        window.dispatchEvent(new CustomEvent("location-changed", {
+          detail: { replace: !!cfg.navigation_replace },
+        }));
+        return true;
+      case "url":
+        // Refuse script-bearing schemes; http(s) and relative paths only.
+        if (!cfg.url_path || /^\s*(javascript|data|vbscript):/i.test(cfg.url_path)) return false;
+        window.open(cfg.url_path, "_blank", "noopener,noreferrer");
+        return true;
+      case "fullscreen":
+        this._toggleLiveFullscreen();
+        return true;
+      case "snapshot":
+        this._captureLiveSnapshot();
+        return true;
+      case "refresh":
+        this._refreshLiveStream();
+        return true;
+      default:
+        return false;
+    }
   }
 
   _toggleLiveMode() {
@@ -6204,10 +6516,24 @@ class CameraGalleryCard extends LitElement {
         ${this._renderDebugModal()}
 
         ${this._imgFsOpen && selectedUrl ? html`
-          <div class="img-fs-overlay" @click=${() => this._closeImageFullscreen()}>
+          <div class="img-fs-overlay" @click=${() => {
+            if (this._zoomScale > 1) {
+              this._resetZoom();
+            } else {
+              this._closeImageFullscreen();
+            }
+          }}>
             ${selectedIsVideo
               ? html`<video src=${selectedUrl} controls autoplay playsinline ?muted=${this._galleryMuted} @click=${(e) => e.stopPropagation()}></video>`
-              : html`<img src=${selectedUrl} alt="" @click=${(e) => e.stopPropagation()} />`}
+              : html`<img src=${selectedUrl} alt=""
+                  @click=${(e) => e.stopPropagation()}
+                  @dblclick=${(e) => {
+                    if (this.config?.fullscreen_zoom !== false) {
+                      e.stopPropagation();
+                      this._toggleFullscreenZoom(e.clientX, e.clientY);
+                    }
+                  }}
+                />`}
             ${filtered.length > 1 ? html`
               <div class="pnav img-fs-nav">
                 <button class="pnavbtn left" ?disabled=${idx <= 0} @pointerdown=${(e) => e.stopPropagation()} @click=${(e) => { e.stopPropagation(); this._navImgFs(-1, filtered.length); }}>
@@ -6315,13 +6641,13 @@ const CGC_CONFIG_KEY_ORDER = [
   "path_datetime_format", "max_media",
   // ─── Gallery ───
   "start_mode", "url_id", "preview_position", "preview_height", "object_fit",
-  "controls_mode", "clean_mode", "show_camera_title", "persistent_controls",
+  "controls_mode", "clean_mode", "fullscreen_zoom", "show_camera_title", "persistent_controls",
   "autoplay", "auto_muted",
   "show_today", "show_media_filter", "show_favorite", "show_live",
   // ─── Live ───
   "live_enabled", "live_auto_muted", "live_cameras", "live_layout",
   "live_grid_labels", "live_stream_urls", "live_go2rtc_url",
-  "live_mic_mode", "live_mic_audio_processing",
+  "tap_action", "live_mic_mode", "live_mic_audio_processing",
   "live_mic_shape", "live_mic_button_position",
   "live_mic_waveform_enabled", "live_mic_waveform_sensitivity",
   "live_mic_ice_servers", "live_mic_force_relay",
@@ -8039,6 +8365,7 @@ class CameraGalleryCardEditor extends HTMLElement {
       c.live_auto_muted !== undefined ? c.live_auto_muted === true : DEFAULT_LIVE_AUTO_MUTED;
 
     const cleanMode = c.clean_mode === true;
+    const fullscreenZoom = c.fullscreen_zoom !== false;
     const persistentControls = c.persistent_controls === true;
 
     const liveEnabled = c.live_enabled === true;
@@ -8046,26 +8373,7 @@ class CameraGalleryCardEditor extends HTMLElement {
     const liveLayout = c.live_layout === "grid" ? "grid" : "single";
 
 
-    const cameraEntities = Object.keys(this._hass?.states || {})
-      .filter((id) => {
-        if (!id.startsWith("camera.")) return false;
-
-        const st = this._hass?.states?.[id];
-        if (!st) return false;
-
-        const state = String(st.state || "").toLowerCase();
-
-        return state !== "unavailable" && state !== "unknown";
-      })
-      .sort((a, b) => {
-        const an = String(
-          this._hass?.states?.[a]?.attributes?.friendly_name || a
-        ).toLowerCase();
-        const bn = String(
-          this._hass?.states?.[b]?.attributes?.friendly_name || b
-        ).toLowerCase();
-        return an.localeCompare(bn);
-      });
+    const cameraEntities = getEditorCameraEntities(this._hass?.states);
 
     const rootVars = `
       --ed-radius-panel: 18px;
@@ -8735,6 +9043,18 @@ class CameraGalleryCardEditor extends HTMLElement {
             </div>
           </div>
         </div>
+
+        <div class="row">
+          <div class="row-head">
+            <div>
+              <div class="lbl">Fullscreen zoom</div>
+              <div class="desc">Enable pinch-to-zoom, pan, double-tap and mouse wheel zoom in the fullscreen image viewer.</div>
+            </div>
+            <div class="togrow">
+              <label class="cgc-switch"><input type="checkbox" id="fullscreenzoom" ${fullscreenZoom ? "checked" : ""}><span class="cgc-track"></span></label>
+            </div>
+          </div>
+        </div>
       `;
 
       const playbackBody = `
@@ -9281,6 +9601,7 @@ class CameraGalleryCardEditor extends HTMLElement {
                       <option value="reolink" ${cfgEntry.type === "reolink" ? "selected" : ""}>Reolink — continuous</option>
                       <option value="frigate" ${cfgEntry.type === "frigate" ? "selected" : ""}>Frigate — continuous</option>
                       <option value="onvif" ${cfgEntry.type === "onvif" ? "selected" : ""}>ONVIF — continuous</option>
+                      <option value="service" ${cfgEntry.type === "service" ? "selected" : ""}>Manual service</option>
                     </select>
                     ${((cfgEntry.type || "ezviz") === "ezviz" || cfgEntry.type === "reolink") ? `
                     <button type="button" class="actionbtn ptz-detect-btn" data-ptz-cam="${entId.replace(/"/g,"&quot;")}" style="align-self:flex-start;margin-top:2px;">Detect buttons</button>
@@ -9293,7 +9614,36 @@ class CameraGalleryCardEditor extends HTMLElement {
                       </div>`;
                     }).join("")}
                     <div class="desc" style="margin-top:2px;">Leave blank to auto-detect. Pick from the list — only PTZ buttons are suggested (Home picks a <code>select…_ptz_preset</code>).</div>
-                    ` : `<div class="desc" style="margin-top:2px;">Service-based type — no buttons needed.</div>`}
+                    ` : cfgEntry.type === "service" ? (() => {
+                      const escapeText = (value) => String(value ?? "")
+                        .replace(/&/g, "&amp;")
+                        .replace(/</g, "&lt;")
+                        .replace(/>/g, "&gt;");
+                      const escapeAttr = (value) => escapeText(value).replace(/"/g, "&quot;");
+                      const serviceData = [
+                        ["start_left", "Start left"], ["end_left", "End left"],
+                        ["start_right", "Start right"], ["end_right", "End right"],
+                        ["start_up", "Start up"], ["end_up", "End up"],
+                        ["start_down", "Start down"], ["end_down", "End down"],
+                        ["zoom_in", "Zoom in (optional)"], ["zoom_out", "Zoom out (optional)"],
+                        ["home", "Home (optional)"],
+                      ];
+                      return `
+                        <div>
+                          <div style="font-size:0.75em;opacity:0.65;margin-bottom:2px;">Home Assistant service</div>
+                          <input type="text" class="ed-input ptz-cam-service" data-ptz-cam="${entId.replace(/"/g,"&quot;")}" value="${escapeAttr(cfgEntry.service)}" placeholder="script.camera_ptz" autocomplete="off" spellcheck="false" style="width:100%;box-sizing:border-box;" />
+                        </div>
+                        ${serviceData.map(([key, label]) => {
+                          const value = cfgEntry[`data_${key}`];
+                          const json = value && typeof value === "object" ? JSON.stringify(value, null, 2) : "";
+                          return `<div>
+                            <div style="font-size:0.75em;opacity:0.65;margin-bottom:2px;">${label} service data (JSON)</div>
+                            <textarea class="ed-input ptz-cam-service-data" data-ptz-cam="${entId.replace(/"/g,"&quot;")}" data-ptz-key="data_${key}" placeholder='{"direction":"${key}"}' spellcheck="false" rows="2" style="width:100%;box-sizing:border-box;resize:vertical;font-family:monospace;font-size:0.78em;">${escapeText(json)}</textarea>
+                          </div>`;
+                        }).join("")}
+                        <div class="desc" style="margin-top:2px;">For continuous cameras, use the same <code>data_start_*</code> + <code>data_end_*</code> shape as <code>custom:webrtc-camera</code>. The end command runs when the joystick is released. Legacy one-shot <code>data_left</code>/<code>data_right</code>/<code>data_up</code>/<code>data_down</code> YAML remains supported.</div>
+                      `;
+                    })() : `<div class="desc" style="margin-top:2px;">Service-based type — no buttons needed.</div>`}
                   </div>
                   ` : ""}
                 </div>
@@ -12352,6 +12702,10 @@ details summary { user-select: none; }
       this._set("clean_mode", !!e.target.checked);
     });
 
+    $("fullscreenzoom")?.addEventListener("change", (e) => {
+      this._set("fullscreen_zoom", !!e.target.checked);
+    });
+
     $("capture-video-thumbnails")?.addEventListener("change", (e) => {
       this._set("capture_video_thumbnails", !!e.target.checked);
     });
@@ -12986,6 +13340,49 @@ details summary { user-select: none; }
         const key = el.dataset.ptzKey;
         if (!camId || !key) return;
         _setPtzCameraEntry(camId, (cur) => _mergeButtons(cur, { [key]: String(e.target.value || "") }));
+      });
+    });
+
+    this.shadowRoot.querySelectorAll(".ptz-cam-service").forEach((el) => {
+      el.addEventListener("change", (e) => {
+        const camId = el.dataset.ptzCam;
+        if (!camId) return;
+        const service = String(e.target.value || "").trim();
+        _setPtzCameraEntry(camId, (cur) => {
+          const entry = { ...(cur || { type: "service" }) };
+          if (service) entry.service = service;
+          else delete entry.service;
+          return entry;
+        });
+      });
+    });
+
+    this.shadowRoot.querySelectorAll(".ptz-cam-service-data").forEach((el) => {
+      el.addEventListener("input", () => el.setCustomValidity(""));
+      el.addEventListener("change", (e) => {
+        const camId = el.dataset.ptzCam;
+        const key = el.dataset.ptzKey;
+        if (!camId || !key) return;
+        const raw = String(e.target.value || "").trim();
+        let value;
+        if (raw) {
+          try {
+            value = JSON.parse(raw);
+            if (!value || typeof value !== "object" || Array.isArray(value)) {
+              throw new Error("Service data must be a JSON object");
+            }
+          } catch (err) {
+            el.setCustomValidity(err instanceof Error ? err.message : "Invalid JSON object");
+            el.reportValidity();
+            return;
+          }
+        }
+        _setPtzCameraEntry(camId, (cur) => {
+          const entry = { ...(cur || { type: "service" }) };
+          if (value) entry[key] = value;
+          else delete entry[key];
+          return entry;
+        });
       });
     });
 
