@@ -1,5 +1,49 @@
 # Changelog
 
+## [3.2.0](https://github.com/TheScubaDiver/camera-gallery-card/compare/v3.1.0...v3.2.0) (2026-11-12)
+
+
+### Features
+
+* add custom long-press menu actions (thumb_actions) ([#267](https://github.com/TheScubaDiver/camera-gallery-card/issues/267)) ([0b1a7a9](https://github.com/TheScubaDiver/camera-gallery-card/commit/0b1a7a994298c3367006637214274e2ade32e899))
+* add tap_action for the live preview ([#244](https://github.com/TheScubaDiver/camera-gallery-card/issues/244)) ([801d5ec](https://github.com/TheScubaDiver/camera-gallery-card/commit/801d5ec951f11f4367232eee271f761e9607948d))
+* add URL deep-links for view and camera selection ([#218](https://github.com/TheScubaDiver/camera-gallery-card/issues/218)) ([#236](https://github.com/TheScubaDiver/camera-gallery-card/issues/236)) ([3434931](https://github.com/TheScubaDiver/camera-gallery-card/commit/34349314c3144a7232e02d7e52415284c422053b))
+* added support for custom PTZ setup ([#232](https://github.com/TheScubaDiver/camera-gallery-card/issues/232)) ([c57b17f](https://github.com/TheScubaDiver/camera-gallery-card/commit/c57b17f4d7a9c72aaf5d47e906d28eb5e428c36e))
+* **editor:** edit long-press actions (thumb_actions) in the visual editor ([#272](https://github.com/TheScubaDiver/camera-gallery-card/issues/272)) ([f66baf4](https://github.com/TheScubaDiver/camera-gallery-card/commit/f66baf4117add20bdd85cf71ed1aefb3d0368221))
+* **editor:** toggle menu button placement in the visual editor ([#271](https://github.com/TheScubaDiver/camera-gallery-card/issues/271)) ([78fcb65](https://github.com/TheScubaDiver/camera-gallery-card/commit/78fcb656ff528af3f787fc1fef3523c269f63bc5))
+* **frigate:** add frigate_cameras/frigate_labels server-side filters ([#261](https://github.com/TheScubaDiver/camera-gallery-card/issues/261)) ([62a76e0](https://github.com/TheScubaDiver/camera-gallery-card/commit/62a76e0ecd68cab11d297d255ebc8fc68affeb3b))
+* **gallery:** show skeleton thumbnails while media loads ([#268](https://github.com/TheScubaDiver/camera-gallery-card/issues/268)) ([efffb3f](https://github.com/TheScubaDiver/camera-gallery-card/commit/efffb3f1111748c42fcc804b9c6937d64d1eca62))
+* **live:** configurable talk button shape + radar talking indicator ([#190](https://github.com/TheScubaDiver/camera-gallery-card/issues/190)) ([78fae79](https://github.com/TheScubaDiver/camera-gallery-card/commit/78fae79dbf9ef0043df196a6c1e596bb4e72c0e6))
+* **live:** menu buttons among the controls, option lists for selects ([#270](https://github.com/TheScubaDiver/camera-gallery-card/issues/270)) ([baac4d4](https://github.com/TheScubaDiver/camera-gallery-card/commit/baac4d4ff9406c6d50d6fb9706e845ce91b52953))
+* **live:** shape the camera grid to the camera count ([#235](https://github.com/TheScubaDiver/camera-gallery-card/issues/235)) ([770efe0](https://github.com/TheScubaDiver/camera-gallery-card/commit/770efe0b6c45837d8adfab49c810cb1c9a54b5f4))
+* pair snapshots with clips by timestamp proximity ([#252](https://github.com/TheScubaDiver/camera-gallery-card/issues/252)) ([d32d9ad](https://github.com/TheScubaDiver/camera-gallery-card/commit/d32d9ad3d55155771de4fb43a62dd18da31d7bd7))
+* **viewer:** add pinch-to-zoom, double-tap and pan to fullscreen image viewer ([#253](https://github.com/TheScubaDiver/camera-gallery-card/issues/253)) ([8edf4f0](https://github.com/TheScubaDiver/camera-gallery-card/commit/8edf4f0dcabc87abf2fb7fdb631664f44cc93b8d))
+
+
+### Bug Fixes
+
+* **config:** strip stale live_camera_entity pin so live picker ordering sticks ([#227](https://github.com/TheScubaDiver/camera-gallery-card/issues/227)) ([8972c56](https://github.com/TheScubaDiver/camera-gallery-card/commit/8972c56d3f37aae14fba8b9f3c73e85206af8a0b))
+* **download:** save Frigate clips as mp4 instead of the HLS playlist ([#269](https://github.com/TheScubaDiver/camera-gallery-card/issues/269)) ([a180349](https://github.com/TheScubaDiver/camera-gallery-card/commit/a1803492f6af7f7fa3c6f0e869bb2514607c6139))
+* **editor:** keep unavailable cameras selectable ([#238](https://github.com/TheScubaDiver/camera-gallery-card/issues/238)) ([114bacf](https://github.com/TheScubaDiver/camera-gallery-card/commit/114bacf3357f4c9e537a6575d784dc9aac76378a))
+* **editor:** stop section overflow clipping search dropdowns ([#183](https://github.com/TheScubaDiver/camera-gallery-card/issues/183)) ([0b85bee](https://github.com/TheScubaDiver/camera-gallery-card/commit/0b85bee34fceddca822915458caca87a0b02ba0d))
+* **filters:** match every object tagged in a filename, not only the first ([#266](https://github.com/TheScubaDiver/camera-gallery-card/issues/266)) ([3d958dc](https://github.com/TheScubaDiver/camera-gallery-card/commit/3d958dc1f911b8133d62777402079231ddc7f1c9))
+* **fullscreen:** keep card fullscreen working inside popup cards ([#247](https://github.com/TheScubaDiver/camera-gallery-card/issues/247)) ([bb62cf1](https://github.com/TheScubaDiver/camera-gallery-card/commit/bb62cf1151930204cc68c99b35b41144c6405d77))
+* **fullscreen:** use full video height in card fullscreen ([#246](https://github.com/TheScubaDiver/camera-gallery-card/issues/246)) ([884ba68](https://github.com/TheScubaDiver/camera-gallery-card/commit/884ba685e90b36b6aa79f67def99a8e6edc09fd4))
+* **live:** keep card fullscreen across camera switches ([#248](https://github.com/TheScubaDiver/camera-gallery-card/issues/248)) ([4f54e0c](https://github.com/TheScubaDiver/camera-gallery-card/commit/4f54e0c43fa9b4a2d188d544192d13e3303d703b))
+* **live:** restore talkback receiver audio without transient unmute ([#249](https://github.com/TheScubaDiver/camera-gallery-card/issues/249)) ([9d772cc](https://github.com/TheScubaDiver/camera-gallery-card/commit/9d772ccb71e8f0a6ce0e1e37f4d1adfb40a9f466))
+* **media:** hide empty day folders so the gallery never strands on an empty day ([#191](https://github.com/TheScubaDiver/camera-gallery-card/issues/191)) ([#192](https://github.com/TheScubaDiver/camera-gallery-card/issues/192)) ([ebc8f4a](https://github.com/TheScubaDiver/camera-gallery-card/commit/ebc8f4a8a225ea79400e9d93f1f466ddc781a05f))
+* **thumbnails:** keep card width stable under grid-layout ([#185](https://github.com/TheScubaDiver/camera-gallery-card/issues/185)) ([#193](https://github.com/TheScubaDiver/camera-gallery-card/issues/193)) ([335db96](https://github.com/TheScubaDiver/camera-gallery-card/commit/335db9676e321a4266a4318d7f650d1091966ed5))
+
+
+### Documentation
+
+* fix README banner distortion on mobile/HACS ([#179](https://github.com/TheScubaDiver/camera-gallery-card/issues/179)) ([59f6a92](https://github.com/TheScubaDiver/camera-gallery-card/commit/59f6a9211665b77d8de1e5d99c6d442f9072a00a))
+
+
+### Code Refactoring
+
+* **live:** compact camera switcher ([#181](https://github.com/TheScubaDiver/camera-gallery-card/issues/181)) ([628b487](https://github.com/TheScubaDiver/camera-gallery-card/commit/628b48743b654af673eaf4d1e13b586b6c899e24))
+
 ## [3.1.0](https://github.com/TheScubaDiver/camera-gallery-card/compare/v3.0.1...v3.1.0) (2026-05-28)
 
 

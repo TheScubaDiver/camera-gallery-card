@@ -4,7 +4,7 @@
 
 Custom **Home Assistant Lovelace card** for browsing camera media in a clean **timeline-style gallery** with preview player, object filters, optional live view, and a built-in visual editor.
 
-**Current version:** `v3.1.0` <!-- x-release-please-version -->
+**Current version:** `v3.2.0` <!-- x-release-please-version -->
 
 <p align="center">
   <img src="https://github.com/user-attachments/assets/1c71ada8-98bb-435e-bbc6-b6974186c2e0" width="30%" />
@@ -15,20 +15,28 @@ Custom **Home Assistant Lovelace card** for browsing camera media in a clean **t
 
 ## Installation
 
-### HACS (Recommended)
+### Marketplace (Home Assistant 2026.11 and newer)
 
-[![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=TheScubadiver&repository=camera-gallery-card&category=plugin)
+Home Assistant 2026.11 has HACS built in as the **Marketplace**.
 
-1. Click the button above
-2. Click **Download**
-3. Restart Home Assistant
+[![Open your Home Assistant instance and open this repository.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=TheScubadiver&repository=camera-gallery-card&category=plugin)
+
+1. Click the button above, or go to **Settings → Marketplace** and search for **Camera Gallery Card**
+2. Click **Install**
+3. Reload your browser
+
+The Marketplace adds the dashboard resource for you and shows updates under **Settings → Updates**.
+
+### HACS (older Home Assistant versions)
+
+On Home Assistant before 2026.11, the same button opens HACS. Click **Download**, then reload your browser.
 
 ## Quick start
 
 Got the card installed? Here's the fastest way to see something on screen.
 
 1. In Home Assistant, open your dashboard and click **Edit dashboard** (top right).
-2. Click **Add card** and search for **Camera Gallery Card**.
+2. Click **Add card** and search for **Camera Gallery Card**. On Home Assistant 2026.6 and newer you can also pick a camera on the **By entity** tab: the card is suggested under **Community** as a live view of that camera.
 3. Pick a **source mode** when prompted:
    - **Sensor mode** — you have snapshot files in `/config/www/...` (e.g. saved by an automation). Also requires [FileTrack](#filetrack-optional--for-sensor-mode).
    - **Media mode** — you use Frigate, a NAS folder, or anything reachable via Home Assistant's media browser.
@@ -49,13 +57,12 @@ The **FileTrack** integration creates a sensor that scans a folder and exposes i
 
 FileTrack is a fork of the archived [files integration by TarheelGrad1998](https://github.com/TarheelGrad1998/files).
 
-1. Open **HACS**
-2. Go to **Integrations**
-3. Click the three-dot menu and choose **Custom repositories**
-4. Add `https://github.com/TheScubadiver/FileTrack` as an **Integration**
-5. Search for **FileTrack** and install it
-6. **Restart Home Assistant**
-7. Go to **Settings → Devices & Services** and add **FileTrack**
+1. Add the FileTrack repository:
+   - **Home Assistant 2026.11 and newer:** go to **Settings → Marketplace → Add from link** and enter `TheScubadiver/FileTrack`
+   - **Older versions:** open **HACS**, click the three-dot menu, choose **Custom repositories** and add `https://github.com/TheScubadiver/FileTrack` as an **Integration**
+2. Install **FileTrack**
+3. **Restart Home Assistant**
+4. Go to **Settings → Devices & Services** and add **FileTrack**
 
 > [!NOTE]
 > Once you have installed FileTrack, you can leave it alone. No need to configure anything in FileTrack — everything is configured in the card editor UI.
@@ -69,8 +76,8 @@ FileTrack is a fork of the archived [files integration by TarheelGrad1998](https
 ### Gallery
 
 - Image & video preview
-- **Fullscreen image viewer** — tap to open in fullscreen, rotates to landscape on mobile
-- **Native video fullscreen** — clips open in the platform's own player (iOS, macOS, Android, desktop browsers)
+- **Fullscreen image viewer** — tap to open in fullscreen, rotates to landscape on mobile, with pinch-to-zoom, pan, double-tap and mouse wheel zoom
+- **Video clip fullscreen** — the card's own overlay by default (keeps your place in the clip); optionally the platform's native player via `gallery_fullscreen: video`
 - Timeline thumbnails with lazy loading
 - Day grouping
 - Filename timestamp parsing
@@ -83,6 +90,7 @@ FileTrack is a fork of the archived [files integration by TarheelGrad1998](https
 - **Favorites** — star any item with a tap; filter the timeline to show only favorites
 - **Prev / next + keyboard navigation** — arrow buttons in the fullscreen viewer, plus <kbd>←</kbd>/<kbd>→</kbd> on desktop
 - **Runtime mute pill** — tap-to-mute pill on the video preview, independent of the global auto-mute toggle
+- **Custom menu actions** — add your own entries to the long-press menu that call a Home Assistant action with the item's path or URL (see [Custom menu actions](#custom-menu-actions))
 
 <img width="490" height="407" alt="Scherm­afbeelding 2026-03-29 om 17 05 49" src="https://github.com/user-attachments/assets/6817a0ae-5d57-4ebf-8c8d-b5452c66ad66" />
 
@@ -137,18 +145,25 @@ A few notes on the generic walker:
 - **Aspect ratio toggle** — quickly switch between 16:9, 4:3 and 1:1, remembered per camera
 - Live badge
 - **Multiple live cameras** — configure several cameras and switch between them using chevron arrows
-- **Multi-camera grid layout** (`live_layout: grid`) — show all cameras at once, tap a tile to focus on one
+- **Multi-camera grid layout** (`live_layout: grid`) — show all cameras at once, tap a tile to focus on one. The grid shapes itself to the camera count so there are no empty cells, every tile keeps the card's configured aspect ratio, and the card's height adapts to fit. Pin the column count with `live_grid_columns`, or leave it automatic (narrow cards drop to fewer columns on their own). Control where the larger tiles land with `live_grid_emphasis`: `bottom` (default), `top`, or `hero`
 - **Multiple RTSP streams** — configure multiple named RTSP streams via `live_stream_urls`
 - **Offline camera placeholder** — unavailable cameras show a clear "offline" tile instead of a black frame
 - **Keyboard navigation** — <kbd>←</kbd>/<kbd>→</kbd> to switch between cameras in single layout
 - Default live camera
 - Camera friendly names and entity IDs in selector
 - Auto-teardown of stream + push-to-talk on view switch (no audio/bandwidth leak)
-- **Two-way audio (talkback)** — tap the mic pill in live view to speak through a camera's backchannel speaker. Per-camera, with tap-to-toggle or push-to-talk modes. *Advanced setup* — see [Two-way audio](#two-way-audio-advanced) below.
+- **Two-way audio (talkback)** — tap the mic pill in live view to speak through a camera's backchannel speaker. Per-camera, with tap-to-toggle or push-to-talk modes. Active talkback temporarily unmutes listening, then restores your previous setting; manual speaker choices take priority. *Advanced setup* — see [Two-way audio](#two-way-audio-advanced) below.
+
+Listening audio recovery reuses existing Home Assistant WebRTC receiver
+tracks to allow speaker unmute after muted startup. It depends on
+feature-detected player internals, so compatibility is not guaranteed across
+frontend versions. Browser autoplay policy can also block listening; retry
+with the speaker button and check **Debug → Listening audio**. Local automated
+tests do not establish real camera audio or device fullscreen behavior.
 
 ### Actions
 
-- **Menu buttons** — configure custom action buttons (toggle, navigate, perform action, etc.) accessible via a hamburger menu during live view
+- **Menu buttons** — configure custom action buttons (toggle, navigate, perform action, etc.) in the hamburger menu during live view, or directly among the live controls. A button on an `input_select` / `select` entity opens a list of its options (see [Live menu buttons](#live-menu-buttons))
 - Delete (sensor files + Frigate clips)
 - Multiple delete with red selection style
 - Download
@@ -169,6 +184,7 @@ A few notes on the generic walker:
   - All other sources (NAS, Blue Iris, etc.): first-frame capture
 - Sensor mode: first-frame capture
 - **Paired image + video** — when a snapshot and clip share the same filename stem they're shown as one item, with the image used as the thumbnail
+  - Snapshots stamped a few seconds off their clip pair too (Reolink FTP: `Cam_00_20261012111141.jpg` + `Cam_00_20261012111139.mp4`), when `path_datetime_format` dates both files, their names differ only in the timestamp digits, and the times are within 15s. A clip that started before the snapshot wins over a closer one that started after it
 
 ### Video controls
 
@@ -197,6 +213,7 @@ Features:
 - Controls mode dropdown (Overlay / Fixed)
 - Menu buttons tab — configure action buttons with entity, icon, label and on/off icon
 - Frigate URL field — set the direct Frigate API URL (shown in media and combined mode)
+- Deep-link id field — set `url_id` for notification deep-links, see [Notification deep-links](#notification-deep-links)
 - **Auto-detect path datetime format** — scans your sources and suggests a working format
 - Cleanup of legacy config keys
 - Live preview in the HA card picker
@@ -269,6 +286,137 @@ Then in the card editor: **General → Delete services → Frigate** → pick `r
 
 ---
 
+## Custom menu actions
+
+Add your own entries to the long-press (right-click) menu of a thumbnail. Each one calls a Home Assistant action, such as a script, with details of the pressed item. This lets you, for example, archive a recording to permanent storage without downloading it first. You can set them up in the editor's Gallery tab under **Long-press actions**, or in YAML.
+
+```yaml
+thumb_actions:
+  - name: Archive
+    icon: mdi:archive-arrow-down
+    perform_action: script.archive_clip
+    data:
+      path: "{path}"
+      media_id: "{media_id}"
+    confirmation: true
+```
+
+| Key | Description |
+|---|---|
+| `name` | Menu label (required) |
+| `icon` | MDI icon (default `mdi:gesture-tap-button`) |
+| `perform_action` | Action to call, in `domain.service` form (required) |
+| `data` | Action data. Placeholders below are filled in per item |
+| `target` | Optional action target (`entity_id`, `device_id`, `area_id`) |
+| `confirmation` | `true`, or `{ text: "..." }`, to ask before running |
+
+Placeholders, usable in any string inside `data` and `target`:
+
+| Placeholder | Value |
+|---|---|
+| `{path}` | Filesystem path on the HA host, when the card can derive it: `media-source://media_source/local/…` becomes `/media/…`, and `/local/…` becomes `/config/www/…`. Empty for other media folders and for integration sources such as Frigate or Reolink |
+| `{media_id}` | The item's own id: the `media-source://…` URI, or the sensor file path |
+| `{url}` | A URL the browser can open. For media-source items this is a signed, short-lived URL |
+| `{filename}` | The file name, e.g. `clip_2026-06-12_12-00-00.mp4` |
+
+The placeholders use single braces, so they never clash with `{{ }}` templates inside your script. A script receives the values as variables, for example:
+
+```yaml
+script:
+  archive_clip:
+    fields:
+      path:
+        description: File to archive
+    sequence:
+      - action: shell_command.archive_clip
+        data:
+          path: "{{ path }}"
+
+shell_command:
+  archive_clip: 'cp "{{ path }}" /media/archive/'
+```
+
+> [!NOTE]
+> If your media lives in a folder you added under `media_dirs` (anything other than `local`), the card can't see where that folder is on disk, so `{path}` stays empty. Pass `{media_id}` instead and map it to a path in your script.
+
+---
+
+## Live menu buttons
+
+`menu_buttons` adds action buttons to the live view. You can add them in the editor's Menu buttons tab or in YAML.
+
+```yaml
+menu_buttons:
+  - entity: input_select.doorbell_reply
+    icon: mdi:message-reply-text
+    title: Auto-reply
+    placement: controls        # show it among the live controls
+  - entity: light.porch
+    icon: mdi:lightbulb-outline
+    icon_on: mdi:lightbulb
+    color_on: "#f5a623"        # stays in the hamburger menu (the default)
+```
+
+| Key | Description |
+|---|---|
+| `entity` | Entity the button acts on (required) |
+| `icon` / `icon_on` | Icon, and the icon while the entity is "on" |
+| `color_on` / `color_off` | Button background while on / off |
+| `title` | Label (default: the entity's friendly name) |
+| `service` | Action to call instead of the default, in `domain.service` form. It is called with the button's `entity_id` |
+| `state_on` | State that counts as "on" (default: `on`, `open`, `unlocked`, `playing`, `home`, …) |
+| `placement` | `menu` (default) puts the button in the hamburger menu. `controls` shows it directly among the live control pills |
+
+What a tap does:
+
+- **`input_select` / `select` entities** open a list of their options, with the current one checked. Picking one calls `select_option`. This works well for things like a doorbell auto-reply message or a chime sound.
+- **Automations** are triggered, and **scripts** are run.
+- **Everything else** is toggled.
+- A `service`, when set, always wins over these defaults.
+
+In the editor's Menu buttons tab, turn on **Show among live controls** for a button to set `placement: controls`. Turn it off to move the button back into the hamburger menu.
+
+---
+
+## Notification deep-links
+
+Opt-in URL parameters so an HA notification action can open this exact card straight into live view or the gallery. Nothing here does anything until you set `url_id` — without it the card ignores the query string entirely, which matters because the query string is page-scoped and would otherwise be picked up by every camera-gallery-card on the dashboard at once.
+
+Set a `url_id` in the editor's **Source → View** section (or `url_id: porch` in YAML), then point a notification action at:
+
+```
+/lovelace/home?cgc_id=porch&cgc_camera=camera.porch_gate
+```
+
+| Parameter | Meaning |
+|---|---|
+| `cgc_id` | Must match the card's `url_id` exactly, or the whole query string is ignored |
+| `cgc_view` | `live` or `gallery` — which screen to open |
+| `cgc_camera` | An entry from the card's own live camera list — a camera entity, or a `live_stream_urls` stream — opens live view on that camera |
+
+A worked example, e.g. from a motion automation:
+
+```yaml
+action: notify.mobile_app_your_phone
+data:
+  message: "Motion at the porch"
+  data:
+    clickAction: "/lovelace/home?cgc_id=porch&cgc_camera=camera.porch_gate"
+```
+
+`?cgc_id=porch&cgc_view=gallery` opens the gallery on the newest clip regardless of `thumb_sort_order` — with one caveat: once a day has more items than `max_media` (default 50), the gallery only ever holds the oldest `max_media` of them under `oldest` sorting, so the deep link lands on the newest clip *within that truncated window*, not necessarily the day's actual newest clip. That truncation applies to `oldest` sorting generally, deep link or not.
+
+> [!NOTE]
+> `cgc_camera` only works together with live view. The gallery's sources are configured separately from the live camera list, and the card has no camera-to-clip mapping, so a camera can't filter the gallery. Passing `cgc_camera` therefore implies live view — and an explicit `cgc_view=gallery` makes `cgc_camera` be ignored.
+
+> [!NOTE]
+> Deep links apply when the card first initializes on page load. Navigating to the same URL within an already-open dashboard may not re-run that initialization, since Home Assistant is a single-page app — for a reliable deep link, the notification should open the dashboard fresh (e.g. via `clickAction`) rather than assume a tab already on the dashboard will react.
+
+> [!NOTE]
+> All of `cgc_id`, `cgc_view`, and `cgc_camera` are case-sensitive. `cgc_view=Gallery` isn't recognized as `gallery` — and if a camera is also present, that falls through to opening *live* instead, the opposite of what a mistyped gallery link probably intended. And if more than one card on the dashboard shares the same `url_id`, they'll all react to the same query string at once — keep `url_id` unique per card.
+
+---
+
 ## Configuration options
 
 <details>
@@ -284,8 +432,11 @@ Then in the card editor: **General → Delete services → Frigate** → pick `r
 | `max_media` | Max media items |
 | **Frigate** | |
 | `frigate_url` | Optional direct Frigate REST API URL (e.g. `http://192.168.1.x:5000`). If omitted, the card uses the HA Frigate integration via WebSocket |
+| `frigate_cameras` | Server-side camera filter for Frigate sources (list of camera names, e.g. `[frontdoor]`). Empty/omitted means all cameras — Frigate's own default. Works with both the WS and REST (`frigate_url`) paths |
+| `frigate_labels` | Server-side label filter for Frigate sources (list of labels, e.g. `[cat]`). Empty/omitted means all labels |
 | **Gallery view** | |
 | `start_mode` | Default view: `gallery` or `live` |
+| `url_id` | Opt-in id for notification deep-links. See [Notification deep-links](#notification-deep-links) |
 | `preview_position` | `top` or `bottom` |
 | `clean_mode` | Hide overlays when preview is closed |
 | `object_fit` | Media display mode: `cover` or `contain` |
@@ -305,20 +456,28 @@ Then in the card editor: **General → Delete services → Frigate** → pick `r
 | `live_camera_entities` | Camera entities visible in the live picker |
 | `live_layout` | `single` or `grid` (multi-camera) |
 | `live_fullscreen` | `card` (default, keeps pills, PTZ and zoom) or `video` (platform player) |
+| `tap_action` | Action fired when the single-camera live preview is tapped, using standard HA action syntax: `more-info`, `toggle`, `perform-action`, `navigate`, `url` (plus `confirmation`, `target`, `data`), `none`, or the card's own `fullscreen`, `snapshot`, `refresh`. Unset keeps the default behaviour |
 | `live_grid_labels` | Show camera name labels in grid mode |
+| `live_grid_columns` | Pin the grid's column count (1–8). Omit for automatic — narrow cards automatically use fewer columns |
+| `live_grid_emphasis` | Where the larger tiles land: `bottom` (default), `top`, or `hero`. See [Multi-camera grid layout](#live-view) |
 | `live_stream_urls` | Array of named RTSP streams: `[{url, name}]` |
 | `live_auto_muted` | Auto-mute audio in live view |
 | `controls_mode` | Live controls display: `overlay` or `fixed` |
 | `show_camera_title` | Show camera name in controls bar |
 | `persistent_controls` | Always show controls (don't fade out) |
-| `menu_buttons` | Configurable action buttons in the hamburger menu |
+| `menu_buttons` | Configurable action buttons in the hamburger menu or among the live controls. See [Live menu buttons](#live-menu-buttons) |
 | `live_mic_streams` | Per-camera map of go2rtc backchannel streams. See [Two-way audio](#two-way-audio-advanced) |
+| `live_native_talk` | Use Home Assistant's own two-way audio (2026.11+) for cameras that support it and have no go2rtc mic stream (default: `true`) |
 | `live_go2rtc_stream` | Legacy single-camera fallback for talkback |
 | `live_go2rtc_url` | Optional direct go2rtc URL for the live video fast-path |
 | `live_mic_mode` | Mic interaction model: `toggle` (default) or `ptt` |
 | `live_mic_audio_processing` | Per-mic Web Audio constraints |
 | `live_mic_ice_servers` | Advanced. Override built-in STUN list with custom STUN/TURN |
 | `live_mic_force_relay` | Advanced. Force `iceTransportPolicy: "relay"` (TURN-only) |
+| `live_ptz_enabled` | Enable the PTZ joystick overlay |
+| `live_ptz_position` | PTZ overlay corner: `top-left`, `top-right`, `bottom-left`, or `bottom-right` |
+| `live_ptz_speed` | Global PTZ speed (1–9) for integrations that support it |
+| `live_ptz_cameras` | Per-camera PTZ configuration, including built-in and manual-service dispatchers. See [Manual service PTZ](#manual-service-ptz) |
 | **Filters** | |
 | `object_filters` | Filter buttons (built-in and custom) |
 | `object_colors` | Color per object filter |
@@ -327,6 +486,8 @@ Then in the card editor: **General → Delete services → Frigate** → pick `r
 | `frigate_delete_service` | Frigate clip delete service (`rest_command.*`) |
 | `delete_confirm` | Show confirmation before deleting (default: `true`) |
 | `allow_bulk_delete` | Enable bulk delete (default: `true`) |
+| **Thumbnail menu** | |
+| `thumb_actions` | Extra long-press menu entries that call an HA action. See [Custom menu actions](#custom-menu-actions) |
 | **Layout & misc** | |
 | `card_height` | Card height in px |
 | `pill_size` | Pill text size (px) — pills scale around this |
@@ -359,6 +520,50 @@ live_mic_mode: ptt        # press-and-hold; omit for tap-to-toggle
 ```
 
 See [Two-way audio (advanced)](#two-way-audio-advanced) for prerequisites and TURN setup.
+
+### Manual service PTZ
+
+For cameras controlled by a script or another Home Assistant service, use `type: service`. The format mirrors the custom PTZ configuration in `custom:webrtc-camera`:
+
+```yaml
+type: custom:camera-gallery-card
+live_enabled: true
+live_camera_entities:
+  - camera.some_camera_with_ptz
+live_ptz_enabled: true
+live_ptz_cameras:
+  camera.some_camera_with_ptz:
+    type: service
+    service: script.camera_ptz
+    data_left:
+      direction: directionleft
+    data_right:
+      direction: directionright
+    data_up:
+      direction: directionup
+    data_down:
+      direction: directiondown
+```
+
+The card passes the selected `data_*` object unchanged to the configured service. The simple `data_left`/`data_right`/`data_up`/`data_down` form is pulse-based: a command is sent immediately and repeated while the joystick is held.
+
+For services that start continuous movement, use WebRTC Camera's press/release form instead. The card sends `data_start_*` once when pressed and the matching `data_end_*` once when released:
+
+```yaml
+live_ptz_cameras:
+  camera.some_camera_with_ptz:
+    type: service
+    service: icsee_ptz.move
+    data_start_left:
+      entity_id: binary_sensor.some_camera_motion_alarm
+      cmd: DirectionLeft
+    data_end_left:
+      entity_id: binary_sensor.some_camera_motion_alarm
+      cmd: Stop
+    # Repeat start/end entries for right, up, and down.
+```
+
+Optional `data_zoom_in` and `data_zoom_out` objects together enable the zoom control; `data_home` enables the Home control. Service data may contain strings, numbers, booleans, and nested values. The visual editor exposes these objects as JSON fields; YAML uses the normal mapping syntax shown above.
 
 ### Minimal — sensor mode
 
@@ -400,6 +605,44 @@ object_filters:
   - person
   - car
 ```
+
+### Frigate, scoped to one camera
+
+Multiple cameras configured in Frigate, but this card instance should only
+ever show one of them (e.g. a dedicated per-camera dashboard page)?
+`frigate_cameras` / `frigate_labels` filter server-side, before the gallery
+ever sees the other cameras' events — unlike `object_filters`, which only
+controls which filter *buttons* are shown and has to be tapped manually.
+
+```yaml
+type: custom:camera-gallery-card
+source_mode: media
+media_sources:
+  - media-source://frigate/main/event-search/clips
+frigate_cameras:
+  - frig_kittycam_coral
+frigate_labels:
+  - cat
+live_enabled: true
+live_camera_entities:
+  - camera.frig_kittycam_coral
+```
+
+Grid mode, showing all cameras at once instead of one at a time:
+
+```yaml
+live_layout: grid
+live_grid_columns: 2 # optional — omit to let the grid shape itself to the camera count
+live_grid_emphasis: hero # optional — bottom (default), top, or hero
+```
+
+> [!NOTE]
+> Upgrading from an older version? The grid used to force a square (2x2, 3x3, 4x4), leaving dead cells at any camera count that wasn't a perfect square. It now shapes itself to the camera count instead, and the card's **height changes to match** — most counts other than 4, 9 and 16 will look taller, shorter or wider than before. Three cameras, for example, becomes a single wide row. No cell is ever left empty.
+
+> [!NOTE]
+> `live_grid_emphasis` has two rough edges worth knowing about:
+> - `top` has no visible effect at e.g. 2, 3, 4, 6, 9, 12 or 16 cameras — at those counts every row already holds the same number of tiles, so there's no size difference to move.
+> - `hero`'s supporting strip gets thin above roughly 8 cameras (at 9 cameras each supporting tile is 1/8 of the width). Pin `live_grid_columns` to fix the shape — `hero` with `live_grid_columns: 4` on 9 cameras gives one hero tile plus two rows of four.
 
 ### Reolink NVR / Doorbell / camera
 
@@ -483,6 +726,8 @@ bicycle · bird · bus · car · cat · dog · motorcycle · person · truck · 
 ```
 
 Custom filters with a custom icon can be added via the editor.
+
+A filter matches when its name (or an alias, such as `persoon` for `person`) appears anywhere in the filename or media title. A file tagged with several objects, like `frontdoor_1200_motorcycle_person.mp4`, shows up under each of them. Its thumbnail badge uses the first match in your filter order.
 
 Object filter colors can be assigned per filter type in the editor.
 
@@ -597,7 +842,21 @@ Check that the `shell_command` or `rest_command` you point to is actually define
 
 ## Two-way audio (advanced)
 
-Two-way audio (talkback) lets you speak through a camera's backchannel speaker from the live view. Setup is more involved than the rest of the card — read this if you want to enable it.
+Two-way audio (talkback) lets you speak through a camera's backchannel speaker from the live view. There are two ways to set it up.
+
+### Home Assistant two-way audio (2026.11 and newer, easiest)
+
+Home Assistant 2026.11 can send your microphone to the camera itself. When it does, the card's talk button just works for that camera, with no go2rtc setup.
+
+1. Turn on **Settings → System → Labs → Two-way audio**.
+2. Use a camera whose integration supports it. At the time of writing that is Matter cameras and Reolink. Reolink must use **RTSP** (in the Reolink integration options), because RTMP and FLV can't carry audio back to the camera.
+3. Open Home Assistant over **HTTPS**. Browsers only allow the microphone on secure pages.
+
+The talk button appears on every camera for which Home Assistant reports two-way audio and that has no go2rtc mic stream set below. Toggle / push-to-talk and the button shape work the same. To turn it off, set `live_native_talk: false` (or switch off **Home Assistant two-way audio** in the editor's Two-way audio section).
+
+### go2rtc backchannel (any version)
+
+Setup is more involved than the rest of the card. A go2rtc mic stream set for a camera takes priority over Home Assistant's own two-way audio.
 
 **You need:**
 

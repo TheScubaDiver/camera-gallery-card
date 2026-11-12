@@ -83,6 +83,8 @@ export interface MenuButtonInput {
   title?: string;
   service?: string;
   state_on?: string;
+  /** `controls` = render among the live control pills (#215); absent = menu. */
+  placement?: string;
 }
 
 /**
@@ -101,7 +103,7 @@ export interface MenuButtonInput {
 /** One free-form HA service call used as a PTZ direction override. */
 interface PtzServiceCallInput {
   service?: string;
-  data?: Record<string, string>;
+  data?: Record<string, unknown>;
   target?: { entity_id?: string | string[] };
 }
 
@@ -124,6 +126,8 @@ export interface InputConfig {
   // ─── Media source ──────────────────────────────────────────
   media_sources?: string[] | string;
   frigate_url?: string;
+  frigate_cameras?: string[];
+  frigate_labels?: string[];
   frigate_thumb_bbox?: boolean;
   frigate_event_cluster?: boolean;
   frigate_event_cluster_gap_sec?: number;
@@ -144,10 +148,13 @@ export interface InputConfig {
   live_layout?: string;
   live_fullscreen?: string;
   live_grid_labels?: boolean;
+  live_grid_columns?: number;
+  live_grid_emphasis?: string;
   live_stream_url?: string;
   live_stream_name?: string;
   live_stream_urls?: LiveStreamUrlEntryInput[];
   live_go2rtc_url?: string;
+  tap_action?: { action: string; [key: string]: unknown };
   live_go2rtc_stream?: string;
   live_mic_mode?: string;
   live_mic_audio_processing?: {
@@ -171,6 +178,22 @@ export interface InputConfig {
       type?: string;
       button_prefix?: string;
       speed?: number;
+      service?: string;
+      data_left?: Record<string, unknown>;
+      data_right?: Record<string, unknown>;
+      data_up?: Record<string, unknown>;
+      data_down?: Record<string, unknown>;
+      data_start_left?: Record<string, unknown>;
+      data_end_left?: Record<string, unknown>;
+      data_start_right?: Record<string, unknown>;
+      data_end_right?: Record<string, unknown>;
+      data_start_up?: Record<string, unknown>;
+      data_end_up?: Record<string, unknown>;
+      data_start_down?: Record<string, unknown>;
+      data_end_down?: Record<string, unknown>;
+      data_zoom_in?: Record<string, unknown>;
+      data_zoom_out?: Record<string, unknown>;
+      data_home?: Record<string, unknown>;
       actions?: {
         up?: PtzActionPairInput;
         down?: PtzActionPairInput;
@@ -188,6 +211,16 @@ export interface InputConfig {
   allow_bulk_delete?: boolean;
   delete_confirm?: boolean;
   delete_service?: string;
+
+  // ─── Thumbnail menu ────────────────────────────────────────
+  thumb_actions?: {
+    name: string;
+    icon?: string;
+    perform_action: string;
+    data?: Record<string, unknown>;
+    target?: Record<string, unknown>;
+    confirmation?: boolean | { text?: string };
+  }[];
 
   // ─── Object filters ────────────────────────────────────────
   object_filters?: ObjectFilterEntry[] | ObjectFilterEntry | null;
@@ -221,10 +254,12 @@ export interface InputConfig {
   preview_position?: string;
   clean_mode?: boolean;
   preview_close_on_tap?: boolean;
+  fullscreen_zoom?: boolean;
 
   // ─── Misc ──────────────────────────────────────────────────
   max_media?: number;
   sync_entity?: string | null;
+  url_id?: string;
   menu_buttons?: MenuButtonInput[];
 
   // ─── Legacy aliases (rewritten in pre-migrate) ────────────
@@ -557,6 +592,7 @@ function preMigrateConfig(input: InputConfig): PreMigrated {
   trimOptionalString(out, "live_go2rtc_url");
   trimOptionalString(out, "live_go2rtc_stream");
   trimOptionalString(out, "sync_entity");
+  trimOptionalString(out, "url_id");
 
   // Defaulted-to-`""` string fields: trim, never delete.
   out.path_datetime_format = (out.path_datetime_format ?? "").trim();
@@ -580,6 +616,20 @@ function preMigrateConfig(input: InputConfig): PreMigrated {
   if (cams !== undefined) {
     out.live_camera_entities = Array.isArray(cams)
       ? cams.map((s: string) => s.trim()).filter((s) => s.length > 0)
+      : [];
+  }
+
+  // frigate_cameras / frigate_labels: trim + drop empties, same as above.
+  const frigateCams = outAny["frigate_cameras"];
+  if (frigateCams !== undefined) {
+    outAny["frigate_cameras"] = Array.isArray(frigateCams)
+      ? frigateCams.map((s: string) => String(s ?? "").trim()).filter((s) => s.length > 0)
+      : [];
+  }
+  const frigateLabels = outAny["frigate_labels"];
+  if (frigateLabels !== undefined) {
+    outAny["frigate_labels"] = Array.isArray(frigateLabels)
+      ? frigateLabels.map((s: string) => String(s ?? "").trim()).filter((s) => s.length > 0)
       : [];
   }
 
