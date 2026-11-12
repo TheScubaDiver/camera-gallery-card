@@ -25,11 +25,13 @@ import {
   string,
   type,
   union,
+  unknown as unknownValue,
 } from "superstruct";
 import type { Struct } from "superstruct";
 
 import {
   ASPECT_RATIOS,
+  TAP_ACTIONS,
   AVAILABLE_OBJECT_FILTERS,
   BAR_OPACITY_MAX,
   BAR_OPACITY_MIN,
@@ -43,6 +45,7 @@ import {
   DEFAULT_THUMB_OFF_OPACITY,
   DEFAULT_BAR_POSITION,
   DEFAULT_FRIGATE_THUMB_BBOX,
+  DEFAULT_FULLSCREEN_ZOOM,
   DEFAULT_FRIGATE_EVENT_CLUSTER,
   DEFAULT_FRIGATE_EVENT_CLUSTER_GAP_SEC,
   FRIGATE_EVENT_CLUSTER_GAP_SEC_MAX,
@@ -67,6 +70,7 @@ import {
   DEFAULT_THUMB_SORT_ORDER,
   DEFAULT_THUMBNAIL_FRAME_PCT,
   DEFAULT_LIVE_LAYOUT,
+  LIVE_GRID_EMPHASES,
   LIVE_LAYOUTS,
   MIC_MODES,
   PTZ_SPEED_DEFAULT,
@@ -116,6 +120,16 @@ const serviceId = refine(string(), "service_id", (v) =>
   v === "" || /^[a-z0-9_]+\.[a-z0-9_]+$/i.test(v)
     ? true
     : `must be in 'domain.service' form (got '${v}')`
+);
+
+/**
+ * Short slug for `url_id` (issue #218) — letters, digits, `_`, `-`, capped
+ * at 64 chars. This value is compared against a notification-supplied URL
+ * query param, so it's kept to an unambiguous shape rather than accepting
+ * arbitrary text a notification author could mistype or mis-encode.
+ */
+const urlIdSlug = refine(string(), "url_id", (v) =>
+  /^[a-z0-9_-]{1,64}$/i.test(v) ? true : `must be a short slug of letters/digits/-/_ (got '${v}')`
 );
 
 /**
@@ -238,6 +252,23 @@ const ptzActionPair = object({
 });
 
 /**
+ * Home Assistant-style action config, fired when the live preview is tapped.
+ * Standard HA actions plus the card's own `fullscreen` / `snapshot` / `refresh`.
+ * Loose (`type`) so action-specific keys (`perform_action`, `target`, `data`,
+ * `navigation_path`, `url_path`, ...) pass through untouched.
+ */
+const tapAction = type({
+  action: enums(TAP_ACTIONS),
+  entity: optional(string()),
+  perform_action: optional(string()),
+  service: optional(string()),
+  navigation_path: optional(string()),
+  navigation_replace: optional(boolean()),
+  url_path: optional(string()),
+  confirmation: optional(union([boolean(), type({ text: optional(string()) })])),
+});
+
+/**
  * Per-direction overrides. Each is optional — directions without an
  * override fall through to the type-specific built-in dispatcher
  * (auto-detected button entity for EZVIZ/Reolink, `frigate.ptz` for
@@ -305,6 +336,23 @@ const ptzCamera = type({
   speed: optional(intInRange(PTZ_SPEED_MIN, PTZ_SPEED_MAX)),
   actions: optional(ptzActions),
   buttons: optional(ptzButtons),
+  /** WebRTC Camera-compatible manual service dispatcher. */
+  service: optional(nonEmptyString),
+  data_left: optional(record(string(), unknownValue())),
+  data_right: optional(record(string(), unknownValue())),
+  data_up: optional(record(string(), unknownValue())),
+  data_down: optional(record(string(), unknownValue())),
+  data_start_left: optional(record(string(), unknownValue())),
+  data_end_left: optional(record(string(), unknownValue())),
+  data_start_right: optional(record(string(), unknownValue())),
+  data_end_right: optional(record(string(), unknownValue())),
+  data_start_up: optional(record(string(), unknownValue())),
+  data_end_up: optional(record(string(), unknownValue())),
+  data_start_down: optional(record(string(), unknownValue())),
+  data_end_down: optional(record(string(), unknownValue())),
+  data_zoom_in: optional(record(string(), unknownValue())),
+  data_zoom_out: optional(record(string(), unknownValue())),
+  data_home: optional(record(string(), unknownValue())),
 });
 
 /** Menu button entry — same strictness rationale as `liveStreamUrlEntry`. */
@@ -344,6 +392,11 @@ export const cameraGalleryCardConfigStruct = type({
   // ─── Media source ──────────────────────────────────────────
   media_sources: defaulted(array(string()), []),
   frigate_url: optional(string()),
+  // Server-side camera/label scoping for Frigate sources (REST and WS both
+  // support this natively) — empty means "all", matching Frigate's own
+  // default. See `fetchFrigateEvents` / `fetchFrigateEventsViaWs`.
+  frigate_cameras: defaulted(array(string()), []),
+  frigate_labels: defaulted(array(string()), []),
   frigate_thumb_bbox: defaulted(boolean(), DEFAULT_FRIGATE_THUMB_BBOX),
   frigate_event_cluster: defaulted(boolean(), DEFAULT_FRIGATE_EVENT_CLUSTER),
   frigate_event_cluster_gap_sec: defaulted(
@@ -420,10 +473,21 @@ export const cameraGalleryCardConfigStruct = type({
   live_camera_entities: defaulted(array(string()), []),
   live_layout: defaulted(enums(LIVE_LAYOUTS), DEFAULT_LIVE_LAYOUT),
   live_grid_labels: defaulted(boolean(), true),
+  // Pin the grid's column count. Absent = automatic (see gridLayout in
+  // src/data/live-config.ts). Capped at 8 — beyond that tiles are unusably
+  // small on any real dashboard.
+  live_grid_columns: optional(intInRange(1, 8)),
+  // Which row(s) render larger — see gridLayout in src/data/live-config.ts.
+  // Absent = "bottom" (today's default shape); left optional rather than
+  // defaulted so an unset config round-trips without gaining the key.
+  live_grid_emphasis: optional(enums(LIVE_GRID_EMPHASES)),
   live_stream_url: optional(string()),
   live_stream_name: optional(string()),
   live_stream_urls: optional(array(liveStreamUrlEntry)),
   live_go2rtc_url: optional(string()),
+  // Action fired when the single-camera live preview is tapped (HA action
+  // syntax). Unset keeps the built-in behaviour (show the quick-switch button).
+  tap_action: optional(tapAction),
   live_go2rtc_stream: optional(string()),
   live_mic_mode: defaulted(enums(MIC_MODES), DEFAULT_LIVE_MIC_MODE),
   live_mic_audio_processing: optional(liveMicAudioProcessing),
@@ -519,10 +583,16 @@ export const cameraGalleryCardConfigStruct = type({
   preview_position: defaulted(enums(PREVIEW_POSITIONS), DEFAULT_PREVIEW_POSITION),
   clean_mode: defaulted(boolean(), false),
   preview_close_on_tap: defaulted(boolean(), false),
+  fullscreen_zoom: defaulted(boolean(), DEFAULT_FULLSCREEN_ZOOM),
 
   // ─── Misc ──────────────────────────────────────────────────
   max_media: defaulted(intInRange(MAX_MEDIA_MIN, MAX_MEDIA_MAX), DEFAULT_MAX_MEDIA),
   sync_entity: optional(string()),
+  // Deep-link id (issue #218) — a notification action links in via
+  // `?cgc_id=<url_id>&cgc_view=…&cgc_camera=…`. Absent/empty means the
+  // card ignores URL params entirely (opt-in, since the query string is
+  // page-scoped and would otherwise hit every card on the dashboard).
+  url_id: optional(urlIdSlug),
   menu_buttons: defaulted(array(menuButton), []),
 });
 
