@@ -2,8 +2,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   armWebkitExitResume,
+  captureHandoff,
+  galleryFullscreenTarget,
+  handoffStartTime,
   liveFullscreenTarget,
   pickVideoFullscreen,
+  sameMediaUrl,
   shouldResumeAfterExit,
 } from "./video-fullscreen";
 
@@ -155,5 +159,62 @@ describe("liveFullscreenTarget", () => {
 
   it("falls back to the card path when element fullscreen is unavailable", () => {
     expect(liveFullscreenTarget("video", false, plainVideo, false)).toBe("card");
+  });
+});
+
+describe("galleryFullscreenTarget", () => {
+  const iosVideo = { webkitSupportsFullscreen: true, webkitEnterFullscreen: noop };
+  const desktopVideo = { requestFullscreen: noop };
+
+  it("keeps the card overlay by default", () => {
+    expect(galleryFullscreenTarget(undefined, iosVideo, true)).toBe("overlay");
+    expect(galleryFullscreenTarget("overlay", desktopVideo, true)).toBe("overlay");
+  });
+
+  it("uses the platform player when gallery_fullscreen is video", () => {
+    expect(galleryFullscreenTarget("video", iosVideo, false)).toBe("webkit");
+    expect(galleryFullscreenTarget("video", desktopVideo, true)).toBe("standard");
+  });
+
+  it("falls back to the overlay where no native fullscreen exists", () => {
+    expect(galleryFullscreenTarget("video", {}, false)).toBe("overlay");
+    expect(galleryFullscreenTarget("video", null, true)).toBe("overlay");
+  });
+});
+
+describe("playback handoff", () => {
+  it("captures position, play state and rate", () => {
+    expect(
+      captureHandoff({
+        currentSrc: "https://ha/x.mp4",
+        currentTime: 12.5,
+        paused: false,
+        ended: false,
+        playbackRate: 1.5,
+      })
+    ).toEqual({ src: "https://ha/x.mp4", time: 12.5, playing: true, rate: 1.5 });
+    expect(captureHandoff({ src: "/x.mp4", currentTime: 3, paused: true })).toMatchObject({
+      playing: false,
+      rate: 1,
+    });
+    expect(captureHandoff({ currentTime: 3 })).toBeNull();
+    expect(captureHandoff(null)).toBeNull();
+  });
+
+  it("compares relative and absolute URLs of the same file", () => {
+    expect(sameMediaUrl("/media/a.mp4?authSig=1", "http://localhost/media/a.mp4?authSig=1")).toBe(
+      true
+    );
+    expect(sameMediaUrl("/media/a.mp4", "/media/b.mp4")).toBe(false);
+    expect(sameMediaUrl("", "/media/a.mp4")).toBe(false);
+  });
+
+  it("continues where the preview was, unless at the end", () => {
+    const h = { src: "/a.mp4", time: 42, playing: true, rate: 1 };
+    expect(handoffStartTime(h, 120)).toBe(42);
+    expect(handoffStartTime({ ...h, time: 119.8 }, 120)).toBe(0);
+    expect(handoffStartTime({ ...h, time: 0 }, 120)).toBe(0);
+    expect(handoffStartTime(null, 120)).toBe(0);
+    expect(handoffStartTime(h, NaN)).toBe(42);
   });
 });

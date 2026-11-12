@@ -96,8 +96,11 @@ import { WebRtcMicClient } from "./data/webrtc-mic";
 import { syncLiveAudio } from "./data/live-audio";
 import {
   armWebkitExitResume,
+  captureHandoff,
+  galleryFullscreenTarget,
+  handoffStartTime,
+  sameMediaUrl,
   liveFullscreenTarget,
-  pickVideoFullscreen,
   shouldResumeAfterExit,
 } from "./data/video-fullscreen";
 import {
@@ -324,6 +327,7 @@ class CameraGalleryCard extends LitElement {
     this._previewVideoEl = null;
     this._videoFsWasPlaying = false;
     this._videoLastPauseAt = null;
+    this._imgFsHandoff = null;
     this._prefetchKey = "";
     this._selectedPreviewSrc = "";
     this._deleted = new Set();
@@ -2781,7 +2785,9 @@ class CameraGalleryCard extends LitElement {
 
   _openVideoFullscreen() {
     const video = this._previewVideoEl;
-    const mode = pickVideoFullscreen(video, !!document.fullscreenEnabled);
+    // The card overlay is the default; `gallery_fullscreen: video` opts in to
+    // the platform player.
+    const mode = galleryFullscreenTarget(this.config?.gallery_fullscreen, video, !!document.fullscreenEnabled);
     if (mode === "overlay") {
       this._openImageFullscreen();
       return;
@@ -2817,6 +2823,9 @@ class CameraGalleryCard extends LitElement {
 
   _openImageFullscreen() {
     this._resetZoom();
+    // Hand the clip's position to the overlay's own <video> so it continues
+    // instead of restarting (applied on loadedmetadata, see _applyImgFsHandoff).
+    this._imgFsHandoff = captureHandoff(this._previewVideoEl);
     this._imgFsOpen = true;
     try { this._previewVideoEl?.pause(); } catch (_) {}
     try { screen.orientation?.lock?.("landscape"); } catch (_) {}
@@ -2843,12 +2852,39 @@ class CameraGalleryCard extends LitElement {
 
   _closeImageFullscreen() {
     this._resetZoom();
+    this._handBackImgFsPlayback();
     this._imgFsOpen = false;
     if (this._onImgFsKeydown) {
       window.removeEventListener("keydown", this._onImgFsKeydown);
     }
     try { screen.orientation?.unlock?.(); } catch (_) {}
     this.requestUpdate();
+  }
+
+  // Continue the preview's playback in the overlay video (same clip only).
+  _applyImgFsHandoff(video) {
+    const handoff = this._imgFsHandoff;
+    this._imgFsHandoff = null;
+    if (!handoff || !sameMediaUrl(handoff.src, video.currentSrc || video.src, location.href)) return;
+    const start = handoffStartTime(handoff, video.duration);
+    if (start > 0) {
+      try { video.currentTime = start; } catch (_) {}
+    }
+    video.playbackRate = handoff.rate;
+    if (handoff.playing) video.play().catch(() => {});
+    else video.pause();
+  }
+
+  // Closing the overlay: hand its position back to the preview video.
+  _handBackImgFsPlayback() {
+    this._imgFsHandoff = null;
+    const overlay = this.renderRoot?.querySelector(".img-fs-overlay video");
+    const preview = this._previewVideoEl;
+    if (!overlay || !preview) return;
+    if (!sameMediaUrl(overlay.currentSrc || overlay.src, preview.currentSrc || preview.src, location.href)) return;
+    try { preview.currentTime = overlay.currentTime; } catch (_) {}
+    preview.playbackRate = overlay.playbackRate;
+    if (!overlay.paused && !overlay.ended) preview.play().catch(() => {});
   }
 
   _syncCurrentMedia(src) {
@@ -7026,7 +7062,11 @@ class CameraGalleryCard extends LitElement {
             }
           }}>
             ${selectedIsVideo
-              ? html`<video src=${selectedUrl} controls autoplay playsinline ?muted=${this._galleryMuted} @click=${(e) => e.stopPropagation()}></video>`
+              ? html`<video src=${selectedUrl} controls playsinline
+                  ?autoplay=${this._imgFsHandoff ? this._imgFsHandoff.playing : true}
+                  ?muted=${this._galleryMuted}
+                  @loadedmetadata=${(e) => this._applyImgFsHandoff(e.currentTarget)}
+                  @click=${(e) => e.stopPropagation()}></video>`
               : html`<img src=${selectedUrl} alt=""
                   @click=${(e) => e.stopPropagation()}
                   @dblclick=${(e) => {
@@ -7151,7 +7191,7 @@ const CGC_CONFIG_KEY_ORDER = [
   "path_datetime_format", "max_media",
   // ─── Gallery ───
   "start_mode", "url_id", "preview_position", "preview_height", "object_fit",
-  "controls_mode", "clean_mode", "fullscreen_zoom", "show_camera_title", "persistent_controls",
+  "controls_mode", "clean_mode", "fullscreen_zoom", "gallery_fullscreen", "show_camera_title", "persistent_controls",
   "autoplay", "auto_muted",
   "show_today", "show_media_filter", "show_favorite", "show_live",
   // ─── Live ───
@@ -9597,6 +9637,14 @@ class CameraGalleryCardEditor extends HTMLElement {
                 <label class="cgc-switch"><input type="checkbox" id="auto_muted"><span class="cgc-track"></span></label>
               </div>
             </div>
+          </div>
+        </div>
+        <div class="row">
+          <div class="lbl">Clip fullscreen</div>
+          <div class="desc"><code>Card</code> opens clips in the card's own fullscreen viewer, with the arrows and your place in the clip. <code>Video</code> hands the clip to the browser's or phone's own player (AirPlay, picture-in-picture, system gestures).</div>
+          <div class="segwrap">
+            <button class="seg ${c.gallery_fullscreen === "video" ? "" : "on"}" data-galleryfs="overlay">Card</button>
+            <button class="seg ${c.gallery_fullscreen === "video" ? "on" : ""}" data-galleryfs="video">Video</button>
           </div>
         </div>
       `;
@@ -14090,6 +14138,21 @@ details summary { user-select: none; }
           this._scheduleRender();
         } else {
           this._set("live_layout", val);
+        }
+        btn.closest(".segwrap")?.querySelectorAll(".seg").forEach((s) => s.classList.toggle("on", s === btn));
+      });
+    });
+
+    this.shadowRoot.querySelectorAll(".seg[data-galleryfs]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        if (btn.dataset.galleryfs === "video") {
+          this._set("gallery_fullscreen", "video");
+        } else {
+          // Overlay is the default — drop the key so the YAML stays minimal.
+          const next = { ...this._config };
+          delete next.gallery_fullscreen;
+          this._config = this._stripAlwaysTrueKeys(next);
+          this._fire();
         }
         btn.closest(".segwrap")?.querySelectorAll(".seg").forEach((s) => s.classList.toggle("on", s === btn));
       });

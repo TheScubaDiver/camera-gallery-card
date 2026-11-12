@@ -443,6 +443,7 @@ data:
 | `aspect_ratio` | Preview aspect ratio: `16:9`, `4:3`, or `1:1` |
 | `autoplay` | Auto-play videos in gallery |
 | `auto_muted` | Auto-mute videos in gallery |
+| `gallery_fullscreen` | Clip fullscreen: `overlay` (default, the card's viewer; continues where the clip was) or `video` (the platform's own player) |
 | **Thumbnails** | |
 | `thumb_layout` | `horizontal` or `vertical` |
 | `thumb_size` | Thumbnail size in px |
