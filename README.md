@@ -69,7 +69,7 @@ FileTrack is a fork of the archived [files integration by TarheelGrad1998](https
 ### Gallery
 
 - Image & video preview
-- **Fullscreen image viewer** — tap to open in fullscreen, rotates to landscape on mobile
+- **Fullscreen image viewer** — tap to open in fullscreen, rotates to landscape on mobile, with pinch-to-zoom, pan, double-tap and mouse wheel zoom
 - Timeline thumbnails with lazy loading
 - Day grouping
 - Filename timestamp parsing
@@ -168,6 +168,7 @@ A few notes on the generic walker:
   - All other sources (NAS, Blue Iris, etc.): first-frame capture
 - Sensor mode: first-frame capture
 - **Paired image + video** — when a snapshot and clip share the same filename stem they're shown as one item, with the image used as the thumbnail
+  - Snapshots stamped a few seconds off their clip pair too (Reolink FTP: `Cam_00_20261012111141.jpg` + `Cam_00_20261012111139.mp4`), when `path_datetime_format` dates both files, their names differ only in the timestamp digits, and the times are within 15s. A clip that started before the snapshot wins over a closer one that started after it
 
 ### Video controls
 
@@ -283,6 +284,8 @@ Then in the card editor: **General → Delete services → Frigate** → pick `r
 | `max_media` | Max media items |
 | **Frigate** | |
 | `frigate_url` | Optional direct Frigate REST API URL (e.g. `http://192.168.1.x:5000`). If omitted, the card uses the HA Frigate integration via WebSocket |
+| `frigate_cameras` | Server-side camera filter for Frigate sources (list of camera names, e.g. `[frontdoor]`). Empty/omitted means all cameras — Frigate's own default. Works with both the WS and REST (`frigate_url`) paths |
+| `frigate_labels` | Server-side label filter for Frigate sources (list of labels, e.g. `[cat]`). Empty/omitted means all labels |
 | **Gallery view** | |
 | `start_mode` | Default view: `gallery` or `live` |
 | `preview_position` | `top` or `bottom` |
@@ -303,6 +306,7 @@ Then in the card editor: **General → Delete services → Frigate** → pick `r
 | `live_camera_entity` | Default camera entity for live view |
 | `live_camera_entities` | Camera entities visible in the live picker |
 | `live_layout` | `single` or `grid` (multi-camera) |
+| `tap_action` | Action fired when the single-camera live preview is tapped, using standard HA action syntax: `more-info`, `toggle`, `perform-action`, `navigate`, `url` (plus `confirmation`, `target`, `data`), `none`, or the card's own `fullscreen`, `snapshot`, `refresh`. Unset keeps the default behaviour |
 | `live_grid_labels` | Show camera name labels in grid mode |
 | `live_stream_urls` | Array of named RTSP streams: `[{url, name}]` |
 | `live_auto_muted` | Auto-mute audio in live view |
@@ -445,6 +449,28 @@ live_layout: single
 object_filters:
   - person
   - car
+```
+
+### Frigate, scoped to one camera
+
+Multiple cameras configured in Frigate, but this card instance should only
+ever show one of them (e.g. a dedicated per-camera dashboard page)?
+`frigate_cameras` / `frigate_labels` filter server-side, before the gallery
+ever sees the other cameras' events — unlike `object_filters`, which only
+controls which filter *buttons* are shown and has to be tapped manually.
+
+```yaml
+type: custom:camera-gallery-card
+source_mode: media
+media_sources:
+  - media-source://frigate/main/event-search/clips
+frigate_cameras:
+  - frig_kittycam_coral
+frigate_labels:
+  - cat
+live_enabled: true
+live_camera_entities:
+  - camera.frig_kittycam_coral
 ```
 
 ### Reolink NVR / Doorbell / camera

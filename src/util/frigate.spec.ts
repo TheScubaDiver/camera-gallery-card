@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   FRIGATE_URI_PREFIX,
   fetchFrigateEvents,
+  fetchFrigateEventsViaWs,
   frigateEventIdMs,
   hasFrigateConfig,
   isFrigateRoot,
@@ -202,5 +203,102 @@ describe("fetchFrigateEvents", () => {
     ) as never;
     const out = await fetchFrigateEvents("http://frigate.local:5000", 100);
     expect(out).toEqual(events);
+  });
+
+  it("omits cameras/labels params when not provided (Frigate's 'all' default)", async () => {
+    const fetchMock = vi.fn(async (_url: string) => new Response("[]", { status: 200 }));
+    globalThis.fetch = fetchMock as never;
+    await fetchFrigateEvents("http://frigate.local:5000", 100);
+    const calledUrl = new URL(fetchMock.mock.calls[0]![0]);
+    expect(calledUrl.searchParams.has("cameras")).toBe(false);
+    expect(calledUrl.searchParams.has("labels")).toBe(false);
+    expect(calledUrl.searchParams.get("limit")).toBe("100");
+  });
+
+  it("adds comma-separated cameras/labels params when provided", async () => {
+    const fetchMock = vi.fn(async (_url: string) => new Response("[]", { status: 200 }));
+    globalThis.fetch = fetchMock as never;
+    await fetchFrigateEvents("http://frigate.local:5000", 100, {
+      cameras: ["frig_kittycam_coral"],
+      labels: ["cat"],
+    });
+    const calledUrl = new URL(fetchMock.mock.calls[0]![0]);
+    expect(calledUrl.searchParams.get("cameras")).toBe("frig_kittycam_coral");
+    expect(calledUrl.searchParams.get("labels")).toBe("cat");
+  });
+
+  it("joins multiple cameras/labels with commas and drops blank entries", async () => {
+    const fetchMock = vi.fn(async (_url: string) => new Response("[]", { status: 200 }));
+    globalThis.fetch = fetchMock as never;
+    await fetchFrigateEvents("http://frigate.local:5000", 100, {
+      cameras: ["cam_a", "  ", "cam_b"],
+      labels: ["cat", "dog"],
+    });
+    const calledUrl = new URL(fetchMock.mock.calls[0]![0]);
+    expect(calledUrl.searchParams.get("cameras")).toBe("cam_a,cam_b");
+    expect(calledUrl.searchParams.get("labels")).toBe("cat,dog");
+  });
+});
+
+describe("fetchFrigateEventsViaWs", () => {
+  it("returns null when hass or instanceId is missing", async () => {
+    expect(await fetchFrigateEventsViaWs(undefined, "frigate")).toBeNull();
+    expect(await fetchFrigateEventsViaWs({ callWS: vi.fn() as never }, null)).toBeNull();
+  });
+
+  it("sends only type/instance_id/has_clip when no filters are given", async () => {
+    const callWS = vi.fn(async () => []) as never;
+    await fetchFrigateEventsViaWs({ callWS }, "frigate", 10000);
+    expect(callWS).toHaveBeenCalledWith({
+      type: "frigate/events/get",
+      instance_id: "frigate",
+      has_clip: true,
+      limit: 10000,
+    });
+  });
+
+  it("passes cameras/labels through to the WS command as arrays", async () => {
+    const callWS = vi.fn(async () => []) as never;
+    await fetchFrigateEventsViaWs({ callWS }, "frigate", 10000, {
+      cameras: ["frig_kittycam_coral"],
+      labels: ["cat"],
+    });
+    expect(callWS).toHaveBeenCalledWith({
+      type: "frigate/events/get",
+      instance_id: "frigate",
+      has_clip: true,
+      limit: 10000,
+      cameras: ["frig_kittycam_coral"],
+      labels: ["cat"],
+    });
+  });
+
+  it("trims and drops blank entries from cameras/labels", async () => {
+    const callWS = vi.fn(async () => []) as never;
+    await fetchFrigateEventsViaWs({ callWS }, "frigate", 10000, {
+      cameras: [" frig_kittycam_coral ", ""],
+      labels: [],
+    });
+    expect(callWS).toHaveBeenCalledWith({
+      type: "frigate/events/get",
+      instance_id: "frigate",
+      has_clip: true,
+      limit: 10000,
+      cameras: ["frig_kittycam_coral"],
+    });
+  });
+
+  it("returns the parsed event array on success", async () => {
+    const events = [{ id: EVENT_ID, camera: "frig_kittycam_coral", label: "cat" }];
+    const callWS = vi.fn(async () => events) as never;
+    const out = await fetchFrigateEventsViaWs({ callWS }, "frigate");
+    expect(out).toEqual(events);
+  });
+
+  it("returns null when the WS call throws", async () => {
+    const callWS = vi.fn(async () => {
+      throw new Error("boom");
+    }) as never;
+    expect(await fetchFrigateEventsViaWs({ callWS }, "frigate")).toBeNull();
   });
 });

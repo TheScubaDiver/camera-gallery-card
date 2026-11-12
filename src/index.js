@@ -55,6 +55,7 @@ import {
 import {
   friendlyCameraName as liveFriendlyCameraName,
   getAllLiveCameraEntities,
+  getEditorCameraEntities,
   getGridCameraEntities,
   getLiveCameraEntityIds,
   getLiveCameraOptions,
@@ -106,6 +107,7 @@ import {
   DEFAULT_AUTOPLAY,
   DEFAULT_BAR_OPACITY,
   DEFAULT_CLEAN_MODE,
+  DEFAULT_FULLSCREEN_ZOOM,
   DEFAULT_DELETE_CONFIRM,
   DEFAULT_DELETE_SERVICE,
   DEFAULT_LIVE_AUTO_MUTED,
@@ -503,6 +505,7 @@ class CameraGalleryCard extends LitElement {
     this._zoomPanStartY = 0;
     this._zoomPanBaseX = 0;
     this._zoomPanBaseY = 0;
+    this._lastFsTapTime = 0;
 
 
     this._onLiveCameraKeydown = (e) => {
@@ -596,8 +599,22 @@ class CameraGalleryCard extends LitElement {
     };
 
     this._onZoomTouchStart = (e) => {
-      if (!this._isLiveActive() && !this._previewOpen) return;
+      if (!this._isZoomAllowed()) return;
       if (isGridLayout(this.config, this._liveLayoutOverride)) return;
+
+      // Handle double-tap zoom for fullscreen image
+      if (this._imgFsOpen && e.touches.length === 1) {
+        const now = Date.now();
+        const touch = e.touches[0];
+        if (now - (this._lastFsTapTime || 0) < 300) {
+          e.preventDefault();
+          this._lastFsTapTime = 0;
+          this._toggleFullscreenZoom(touch.clientX, touch.clientY);
+          return;
+        }
+        this._lastFsTapTime = now;
+      }
+
       if (e.touches.length === 2) {
         e.preventDefault();
         this._zoomIsPinching = true;
@@ -617,13 +634,13 @@ class CameraGalleryCard extends LitElement {
     };
 
     this._onZoomTouchMove = (e) => {
-      if (!this._isLiveActive() && !this._previewOpen) return;
+      if (!this._isZoomAllowed()) return;
       if (isGridLayout(this.config, this._liveLayoutOverride)) return;
       if (this._zoomIsPinching && e.touches.length >= 2) {
         e.preventDefault();
         const t = e.touches;
         const dist = Math.hypot(t[1].clientX - t[0].clientX, t[1].clientY - t[0].clientY);
-        this._zoomScale = Math.max(1, Math.min(5, this._zoomPinchScale * (dist / this._zoomPinchDist)));
+        this._zoomScale = Math.max(1, Math.min(8, this._zoomPinchScale * (dist / this._zoomPinchDist)));
         if (this._zoomScale <= 1) { this._zoomPanX = 0; this._zoomPanY = 0; }
         else this._clampZoomPan();
         this._applyZoom();
@@ -643,7 +660,7 @@ class CameraGalleryCard extends LitElement {
     };
 
     this._onZoomMouseDown = (e) => {
-      if ((!this._isLiveActive() && !this._previewOpen) || this._zoomScale <= 1) return;
+      if (!this._isZoomAllowed() || this._zoomScale <= 1) return;
       if (isGridLayout(this.config, this._liveLayoutOverride)) return;
       e.preventDefault();
       this._zoomIsPanning = true;
@@ -667,7 +684,7 @@ class CameraGalleryCard extends LitElement {
     };
 
     this._onZoomWheel = (e) => {
-      if (!this._isLiveActive() && !this._previewOpen) return;
+      if (!this._isZoomAllowed()) return;
       if (isGridLayout(this.config, this._liveLayoutOverride)) return;
       const host = this._getZoomHost();
       if (!host) return;
@@ -676,7 +693,7 @@ class CameraGalleryCard extends LitElement {
       e.preventDefault();
       const factor = e.deltaY > 0 ? 0.9 : 1.1;
       const oldScale = this._zoomScale;
-      const newScale = Math.max(1, Math.min(5, oldScale * factor));
+      const newScale = Math.max(1, Math.min(8, oldScale * factor));
       if (newScale !== oldScale) {
         const lcX = r.left + r.width / 2 - this._zoomPanX;
         const lcY = r.top + r.height / 2 - this._zoomPanY;
@@ -2024,7 +2041,16 @@ class CameraGalleryCard extends LitElement {
     this._applyZoom();
   }
 
+  _isZoomAllowed() {
+    if (this._imgFsOpen) return this.config?.fullscreen_zoom !== false;
+    if (this._isLiveActive() || this._previewOpen) return true;
+    return false;
+  }
+
   _getZoomHost() {
+    if (this._imgFsOpen && this.config?.fullscreen_zoom !== false) {
+      return this.renderRoot?.querySelector('.img-fs-overlay img');
+    }
     if (this._isLiveActive()) return this.renderRoot?.querySelector('#live-card-host');
     if (this._previewOpen) return this.renderRoot?.querySelector('#preview-video-host')
                                 ?? this.renderRoot?.querySelector('.pimg');
@@ -2043,8 +2069,10 @@ class CameraGalleryCard extends LitElement {
   _applyZoom() {
     const host = this._getZoomHost();
     const preview = this.renderRoot?.querySelector('.preview');
+    const fsOverlay = this.renderRoot?.querySelector('.img-fs-overlay');
     if (!host) {
       if (preview) { preview.style.touchAction = ''; preview.style.cursor = ''; }
+      if (fsOverlay) { fsOverlay.style.cursor = ''; }
       return;
     }
     if (this._zoomScale <= 1) {
@@ -2052,6 +2080,7 @@ class CameraGalleryCard extends LitElement {
       host.style.transformOrigin = '';
       if (this._isLiveActive()) host.style.cursor = '';
       if (preview) { preview.style.touchAction = ''; preview.style.cursor = ''; }
+      if (fsOverlay) { fsOverlay.style.cursor = ''; }
     } else {
       host.style.transformOrigin = 'center center';
       host.style.transform = `translate(${this._zoomPanX}px, ${this._zoomPanY}px) scale(${this._zoomScale})`;
@@ -2060,6 +2089,28 @@ class CameraGalleryCard extends LitElement {
         preview.style.touchAction = 'none';
         preview.style.cursor = this._zoomIsPanning ? 'grabbing' : 'grab';
       }
+      if (fsOverlay) {
+        fsOverlay.style.cursor = this._zoomIsPanning ? 'grabbing' : 'grab';
+      }
+    }
+  }
+
+  _toggleFullscreenZoom(clientX, clientY) {
+    const host = this._getZoomHost();
+    if (!host) return;
+    if (this._zoomScale > 1) {
+      this._resetZoom();
+    } else {
+      const r = host.getBoundingClientRect();
+      const newScale = 2.5;
+      const lcX = r.left + r.width / 2;
+      const lcY = r.top + r.height / 2;
+      const k = newScale;
+      this._zoomPanX = (clientX - lcX) * (1 - k);
+      this._zoomPanY = (clientY - lcY) * (1 - k);
+      this._zoomScale = newScale;
+      this._clampZoomPan();
+      this._applyZoom();
     }
   }
 
@@ -2391,6 +2442,7 @@ class CameraGalleryCard extends LitElement {
   }
 
   _openImageFullscreen() {
+    this._resetZoom();
     this._imgFsOpen = true;
     try { this._previewVideoEl?.pause(); } catch (_) {}
     try { screen.orientation?.lock?.("landscape"); } catch (_) {}
@@ -2416,6 +2468,7 @@ class CameraGalleryCard extends LitElement {
   }
 
   _closeImageFullscreen() {
+    this._resetZoom();
     this._imgFsOpen = false;
     if (this._onImgFsKeydown) {
       window.removeEventListener("keydown", this._onImgFsKeydown);
@@ -3743,7 +3796,76 @@ class CameraGalleryCard extends LitElement {
       return;
     }
 
+    if (this._runTapAction(path)) return;
+
     this._showLiveQuickSwitchButton();
+  }
+
+  // Fires `tap_action` (HA action syntax) for a tap on the single-camera live
+  // preview. Returns true when an action consumed the tap. Taps on pills / nav
+  // buttons keep their own behaviour, and grid tiles keep "tap to focus".
+  _runTapAction(path) {
+    const cfg = this.config?.tap_action;
+    if (!cfg || !cfg.action || cfg.action === "none") return false;
+    if (this.config?.live_layout === "grid" && this._liveLayoutOverride !== "single") return false;
+    if (
+      this._pathHasClass(path, "gallery-pill") ||
+      this._pathHasClass(path, "pnavbtn") ||
+      this._pathHasClass(path, "pnav") ||
+      this._pathHasClass(path, "live-hamburger-wrap")
+    ) return false;
+
+    if (cfg.confirmation) {
+      const text = (typeof cfg.confirmation === "object" && cfg.confirmation.text) || "Are you sure?";
+      if (!window.confirm(text)) return true;
+    }
+
+    const hass = this._hass;
+    const entity = cfg.entity || this._liveSelectedCamera;
+    switch (cfg.action) {
+      case "more-info":
+        if (!entity) return false;
+        this.dispatchEvent(new CustomEvent("hass-more-info", {
+          bubbles: true, composed: true, detail: { entityId: entity },
+        }));
+        return true;
+      case "toggle":
+        if (!entity) return false;
+        hass?.callService("homeassistant", "toggle", { entity_id: entity });
+        return true;
+      case "perform-action":
+      case "call-service": {
+        const svc = cfg.perform_action || cfg.service;
+        if (!svc || !svc.includes(".")) return false;
+        const [domain, name] = svc.split(".");
+        hass?.callService(domain, name, { ...(cfg.data || cfg.service_data || {}) }, cfg.target);
+        return true;
+      }
+      case "navigate":
+        if (!cfg.navigation_path) return false;
+        if (cfg.navigation_replace) history.replaceState(null, "", cfg.navigation_path);
+        else history.pushState(null, "", cfg.navigation_path);
+        window.dispatchEvent(new CustomEvent("location-changed", {
+          detail: { replace: !!cfg.navigation_replace },
+        }));
+        return true;
+      case "url":
+        // Refuse script-bearing schemes; http(s) and relative paths only.
+        if (!cfg.url_path || /^\s*(javascript|data|vbscript):/i.test(cfg.url_path)) return false;
+        window.open(cfg.url_path, "_blank", "noopener,noreferrer");
+        return true;
+      case "fullscreen":
+        this._toggleLiveFullscreen();
+        return true;
+      case "snapshot":
+        this._captureLiveSnapshot();
+        return true;
+      case "refresh":
+        this._refreshLiveStream();
+        return true;
+      default:
+        return false;
+    }
   }
 
   _toggleLiveMode() {
@@ -6145,10 +6267,24 @@ class CameraGalleryCard extends LitElement {
         ${this._renderDebugModal()}
 
         ${this._imgFsOpen && selectedUrl ? html`
-          <div class="img-fs-overlay" @click=${() => this._closeImageFullscreen()}>
+          <div class="img-fs-overlay" @click=${() => {
+            if (this._zoomScale > 1) {
+              this._resetZoom();
+            } else {
+              this._closeImageFullscreen();
+            }
+          }}>
             ${selectedIsVideo
               ? html`<video src=${selectedUrl} controls autoplay playsinline ?muted=${this._galleryMuted} @click=${(e) => e.stopPropagation()}></video>`
-              : html`<img src=${selectedUrl} alt="" @click=${(e) => e.stopPropagation()} />`}
+              : html`<img src=${selectedUrl} alt=""
+                  @click=${(e) => e.stopPropagation()}
+                  @dblclick=${(e) => {
+                    if (this.config?.fullscreen_zoom !== false) {
+                      e.stopPropagation();
+                      this._toggleFullscreenZoom(e.clientX, e.clientY);
+                    }
+                  }}
+                />`}
             ${filtered.length > 1 ? html`
               <div class="pnav img-fs-nav">
                 <button class="pnavbtn left" ?disabled=${idx <= 0} @pointerdown=${(e) => e.stopPropagation()} @click=${(e) => { e.stopPropagation(); this._navImgFs(-1, filtered.length); }}>
@@ -6256,13 +6392,13 @@ const CGC_CONFIG_KEY_ORDER = [
   "path_datetime_format", "max_media",
   // ─── Gallery ───
   "start_mode", "preview_position", "preview_height", "object_fit",
-  "controls_mode", "clean_mode", "show_camera_title", "persistent_controls",
+  "controls_mode", "clean_mode", "fullscreen_zoom", "show_camera_title", "persistent_controls",
   "autoplay", "auto_muted",
   "show_today", "show_media_filter", "show_favorite", "show_live",
   // ─── Live ───
   "live_enabled", "live_auto_muted", "live_cameras", "live_layout",
   "live_grid_labels", "live_stream_urls", "live_go2rtc_url",
-  "live_mic_mode", "live_mic_audio_processing",
+  "tap_action", "live_mic_mode", "live_mic_audio_processing",
   "live_mic_shape", "live_mic_button_position",
   "live_mic_waveform_enabled", "live_mic_waveform_sensitivity",
   "live_mic_ice_servers", "live_mic_force_relay",
@@ -7980,6 +8116,7 @@ class CameraGalleryCardEditor extends HTMLElement {
       c.live_auto_muted !== undefined ? c.live_auto_muted === true : DEFAULT_LIVE_AUTO_MUTED;
 
     const cleanMode = c.clean_mode === true;
+    const fullscreenZoom = c.fullscreen_zoom !== false;
     const persistentControls = c.persistent_controls === true;
 
     const liveEnabled = c.live_enabled === true;
@@ -7987,26 +8124,7 @@ class CameraGalleryCardEditor extends HTMLElement {
     const liveLayout = c.live_layout === "grid" ? "grid" : "single";
 
 
-    const cameraEntities = Object.keys(this._hass?.states || {})
-      .filter((id) => {
-        if (!id.startsWith("camera.")) return false;
-
-        const st = this._hass?.states?.[id];
-        if (!st) return false;
-
-        const state = String(st.state || "").toLowerCase();
-
-        return state !== "unavailable" && state !== "unknown";
-      })
-      .sort((a, b) => {
-        const an = String(
-          this._hass?.states?.[a]?.attributes?.friendly_name || a
-        ).toLowerCase();
-        const bn = String(
-          this._hass?.states?.[b]?.attributes?.friendly_name || b
-        ).toLowerCase();
-        return an.localeCompare(bn);
-      });
+    const cameraEntities = getEditorCameraEntities(this._hass?.states);
 
     const rootVars = `
       --ed-radius-panel: 18px;
@@ -8666,6 +8784,18 @@ class CameraGalleryCardEditor extends HTMLElement {
             </div>
             <div class="togrow">
               <label class="cgc-switch"><input type="checkbox" id="cleanmode" ${cleanMode ? "checked" : ""}><span class="cgc-track"></span></label>
+            </div>
+          </div>
+        </div>
+
+        <div class="row">
+          <div class="row-head">
+            <div>
+              <div class="lbl">Fullscreen zoom</div>
+              <div class="desc">Enable pinch-to-zoom, pan, double-tap and mouse wheel zoom in the fullscreen image viewer.</div>
+            </div>
+            <div class="togrow">
+              <label class="cgc-switch"><input type="checkbox" id="fullscreenzoom" ${fullscreenZoom ? "checked" : ""}><span class="cgc-track"></span></label>
             </div>
           </div>
         </div>
@@ -12314,6 +12444,10 @@ details summary { user-select: none; }
 
     $("cleanmode")?.addEventListener("change", (e) => {
       this._set("clean_mode", !!e.target.checked);
+    });
+
+    $("fullscreenzoom")?.addEventListener("change", (e) => {
+      this._set("fullscreen_zoom", !!e.target.checked);
     });
 
     $("capture-video-thumbnails")?.addEventListener("change", (e) => {
