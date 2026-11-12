@@ -280,7 +280,7 @@ Then in the card editor: **General → Delete services → Frigate** → pick `r
 
 ## Custom menu actions
 
-Add your own entries to the long-press (right-click) menu of a thumbnail. Each one calls a Home Assistant action, such as a script, with details of the pressed item. This lets you, for example, archive a recording to permanent storage without downloading it first. It is YAML-only for now.
+Add your own entries to the long-press (right-click) menu of a thumbnail. Each one calls a Home Assistant action, such as a script, with details of the pressed item. This lets you, for example, archive a recording to permanent storage without downloading it first. You can set them up in the editor's Gallery tab under **Long-press actions**, or in YAML.
 
 ```yaml
 thumb_actions:
