@@ -1,7 +1,8 @@
 /**
  * Sensor source data path. Reads `fileList` attributes off Home Assistant
  * sensor entities (typically created by FileTrack), normalizes paths to web
- * form, dedupes, pairs same-stem video/thumbnail siblings.
+ * form, dedupes, pairs same-stem video/thumbnail siblings (or, failing that,
+ * timestamp-adjacent ones — needs an `enrich` that attaches `dtMs`).
  *
  * Owns:
  * - `srcEntityMap: Map<src, entityId>` — drives delete-eligibility in

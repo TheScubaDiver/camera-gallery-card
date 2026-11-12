@@ -1,11 +1,25 @@
 import { describe, expect, it } from "vitest";
 
+import { THUMBNAIL_MATCH_WINDOW_MS } from "../const";
 import {
   dedupeByRelPath,
   pairMediaSourceThumbnails,
   pairSensorItems,
   pairVideoThumbnails,
 } from "./pairing";
+
+// Proximity fixtures: 2026-10-12 11:11:00 local, offsets in seconds. The
+// filenames below spell out the same instants so each case reads as the
+// files a camera would actually upload.
+const T0 = new Date(2026, 9, 12, 11, 11, 0).getTime();
+const at = (sec: number): number => T0 + sec * 1000;
+
+interface TimedItem {
+  id: string;
+  dtMs?: number | undefined;
+}
+const byId = (x: TimedItem): string => x.id;
+const byMs = (x: TimedItem): number | undefined => x.dtMs;
 
 describe("pairVideoThumbnails", () => {
   it("returns empty result for null/undefined/empty input", () => {
@@ -127,6 +141,307 @@ describe("pairVideoThumbnails", () => {
   });
 });
 
+describe("pairVideoThumbnails — timestamp proximity", () => {
+  it("pairs a Reolink FTP still with the clip it was captured 2s into", () => {
+    // The motivating case: the clip is named for its recording start
+    // (pre-record buffer included), the still for the trigger frame.
+    const items = [
+      { id: "/ftp/Moss garden_00_20261012111141.jpg", dtMs: at(41) },
+      { id: "/ftp/Moss garden_00_20261012111139.mp4", dtMs: at(39) },
+    ];
+    const { items: filtered, pairedThumbs } = pairVideoThumbnails(items, byId, byMs);
+    expect(filtered.map((x) => x.id)).toEqual(["/ftp/Moss garden_00_20261012111139.mp4"]);
+    expect(pairedThumbs.get("/ftp/Moss garden_00_20261012111139.mp4")).toBe(
+      "/ftp/Moss garden_00_20261012111141.jpg"
+    );
+  });
+
+  it("is opt-in: without `getMs` only exact stems pair", () => {
+    const items = [
+      { id: "/ftp/cam_00_20261012111141.jpg", dtMs: at(41) },
+      { id: "/ftp/cam_00_20261012111139.mp4", dtMs: at(39) },
+    ];
+    const { items: filtered, pairedThumbs } = pairVideoThumbnails(items, byId);
+    expect(filtered).toEqual(items);
+    expect(pairedThumbs.size).toBe(0);
+  });
+
+  it("pairs at exactly the window edge but not one second past it", () => {
+    // Checked on both sides: clip before the still, and clip after it.
+    const edge = THUMBNAIL_MATCH_WINDOW_MS / 1000;
+    const name = (sec: number, ext: string): string =>
+      `/ftp/cam_00_202610121111${String(sec).padStart(2, "0")}.${ext}`;
+    const pairCount = (videoSec: number, imageSec: number): number =>
+      pairVideoThumbnails(
+        [
+          { id: name(videoSec, "mp4"), dtMs: at(videoSec) },
+          { id: name(imageSec, "jpg"), dtMs: at(imageSec) },
+        ],
+        byId,
+        byMs
+      ).pairedThumbs.size;
+
+    expect(pairCount(0, edge)).toBe(1);
+    expect(pairCount(edge, 0)).toBe(1);
+    expect(pairCount(0, edge + 1)).toBe(0);
+    expect(pairCount(edge + 1, 0)).toBe(0);
+  });
+
+  it("matches in either direction (still before or after the clip start)", () => {
+    const items = [
+      { id: "/ftp/cam_00_20261012111139.jpg", dtMs: at(39) },
+      { id: "/ftp/cam_00_20261012111141.mp4", dtMs: at(41) },
+    ];
+    const { pairedThumbs } = pairVideoThumbnails(items, byId, byMs);
+    expect(pairedThumbs.get("/ftp/cam_00_20261012111141.mp4")).toBe(
+      "/ftp/cam_00_20261012111139.jpg"
+    );
+  });
+
+  it("skips items without a finite timestamp", () => {
+    // No `path_datetime_format` match → no `dtMs` → no basis for proximity.
+    for (const bad of [undefined, Number.NaN, Number.POSITIVE_INFINITY]) {
+      const items = [
+        { id: "/ftp/cam_00_20261012111141.jpg", dtMs: bad },
+        { id: "/ftp/cam_00_20261012111139.mp4", dtMs: at(39) },
+      ];
+      expect(pairVideoThumbnails(items, byId, byMs).pairedThumbs.size).toBe(0);
+    }
+    const nullMs = pairVideoThumbnails(
+      [{ id: "/ftp/cam_00_20261012111141.jpg" }, { id: "/ftp/cam_00_20261012111139.mp4" }],
+      byId,
+      () => null
+    );
+    expect(nullMs.pairedThumbs.size).toBe(0);
+  });
+
+  it("rolls over minute, hour and day boundaries inside one digit run", () => {
+    const items = [
+      { id: "/ftp/cam_00_20261012235958.mp4", dtMs: at(0) },
+      { id: "/ftp/cam_00_20261013000003.jpg", dtMs: at(5) },
+    ];
+    const { pairedThumbs } = pairVideoThumbnails(items, byId, byMs);
+    expect(pairedThumbs.get("/ftp/cam_00_20261012235958.mp4")).toBe(
+      "/ftp/cam_00_20261013000003.jpg"
+    );
+  });
+
+  it("pairs separator-style timestamps that differ only in the seconds", () => {
+    const items = [
+      { id: "/snaps/front_2026-10-12_11-11-39.mp4", dtMs: at(39) },
+      { id: "/snaps/front_2026-10-12_11-11-41.jpg", dtMs: at(41) },
+    ];
+    expect(pairVideoThumbnails(items, byId, byMs).pairedThumbs.size).toBe(1);
+  });
+
+  it("leaves a separator-style minute rollover unpaired (documented limitation)", () => {
+    // `11-11-59` → `11-12-01` differs in two digit runs split by `-`, which
+    // is indistinguishable from a channel + time difference without the
+    // format. Unpaired is the safe outcome — both tiles render as before.
+    const items = [
+      { id: "/snaps/front_2026-10-12_11-11-59.mp4", dtMs: at(59) },
+      { id: "/snaps/front_2026-10-12_11-12-01.jpg", dtMs: at(61) },
+    ];
+    expect(pairVideoThumbnails(items, byId, byMs).pairedThumbs.size).toBe(0);
+  });
+
+  it("does not pair across NVR channels whose timestamps are close", () => {
+    // Channel `00` vs `01` *and* the seconds differ: the mismatch spans the
+    // `_` between them, so it isn't a single digit run.
+    const items = [
+      { id: "/ftp/NVR_00_20261012111141.jpg", dtMs: at(41) },
+      { id: "/ftp/NVR_01_20261012111139.mp4", dtMs: at(39) },
+    ];
+    const { items: filtered, pairedThumbs } = pairVideoThumbnails(items, byId, byMs);
+    expect(filtered).toEqual(items);
+    expect(pairedThumbs.size).toBe(0);
+  });
+
+  it("does not pair names that differ only in digits when timestamps are equal", () => {
+    // Same instant, different name → the digits that differ aren't the
+    // timestamp (channel, sequence counter, folder-only date).
+    const items = [
+      { id: "/ftp/NVR_00_20261012111141.jpg", dtMs: at(41) },
+      { id: "/ftp/NVR_01_20261012111141.mp4", dtMs: at(41) },
+    ];
+    expect(pairVideoThumbnails(items, byId, byMs).pairedThumbs.size).toBe(0);
+  });
+
+  it("does not pair files from different folders", () => {
+    const items = [
+      { id: "/ftp/cam1/clip_20261012111141.jpg", dtMs: at(41) },
+      { id: "/ftp/cam2/clip_20261012111139.mp4", dtMs: at(39) },
+    ];
+    expect(pairVideoThumbnails(items, byId, byMs).pairedThumbs.size).toBe(0);
+  });
+
+  it("does not pair names of different shapes", () => {
+    const items = [
+      { id: "/ftp/front_20261012111141.jpg", dtMs: at(41) },
+      { id: "/ftp/back_20261012111139.mp4", dtMs: at(39) },
+      { id: "/ftp/front_20261012111139_end.mp4", dtMs: at(39) },
+    ];
+    expect(pairVideoThumbnails(items, byId, byMs).pairedThumbs.size).toBe(0);
+  });
+
+  it("is one-to-one: the closer still wins, the other stays a tile", () => {
+    const items = [
+      { id: "/ftp/cam_00_20261012111139.mp4", dtMs: at(39) },
+      { id: "/ftp/cam_00_20261012111141.jpg", dtMs: at(41) },
+      { id: "/ftp/cam_00_20261012111148.jpg", dtMs: at(48) },
+    ];
+    const { items: filtered, pairedThumbs } = pairVideoThumbnails(items, byId, byMs);
+    expect(filtered.map((x) => x.id)).toEqual([
+      "/ftp/cam_00_20261012111139.mp4",
+      "/ftp/cam_00_20261012111148.jpg",
+    ]);
+    expect(pairedThumbs.get("/ftp/cam_00_20261012111139.mp4")).toBe(
+      "/ftp/cam_00_20261012111141.jpg"
+    );
+  });
+
+  it("prefers the clip that started before the still over a closer later one", () => {
+    // The wrong-clip case: the still @44 belongs to the event recorded from
+    // @30, not to the next clip, whose pre-record buffer opens at @45.
+    const items = [
+      { id: "/ftp/cam_00_20261012111130.mp4", dtMs: at(30) },
+      { id: "/ftp/cam_00_20261012111144.jpg", dtMs: at(44) },
+      { id: "/ftp/cam_00_20261012111145.mp4", dtMs: at(45) },
+    ];
+    const { items: filtered, pairedThumbs } = pairVideoThumbnails(items, byId, byMs);
+    expect(filtered.map((x) => x.id)).toEqual([
+      "/ftp/cam_00_20261012111130.mp4",
+      "/ftp/cam_00_20261012111145.mp4",
+    ]);
+    expect(pairedThumbs.get("/ftp/cam_00_20261012111130.mp4")).toBe(
+      "/ftp/cam_00_20261012111144.jpg"
+    );
+    expect(pairedThumbs.has("/ftp/cam_00_20261012111145.mp4")).toBe(false);
+  });
+
+  it("pairs back-to-back events each with the clip that started before them", () => {
+    // Nearest-either-way would hand clip @45 to still @44 (1s) and strand
+    // both clip @30 and still @50.
+    const items = [
+      { id: "/ftp/cam_00_20261012111130.mp4", dtMs: at(30) },
+      { id: "/ftp/cam_00_20261012111144.jpg", dtMs: at(44) },
+      { id: "/ftp/cam_00_20261012111145.mp4", dtMs: at(45) },
+      { id: "/ftp/cam_00_20261012111150.jpg", dtMs: at(50) },
+    ];
+    const { items: filtered, pairedThumbs } = pairVideoThumbnails(items, byId, byMs);
+    expect(filtered.map((x) => x.id)).toEqual([
+      "/ftp/cam_00_20261012111130.mp4",
+      "/ftp/cam_00_20261012111145.mp4",
+    ]);
+    expect(pairedThumbs.get("/ftp/cam_00_20261012111130.mp4")).toBe(
+      "/ftp/cam_00_20261012111144.jpg"
+    );
+    expect(pairedThumbs.get("/ftp/cam_00_20261012111145.mp4")).toBe(
+      "/ftp/cam_00_20261012111150.jpg"
+    );
+  });
+
+  it("lets a still left over from the first tier fall back to a later clip", () => {
+    // Clip @45 started before both stills; @50 is closer, so it wins tier 1.
+    // Still @44 has no earlier clip left and takes clip @58 in tier 2.
+    const items = [
+      { id: "/ftp/cam_00_20261012111150.jpg", dtMs: at(50) },
+      { id: "/ftp/cam_00_20261012111144.jpg", dtMs: at(44) },
+      { id: "/ftp/cam_00_20261012111145.mp4", dtMs: at(45) },
+      { id: "/ftp/cam_00_20261012111158.mp4", dtMs: at(58) },
+    ];
+    const { items: filtered, pairedThumbs } = pairVideoThumbnails(items, byId, byMs);
+    expect(filtered.map((x) => x.id)).toEqual([
+      "/ftp/cam_00_20261012111145.mp4",
+      "/ftp/cam_00_20261012111158.mp4",
+    ]);
+    expect(pairedThumbs.get("/ftp/cam_00_20261012111145.mp4")).toBe(
+      "/ftp/cam_00_20261012111150.jpg"
+    );
+    expect(pairedThumbs.get("/ftp/cam_00_20261012111158.mp4")).toBe(
+      "/ftp/cam_00_20261012111144.jpg"
+    );
+  });
+
+  it("resolves each tier closest-first across the list, not in input order", () => {
+    // Greedy-per-still in input order would give clip @40 to still @50.
+    const items = [
+      { id: "/ftp/cam_00_20261012111150.jpg", dtMs: at(50) },
+      { id: "/ftp/cam_00_20261012111142.jpg", dtMs: at(42) },
+      { id: "/ftp/cam_00_20261012111140.mp4", dtMs: at(40) },
+    ];
+    const { items: filtered, pairedThumbs } = pairVideoThumbnails(items, byId, byMs);
+    expect(filtered.map((x) => x.id)).toEqual([
+      "/ftp/cam_00_20261012111150.jpg",
+      "/ftp/cam_00_20261012111140.mp4",
+    ]);
+    expect(pairedThumbs.get("/ftp/cam_00_20261012111140.mp4")).toBe(
+      "/ftp/cam_00_20261012111142.jpg"
+    );
+  });
+
+  it("breaks a tie toward the earlier clip", () => {
+    const items = [
+      { id: "/ftp/cam_00_20261012111142.mp4", dtMs: at(42) },
+      { id: "/ftp/cam_00_20261012111140.jpg", dtMs: at(40) },
+      { id: "/ftp/cam_00_20261012111138.mp4", dtMs: at(38) },
+    ];
+    const { pairedThumbs } = pairVideoThumbnails(items, byId, byMs);
+    expect(pairedThumbs.get("/ftp/cam_00_20261012111138.mp4")).toBe(
+      "/ftp/cam_00_20261012111140.jpg"
+    );
+    expect(pairedThumbs.has("/ftp/cam_00_20261012111142.mp4")).toBe(false);
+  });
+
+  it("runs after the stem pass: a stem-paired clip takes no second still", () => {
+    const items = [
+      { id: "/ftp/cam_00_20261012111139.mp4", dtMs: at(39) },
+      { id: "/ftp/cam_00_20261012111139.jpg", dtMs: at(39) },
+      { id: "/ftp/cam_00_20261012111141.jpg", dtMs: at(41) },
+    ];
+    const { items: filtered, pairedThumbs } = pairVideoThumbnails(items, byId, byMs);
+    expect(filtered.map((x) => x.id)).toEqual([
+      "/ftp/cam_00_20261012111139.mp4",
+      "/ftp/cam_00_20261012111141.jpg",
+    ]);
+    expect(pairedThumbs.get("/ftp/cam_00_20261012111139.mp4")).toBe(
+      "/ftp/cam_00_20261012111139.jpg"
+    );
+  });
+
+  it("pairs every clip in a long same-camera run (windowed scan)", () => {
+    // 200 clips a minute apart, each with a still 2s in. Newest-first, the
+    // way the gallery lists arrive, so the scan has to sort for itself.
+    const items: TimedItem[] = [];
+    for (let i = 0; i < 200; i++) {
+      const sec = i * 60;
+      items.push({ id: `/ftp/cam_00_${String(sec).padStart(6, "0")}.mp4`, dtMs: at(sec) });
+      items.push({ id: `/ftp/cam_00_${String(sec + 2).padStart(6, "0")}.jpg`, dtMs: at(sec + 2) });
+    }
+    items.reverse();
+    const { items: filtered, pairedThumbs } = pairVideoThumbnails(items, byId, byMs);
+    expect(filtered).toHaveLength(200);
+    expect(filtered.every((x) => x.id.endsWith(".mp4"))).toBe(true);
+    expect(pairedThumbs.size).toBe(200);
+    expect(pairedThumbs.get("/ftp/cam_00_006000.mp4")).toBe("/ftp/cam_00_006002.jpg");
+  });
+
+  it("works on media-source URIs, case-insensitively", () => {
+    const items = [
+      {
+        id: "media-source://media_source/local/ftp/Moss garden_00_20261012111139.MP4",
+        dtMs: at(39),
+      },
+      {
+        id: "media-source://media_source/local/FTP/moss garden_00_20261012111141.jpg",
+        dtMs: at(41),
+      },
+    ];
+    const { pairedThumbs } = pairVideoThumbnails(items, byId, byMs);
+    expect(pairedThumbs.get(items[0]!.id)).toBe(items[1]!.id);
+  });
+});
+
 describe("pairMediaSourceThumbnails", () => {
   it("delegates to pairVideoThumbnails using the `id` accessor", () => {
     const items = [{ id: "x.mp4" }, { id: "x.jpg" }];
@@ -140,6 +455,16 @@ describe("pairMediaSourceThumbnails", () => {
     const result = pairMediaSourceThumbnails(items);
     expect(result.items).toEqual([{ id: "x.mp4" }, null]);
     expect(result.pairedThumbs.get("x.mp4")).toBe("x.jpg");
+  });
+
+  it("falls back to `dtMs` proximity", () => {
+    const items = [
+      { id: "media-source://media_source/local/cam_00_20261012111139.mp4", dtMs: at(39) },
+      { id: "media-source://media_source/local/cam_00_20261012111141.jpg", dtMs: at(41) },
+    ];
+    const result = pairMediaSourceThumbnails(items);
+    expect(result.items).toEqual([items[0]]);
+    expect(result.pairedThumbs.get(items[0]!.id)).toBe(items[1]!.id);
   });
 });
 
@@ -155,6 +480,18 @@ describe("pairSensorItems", () => {
     const items = [{ src: "/a.mp4", dtMs: 1000 }, { src: "/a.jpg", dtMs: 1000 }, { src: "/b.mp4" }];
     const { items: filtered } = pairSensorItems(items);
     expect(filtered).toEqual([{ src: "/a.mp4", dtMs: 1000 }, { src: "/b.mp4" }]);
+  });
+
+  it("falls back to `dtMs` proximity", () => {
+    const items = [
+      { src: "/local/ftp/cam_00_20261012111141.jpg", dtMs: at(41) },
+      { src: "/local/ftp/cam_00_20261012111139.mp4", dtMs: at(39) },
+    ];
+    const result = pairSensorItems(items);
+    expect(result.items).toEqual([items[1]]);
+    expect(result.pairedThumbs.get("/local/ftp/cam_00_20261012111139.mp4")).toBe(
+      "/local/ftp/cam_00_20261012111141.jpg"
+    );
   });
 });
 

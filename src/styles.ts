@@ -113,6 +113,9 @@ export const cardStyles = css`
       min-height: 0;
       border-radius: 0 !important;
     }
+    /* HA's built-in WebRTC/HLS video otherwise caps at 100vh - 97px.
+     * Use the live host's height only while this card owns fullscreen. */
+    --video-max-height: 100%;
     & .preview {
       flex: 1 !important;
       height: auto !important;
@@ -120,9 +123,35 @@ export const cardStyles = css`
       border-radius: 0 !important;
       overflow: hidden;
     }
-    & :is(.divider, .objfilters, .tthumbs, .datepill, .seg) {
+    /* Hide gallery wrappers too: empty toolbar/timeline flex items still
+     * reserve row gaps and the thumbnail wrapper's minimum height. */
+    & :is(.topbar, .timeline, .divider, .objfilters, .tthumbs, .datepill, .seg) {
       display: none !important;
     }
+  }
+
+  /* Mobile browser chrome/safe areas affect CSS fallback, not native layout. */
+  :host([data-live-fs][data-live-fs-fallback]) {
+    height: 100dvh !important;
+    box-sizing: border-box;
+    & .root {
+      min-height: 0;
+      box-sizing: border-box;
+      padding: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px)
+        env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px);
+    }
+  }
+
+  /* Reset UA popover geometry only for the card-owned fullscreen fallback. */
+  :host([data-live-fs][data-live-fs-popover]) {
+    margin: 0 !important;
+    border: 0 !important;
+    padding: 0 !important;
+    max-width: none !important;
+    max-height: none !important;
+    overflow: hidden !important;
+    background: #000;
+    color: inherit;
   }
 
   .panel {
@@ -167,12 +196,21 @@ export const cardStyles = css`
     justify-content: center;
     width: 100dvw;
     height: 100dvh;
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+    overflow: hidden;
   }
   .img-fs-overlay img,
   .img-fs-overlay video {
     max-width: 100%;
     max-height: 100%;
     object-fit: contain;
+  }
+  .img-fs-overlay img {
+    touch-action: none;
+    will-change: transform;
+    pointer-events: auto;
   }
   .img-fs-close {
     position: absolute;
