@@ -55,6 +55,7 @@ import {
 import {
   friendlyCameraName as liveFriendlyCameraName,
   getAllLiveCameraEntities,
+  getEditorCameraEntities,
   getGridCameraEntities,
   getLiveCameraEntityIds,
   getLiveCameraOptions,
@@ -7987,26 +7988,7 @@ class CameraGalleryCardEditor extends HTMLElement {
     const liveLayout = c.live_layout === "grid" ? "grid" : "single";
 
 
-    const cameraEntities = Object.keys(this._hass?.states || {})
-      .filter((id) => {
-        if (!id.startsWith("camera.")) return false;
-
-        const st = this._hass?.states?.[id];
-        if (!st) return false;
-
-        const state = String(st.state || "").toLowerCase();
-
-        return state !== "unavailable" && state !== "unknown";
-      })
-      .sort((a, b) => {
-        const an = String(
-          this._hass?.states?.[a]?.attributes?.friendly_name || a
-        ).toLowerCase();
-        const bn = String(
-          this._hass?.states?.[b]?.attributes?.friendly_name || b
-        ).toLowerCase();
-        return an.localeCompare(bn);
-      });
+    const cameraEntities = getEditorCameraEntities(this._hass?.states);
 
     const rootVars = `
       --ed-radius-panel: 18px;
