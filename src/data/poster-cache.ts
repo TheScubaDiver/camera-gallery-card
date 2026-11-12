@@ -57,9 +57,6 @@ export function makePosterKey(url: string, framePct: number): string {
   return "cgc_p_" + fnv1aHash(String(url) + "|" + String(framePct));
 }
 
-/** Well-known `<video>` `MediaError.code` values. */
-export type MediaErrorCode = 1 | 2 | 3 | 4;
-
 /**
  * `true` for `<video>` errors that won't recover on retry:
  *   - 3 = MEDIA_ERR_DECODE
@@ -431,8 +428,6 @@ export class PosterCacheClient {
   private readonly _clearTimeout: (h: unknown) => void;
   private readonly _fetch: typeof fetch;
 
-  private _hass: HomeAssistant | null = null;
-
   /** `src` → resolved object URL for synchronous render access. */
   private readonly _posterCache: Map<string, string> = new Map();
   /** URLs whose `_ensurePoster` is currently awaiting fetch/capture. */
@@ -477,8 +472,8 @@ export class PosterCacheClient {
 
   // ─── Lifecycle ────────────────────────────────────────────────────────
 
-  setHass(hass: HomeAssistant | null): void {
-    this._hass = hass;
+  setHass(_hass: HomeAssistant | null): void {
+    /* noop — kept for interface parity with the other data clients */
   }
 
   /**

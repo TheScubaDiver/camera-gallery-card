@@ -35,7 +35,6 @@ export type ThumbBarPosition = (typeof THUMB_BAR_POSITIONS)[number];
 export type ThumbLayout = (typeof THUMB_LAYOUTS)[number];
 export type ThumbSortOrder = (typeof THUMB_SORT_ORDERS)[number];
 export type BarPosition = (typeof BAR_POSITIONS)[number];
-export type StartMode = (typeof START_MODES)[number];
 export type ObjectFit = (typeof OBJECT_FITS)[number];
 export type ControlsMode = (typeof CONTROLS_MODES)[number];
 export type AspectRatio = (typeof ASPECT_RATIOS)[number];

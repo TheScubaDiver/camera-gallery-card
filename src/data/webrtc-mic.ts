@@ -309,10 +309,6 @@ export class WebRtcMicClient {
     return this._state === "active";
   }
 
-  level(): number {
-    return this._level;
-  }
-
   /** Copy the current frequency-domain analyser data into `target` for the
    * bars visualisation in the talkback bar. Returns `false` if the analyser
    * isn't mounted (idle state, or analyser creation failed). */

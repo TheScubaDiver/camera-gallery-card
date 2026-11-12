@@ -75,13 +75,6 @@ export const cardStyles = css`
     }
   }
 
-  :host-context(.dark-mode) {
-    --cgc-nav-bg: rgba(0, 0, 0, 0.45);
-    --cgc-nav-border: rgba(255, 255, 255, 0.18);
-    --cgc-sel-ov-a: rgba(0, 0, 0, 0.18);
-    --cgc-sel-ov-b: rgba(0, 0, 0, 0.32);
-  }
-
   /* ──────────────────────────────────────────────────────────── */
 
   .root {

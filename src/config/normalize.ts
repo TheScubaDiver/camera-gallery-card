@@ -304,8 +304,6 @@ const LEGACY_KEYS = [
   "folder_datetime_format",
 ] as const satisfies readonly (keyof InputConfig)[];
 
-export type LegacyKey = (typeof LEGACY_KEYS)[number];
-
 export function hasLegacyKeys(raw: unknown): boolean {
   const obj = asInputConfig(raw);
   return LEGACY_KEYS.some((k) => k in obj);
