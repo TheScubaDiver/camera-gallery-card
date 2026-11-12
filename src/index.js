@@ -9808,7 +9808,7 @@ class CameraGalleryCardEditor extends HTMLElement {
       // ── Menu buttons collapsible
       const menuButtonsBody = `
         <div class="row">
-          <div class="desc">Custom buttons in the live-view hamburger menu — handy for toggling lights, sirens or running scripts without leaving the camera.</div>
+          <div class="desc">Custom buttons in the live view — handy for toggling lights, sirens or running scripts without leaving the camera. Buttons sit in the hamburger menu, or directly among the live controls when "Show among live controls" is on. A button on an <code>input_select</code> or <code>select</code> entity opens a list of its options.</div>
           ${(() => {
             const menuButtons = Array.isArray(this._config.menu_buttons) ? this._config.menu_buttons : [];
             return menuButtons.length ? `
@@ -9852,6 +9852,10 @@ class CameraGalleryCardEditor extends HTMLElement {
                       <div>
                         <div style="font-size:0.75em;opacity:0.6;margin-bottom:2px;">State (on)</div>
                         <div class="field"><input type="text" class="ed-input" data-menubtn="${i}" data-mbfield="state_on" value="${(btn.state_on||"").replace(/"/g,"&quot;")}" placeholder="e.g. open" /></div>
+                      </div>
+                      <div style="grid-column:1/-1;display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:2px;">
+                        <span style="font-size:0.82em;">Show among live controls</span>
+                        <label class="cgc-switch"><input type="checkbox" data-menubtn-placement="${i}" ${btn.placement === "controls" ? "checked" : ""}><span class="cgc-track"></span></label>
                       </div>
                     </div>
                   </div>
@@ -14167,6 +14171,20 @@ details summary { user-select: none; }
         current[i] = updated;
         this._set("menu_buttons", current);
       });
+    });
+
+    // Menu button placement: hamburger menu (default) or live controls (#215).
+    this.shadowRoot.querySelectorAll("input[data-menubtn-placement]").forEach((input) => {
+      input.addEventListener("change", () => {
+        const i = Number(input.dataset.menubtnPlacement);
+        const current = Array.isArray(this._config.menu_buttons) ? [...this._config.menu_buttons] : [];
+        if (!current[i]) return;
+        const updated = { ...current[i] };
+        if (input.checked) updated.placement = "controls";
+        else delete updated.placement;
+        current[i] = updated;
+        this._set("menu_buttons", current);
+      }, _sig);
     });
 
     // Add menu button.
