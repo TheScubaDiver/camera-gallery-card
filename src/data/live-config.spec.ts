@@ -260,6 +260,36 @@ describe("friendlyCameraName", () => {
     ).toBe("Back yard");
   });
 
+  // HA 2026.11 composes names from device + entity; match the built-in cards.
+  it("uses hass.formatEntityName when hass is given", () => {
+    const hassStates = {
+      "camera.front": state({
+        entity_id: "camera.front",
+        attributes: { friendly_name: "Front Yard" },
+      }),
+    };
+    expect(
+      friendlyCameraName({
+        entityId: "camera.front",
+        config: cfg(),
+        hassStates,
+        hass: { formatEntityName: () => "Voortuin · Camera" },
+      })
+    ).toBe("Voortuin · Camera");
+  });
+
+  it("sorts editor cameras by the formatted display name", () => {
+    const hassStates = {
+      "camera.a": state({ entity_id: "camera.a", attributes: { friendly_name: "Zebra" } }),
+      "camera.b": state({ entity_id: "camera.b", attributes: { friendly_name: "Apple" } }),
+    };
+    const names: Record<string, string> = { "camera.a": "Achtertuin", "camera.b": "Voordeur" };
+    expect(
+      getEditorCameraEntities(hassStates, { formatEntityName: (s) => names[s.entity_id] ?? "" })
+    ).toEqual(["camera.a", "camera.b"]);
+    expect(getEditorCameraEntities(hassStates)).toEqual(["camera.b", "camera.a"]);
+  });
+
   it("returns empty string on empty input", () => {
     expect(friendlyCameraName({ entityId: "", config: cfg(), hassStates: {} })).toBe("");
   });
