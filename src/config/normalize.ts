@@ -83,6 +83,8 @@ export interface MenuButtonInput {
   title?: string;
   service?: string;
   state_on?: string;
+  /** `controls` = render among the live control pills (#215); absent = menu. */
+  placement?: string;
 }
 
 /**
