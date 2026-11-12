@@ -168,6 +168,7 @@ A few notes on the generic walker:
   - All other sources (NAS, Blue Iris, etc.): first-frame capture
 - Sensor mode: first-frame capture
 - **Paired image + video** — when a snapshot and clip share the same filename stem they're shown as one item, with the image used as the thumbnail
+  - Snapshots stamped a few seconds off their clip pair too (Reolink FTP: `Cam_00_20261012111141.jpg` + `Cam_00_20261012111139.mp4`), when `path_datetime_format` dates both files, their names differ only in the timestamp digits, and the times are within 15s. A clip that started before the snapshot wins over a closer one that started after it
 
 ### Video controls
 
