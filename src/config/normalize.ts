@@ -209,6 +209,16 @@ export interface InputConfig {
   delete_confirm?: boolean;
   delete_service?: string;
 
+  // ─── Thumbnail menu ────────────────────────────────────────
+  thumb_actions?: {
+    name: string;
+    icon?: string;
+    perform_action: string;
+    data?: Record<string, unknown>;
+    target?: Record<string, unknown>;
+    confirmation?: boolean | { text?: string };
+  }[];
+
   // ─── Object filters ────────────────────────────────────────
   object_filters?: ObjectFilterEntry[] | ObjectFilterEntry | null;
   object_colors?: Record<string, string>;

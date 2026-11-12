@@ -36,6 +36,11 @@ import { REOLINK_LOGO_DATA_URL } from "./assets/reolink-logo";
 import { collectMediaSamples, scoreSamples } from "./data/path-format-detect";
 import { CombinedSourceClient } from "./data/combined-source";
 import { canDeleteItem, deleteItem } from "./data/delete-service";
+import {
+  buildThumbActionCall,
+  thumbActionConfirmText,
+  thumbActionContext,
+} from "./data/thumb-actions";
 import { PendingPosterCollector, PosterCacheClient } from "./data/poster-cache";
 import { ItemPipelineClient } from "./data/item-pipeline";
 import { parseUrlActions } from "./data/url-actions";
@@ -4329,7 +4334,37 @@ class CameraGalleryCard extends LitElement {
     }
 
     actions.sort((a, b) => a.label.localeCompare(b.label, resolveLocale(this._hass)));
+
+    // User-defined `thumb_actions` (#243) follow the built-ins, in config order.
+    const custom = Array.isArray(this.config?.thumb_actions) ? this.config.thumb_actions : [];
+    custom.forEach((cfg, i) => {
+      if (!cfg?.name || !cfg?.perform_action) return;
+      actions.push({
+        icon: cfg.icon || "mdi:gesture-tap-button",
+        id: `custom:${i}`,
+        label: cfg.name,
+      });
+    });
     return actions;
+  }
+
+  // Runs one user-defined `thumb_actions` entry for `item`, with `url` the
+  // item's resolved (browser-reachable) URL. See src/data/thumb-actions.ts.
+  async _runCustomThumbAction(cfg, item, url) {
+    const call = buildThumbActionCall(cfg, thumbActionContext(item.src, url));
+    if (!call || !this._hass) return;
+
+    const confirmText = thumbActionConfirmText(cfg);
+    if (confirmText && !window.confirm(confirmText)) return;
+
+    try {
+      await this._hass.callService(call.domain, call.service, call.data, call.target);
+      this.dispatchEvent(new CustomEvent("hass-notification", {
+        bubbles: true, composed: true, detail: { message: `${cfg.name}: done` },
+      }));
+    } catch (err) {
+      this._showErrorToast(`${cfg.name} failed`, String(err?.message || err || "Unknown error"));
+    }
   }
 
   async _handleThumbAction(actionId, item) {
@@ -4369,6 +4404,13 @@ class CameraGalleryCard extends LitElement {
     if (actionId === "download") {
       this._closeThumbMenu();
       await this._downloadSrc(url || item.src);
+      return;
+    }
+
+    if (actionId.startsWith("custom:")) {
+      const cfg = this.config?.thumb_actions?.[Number(actionId.slice("custom:".length))];
+      this._closeThumbMenu();
+      if (cfg) await this._runCustomThumbAction(cfg, item, url);
     }
   }
 
@@ -6849,6 +6891,8 @@ const CGC_CONFIG_KEY_ORDER = [
   "sync_entity",
   // ─── Delete ───
   "allow_bulk_delete", "delete_confirm", "delete_service", "frigate_delete_service",
+  // ─── Thumbnail menu ───
+  "thumb_actions",
   // ─── Advanced ───
   "debug_enabled",
 ];
