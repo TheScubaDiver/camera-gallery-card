@@ -1856,6 +1856,13 @@ export const cardStyles = css`
     background-size: 200% 100%;
     animation: cgc-shimmer 1.4s ease-in-out infinite;
   }
+  /* Placeholder tiles while the first media listing loads (#184). Not
+   * interactive, and full opacity so they read as "loading", not "dimmed". */
+  .tthumb.tthumb-skeleton {
+    cursor: default;
+    pointer-events: none;
+    opacity: 1;
+  }
   .tph.skeleton {
     background: linear-gradient(
       90deg,

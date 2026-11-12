@@ -36,6 +36,7 @@ import { REOLINK_LOGO_DATA_URL } from "./assets/reolink-logo";
 import { collectMediaSamples, scoreSamples } from "./data/path-format-detect";
 import { CombinedSourceClient } from "./data/combined-source";
 import { canDeleteItem, deleteItem } from "./data/delete-service";
+import { galleryState, SKELETON_THUMB_COUNT } from "./data/gallery-state";
 import {
   buildThumbActionCall,
   thumbActionConfirmText,
@@ -5872,18 +5873,26 @@ class CameraGalleryCard extends LitElement {
     const rawItems = base.rawItems;
     const visibleObjectFilters = this._getVisibleObjectFilters();
 
-    // Live-only mode (issue #169): no gallery items but a live camera is
-    // configured. We fall through to the normal render so the live view
-    // stays visible — the downstream paths all guard on `filtered.length`
-    // and the live pipeline is independent of `rawItems`. Used again below
-    // to suppress the now-empty toolbar / thumbs strip / filter chips.
-    const liveOnlyView = !rawItems.length && this._hasLiveConfig();
+    // No items yet: render skeletons while the first media listing is in
+    // flight (#184), fall back to live-only when a live camera is configured
+    // (issue #169), else show the empty message. In the first two cases we
+    // fall through to the normal render — the downstream paths all guard on
+    // `filtered.length` and the live pipeline is independent of `rawItems`.
+    // `liveOnlyView` is used again below to suppress the now-empty toolbar /
+    // thumbs strip / filter chips; `galleryLoading` keeps them as skeletons.
+    const {
+      loading: galleryLoading,
+      liveOnly: liveOnlyView,
+      emptyMessage,
+    } = galleryState({
+      itemCount: rawItems.length,
+      usingMediaSource,
+      mediaLoading: !!this._mediaClient.isLoading(),
+      hasLive: this._hasLiveConfig(),
+    });
 
-    if (!rawItems.length && !liveOnlyView) {
-      if (usingMediaSource && this._mediaClient.isLoading()) {
-        return html`<div class="empty">Loading media…</div>`;
-      }
-      return html`<div class="empty">No media found.</div>`;
+    if (emptyMessage) {
+      return html`<div class="empty">${emptyMessage}</div>`;
     }
 
     const { days, newestDay, activeDay, objFiltered, videoCount, imageCount } = base;
@@ -5896,7 +5905,9 @@ class CameraGalleryCard extends LitElement {
       (!this._filterFavorites || this._favorites.has(x.src))
     );
 
-    const noResultsForFilter = !filteredAll.length;
+    // While the first listing loads there are no items, but that isn't a
+    // "no results" state: keep the preview / thumbs skeletons instead.
+    const noResultsForFilter = !filteredAll.length && !galleryLoading;
 
     const cap = (this.config?.max_media ?? DEFAULT_MAX_MEDIA);
     const filteredBeforeCluster = noResultsForFilter
@@ -6565,6 +6576,27 @@ class CameraGalleryCard extends LitElement {
                   })}
                 </div>
               `
+            : galleryLoading
+              ? html`
+                  <div
+                    class="tthumbs ${isVerticalThumbs ? "vertical" : "horizontal"} tthumbs-loading"
+                    style="--cgc-thumb-gap:${THUMB_GAP}px;"
+                    role="status"
+                    aria-label="Loading media"
+                  >
+                    ${Array.from({ length: SKELETON_THUMB_COUNT }, () => html`
+                      <div
+                        class="tthumb tthumb-skeleton"
+                        aria-hidden="true"
+                        style="${isVerticalThumbs
+                          ? `aspect-ratio:${thumbRatio};border-radius:var(--cgc-thumb-radius, ${THUMB_RADIUS}px);`
+                          : `width:${this.config.thumb_size}px;aspect-ratio:${thumbRatio};border-radius:var(--cgc-thumb-radius, ${THUMB_RADIUS}px);`}"
+                      >
+                        <div class="tph skeleton"></div>
+                      </div>
+                    `)}
+                  </div>
+                `
             : noResultsForFilter
               ? html`
                   <div class="thumbs-empty-state">
