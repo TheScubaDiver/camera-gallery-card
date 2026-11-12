@@ -359,6 +359,29 @@ export const cardStyles = css`
     max-width: 90%;
     text-align: center;
   }
+  .snapshot-toast.stream-lost {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    top: auto;
+    bottom: 56px;
+    background: rgba(20, 20, 24, 0.82);
+    pointer-events: auto;
+  }
+  .stream-lost-retry {
+    border: 0;
+    border-radius: 10px;
+    padding: 4px 10px;
+    font: inherit;
+    font-weight: 600;
+    color: #fff;
+    background: rgba(255, 255, 255, 0.22);
+    cursor: pointer;
+  }
+  .stream-lost-retry:hover,
+  .stream-lost-retry:focus-visible {
+    background: rgba(255, 255, 255, 0.34);
+  }
   .snapshot-toast-link {
     color: inherit;
     text-decoration: underline;

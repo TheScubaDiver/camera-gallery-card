@@ -142,6 +142,7 @@ export interface InputConfig {
   // ─── Live preview ──────────────────────────────────────────
   live_enabled?: boolean;
   live_auto_muted?: boolean;
+  live_auto_recover?: boolean;
   live_camera_entities?: string[];
   live_camera_entity?: string;
   live_cameras?: LiveCameraEntryInput[];
