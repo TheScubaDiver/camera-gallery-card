@@ -436,9 +436,10 @@ export class MediaSourceClient {
 
   /**
    * Build a new list from raw walk results — pairs same-stem video/jpg
-   * siblings and rebuilds the by-id index. Never replaces the array
-   * reference for `list` so a snapshot taken from `state` stays in sync
-   * with `state.list` after pairing.
+   * siblings (or, failing that, timestamp-adjacent ones via `dtMs`) and
+   * rebuilds the by-id index. Never replaces the array reference for
+   * `list` so a snapshot taken from `state` stays in sync with
+   * `state.list` after pairing.
    */
   setList(items: readonly MsItem[]): void {
     const { items: paired, pairedThumbs } = pairMediaSourceThumbnails(
@@ -834,7 +835,8 @@ export class MediaSourceClient {
       const rawEvents: FrigateEvent[] | null = await fetchFrigateEventsViaWs(
         hass,
         inst,
-        FRIGATE_WS_LIMIT
+        FRIGATE_WS_LIMIT,
+        { cameras: config.frigate_cameras, labels: config.frigate_labels }
       );
       if (!rawEvents) continue;
       const clusters = clusterOn
@@ -930,7 +932,10 @@ export class MediaSourceClient {
       Math.max((config.max_media ?? DEFAULT_MAX_MEDIA) * 2, 100)
     );
 
-    const rawEvents = await fetchFrigateEvents(base, limit);
+    const rawEvents = await fetchFrigateEvents(base, limit, {
+      cameras: config.frigate_cameras,
+      labels: config.frigate_labels,
+    });
     if (!rawEvents) return null;
     const clusterOn = !!config.frigate_event_cluster;
     const gapSec = Number(config.frigate_event_cluster_gap_sec) || 0;
