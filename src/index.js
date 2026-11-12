@@ -40,7 +40,7 @@ import { PendingPosterCollector, PosterCacheClient } from "./data/poster-cache";
 import { ItemPipelineClient } from "./data/item-pipeline";
 import { parseUrlActions } from "./data/url-actions";
 import {
-  detectObjectForSrc,
+  detectObjectsForSrc,
   isVideoForSrc as viewIsVideoForSrc,
   isVideoSmart,
   matchesObjectFilter as viewMatchesObjectFilter,
@@ -5004,16 +5004,22 @@ class CameraGalleryCard extends LitElement {
       sourceMode: this.config?.source_mode ?? "sensor",
       getSrcEntity: (s) => this._sensorClient.getSrcEntityMap().get(s),
       getSensorState: (entityId) => this._hass?.states?.[entityId],
-      getObjectForSrc: (s) => this._objectForSrc(s),
+      getObjectsForSrc: (s) => this._objectsForSrc(s),
     });
   }
 
+  /** Primary detected object for `src` (badge icon/colour), or null. */
   _objectForSrc(src) {
+    return this._objectsForSrc(src)[0] ?? null;
+  }
+
+  /** Every detected object for `src`, memoized per src (see `_objectCache`). */
+  _objectsForSrc(src) {
     const key = String(src || "").trim();
-    if (!key) return null;
+    if (!key) return [];
     if (this._objectCache.has(key)) return this._objectCache.get(key);
 
-    const detected = detectObjectForSrc({
+    const detected = detectObjectsForSrc({
       src: key,
       sourceMode: this.config?.source_mode ?? "sensor",
       visibleFilters: this._getVisibleObjectFilters(),

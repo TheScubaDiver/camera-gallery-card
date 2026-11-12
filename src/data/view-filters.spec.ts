@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   detectObjectForSrc,
+  detectObjectsForSrc,
   isObjectFilterActive,
   isVideoForSrc,
   isVideoSmart,
@@ -262,6 +263,46 @@ describe("detectObjectForSrc", () => {
   });
 });
 
+describe("detectObjectsForSrc", () => {
+  const base = {
+    sourceMode: "media" as const,
+    getSrcEntity: (): string | undefined => undefined,
+    getSensorState: (): undefined => undefined,
+    getMediaTitle: (): undefined => undefined,
+  };
+
+  // #203: NVR scripts concatenate every detected object into the filename.
+  it("returns every object tagged in the filename, in visibleFilters order", () => {
+    expect(
+      detectObjectsForSrc({
+        ...base,
+        src: "/media/frontdoor_20260612_1200_motorcycle_person.mp4",
+        visibleFilters: ["person", "car", "motorcycle", "dog"],
+      })
+    ).toEqual(["person", "motorcycle"]);
+  });
+
+  it("returns an empty list when nothing matches", () => {
+    expect(
+      detectObjectsForSrc({ ...base, src: "/abc.jpg", visibleFilters: ["person", "car"] })
+    ).toEqual([]);
+  });
+
+  it("returns an empty list for empty src", () => {
+    expect(detectObjectsForSrc({ ...base, src: "  ", visibleFilters: ["person"] })).toEqual([]);
+  });
+
+  it("detectObjectForSrc stays the first of the list", () => {
+    const opts = {
+      ...base,
+      src: "/cam_dog_motorcycle_person.mp4",
+      visibleFilters: ["motorcycle", "person", "dog"],
+    };
+    expect(detectObjectsForSrc(opts)).toEqual(["motorcycle", "person", "dog"]);
+    expect(detectObjectForSrc(opts)).toBe("motorcycle");
+  });
+});
+
 describe("matchesObjectFilter", () => {
   const baseOpts = {
     src: "/clip.mp4",
@@ -275,7 +316,7 @@ describe("matchesObjectFilter", () => {
       matchesObjectFilter({
         ...baseOpts,
         filters: [],
-        getObjectForSrc: () => null,
+        getObjectsForSrc: () => [],
       })
     ).toBe(true);
   });
@@ -286,9 +327,9 @@ describe("matchesObjectFilter", () => {
       matchesObjectFilter({
         ...baseOpts,
         filters: [" Person ", "CAR", ""],
-        getObjectForSrc: (src) => {
+        getObjectsForSrc: (src) => {
           calls.push(src);
-          return "person";
+          return ["person"];
         },
       })
     ).toBe(true);
@@ -300,19 +341,48 @@ describe("matchesObjectFilter", () => {
       matchesObjectFilter({
         ...baseOpts,
         filters: ["person"],
-        getObjectForSrc: () => null,
+        getObjectsForSrc: () => [],
       })
     ).toBe(false);
   });
 
-  it("returns false when detected object isn't in active filters", () => {
+  it("returns false when no detected object is in active filters", () => {
     expect(
       matchesObjectFilter({
         ...baseOpts,
         filters: ["car"],
-        getObjectForSrc: () => "person",
+        getObjectsForSrc: () => ["person", "dog"],
       })
     ).toBe(false);
+  });
+
+  // #203: a multi-tagged file must show up under each of its objects, not
+  // only under the first one detection happens to return.
+  it("matches when any detected object is active, not just the first", () => {
+    const objects = ["person", "motorcycle"];
+    for (const filter of ["person", "motorcycle"]) {
+      expect(
+        matchesObjectFilter({ ...baseOpts, filters: [filter], getObjectsForSrc: () => objects })
+      ).toBe(true);
+    }
+  });
+
+  it("media mode end-to-end: concatenated tags match each object filter", () => {
+    const src = "/media/frontdoor_20260612_1200_motorcycle_person.mp4";
+    const getObjectsForSrc = (s: string): string[] =>
+      detectObjectsForSrc({
+        src: s,
+        sourceMode: "media",
+        visibleFilters: ["person", "motorcycle", "dog"],
+        getSrcEntity: () => undefined,
+        getSensorState: () => undefined,
+        getMediaTitle: () => undefined,
+      });
+    const match = (filter: string): boolean =>
+      matchesObjectFilter({ ...baseOpts, src, filters: [filter], getObjectsForSrc });
+    expect(match("motorcycle")).toBe(true);
+    expect(match("person")).toBe(true);
+    expect(match("dog")).toBe(false);
   });
 
   it("sensor mode routes through matchesObjectFilterForFileSensor", () => {
@@ -322,7 +392,7 @@ describe("matchesObjectFilter", () => {
       filters: ["dog"],
       getSrcEntity: () => "sensor.cam",
       getSensorState: () => undefined,
-      getObjectForSrc: () => null, // not consulted in sensor mode
+      getObjectsForSrc: () => [], // not consulted in sensor mode
     });
     expect(result).toBe(true);
   });
