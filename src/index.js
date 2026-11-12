@@ -103,6 +103,7 @@ import {
 } from "./data/pill-catalog";
 import { MIC_NOTIFICATION_ID, WebRtcMicClient } from "./data/webrtc-mic";
 import { syncLiveAudio } from "./data/live-audio";
+import { isTalkbackRow, talkbackPosition, talkbackRowJustify } from "./data/talkback-layout";
 import { StreamWatchdog } from "./data/stream-watchdog";
 import {
   buildTriggerMap,
@@ -3593,7 +3594,9 @@ class CameraGalleryCard extends LitElement {
   // The error message is rendered as a small toast inside the controls
   // bar (separate live region) so screen readers announce failures via
   // aria-live.
-  _renderMicTalkbackBar() {
+  // `inRow`: render as its own row below/above the preview (#257) rather
+  // than floating over the video. Same control, flow layout and card colors.
+  _renderMicTalkbackBar(inRow = false) {
     const cameraId = this._getEffectiveLiveCamera();
     const source = this._talkSourceFor(cameraId);
     if (!source) return html``;
@@ -3649,7 +3652,9 @@ class CameraGalleryCard extends LitElement {
           ? "rgba(202, 138, 4, 0.30)"
           : err
             ? "rgba(127, 29, 29, 0.30)"
-            : "transparent";
+            : inRow
+              ? "var(--cgc-obj-btn-bg, var(--cgc-ui-bg))"
+              : "transparent";
     // Avoid stacking on top of the pill bar — when pills sit at the
     // bottom (`bar_position: bottom`) flip the talkback bar to the top.
     const placement =
@@ -3664,7 +3669,9 @@ class CameraGalleryCard extends LitElement {
     const isButton = shape === "button";
 
     let position;
-    if (isButton) {
+    if (inRow) {
+      position = isButton ? "" : "width:100%";
+    } else if (isButton) {
       const pos = this.config?.live_mic_button_position;
       if (pos === "left") position = "left:12px;right:auto;transform:none";
       else if (pos === "right") position = "left:auto;right:12px;transform:none";
@@ -3703,14 +3710,16 @@ class CameraGalleryCard extends LitElement {
         tabindex="0"
         aria-label=${ariaLabel}
         title=${isButton ? label : ""}
-        style="position:absolute;${position};${placement};${sizeStyle}font-size:14px;display:flex;align-items:center;justify-content:center;color:#fff;font-weight:600;letter-spacing:0.02em;background:${bg};box-shadow:inset 0 1px 0 rgba(255,255,255,0.14);user-select:none;-webkit-user-select:none;touch-action:none;z-index:5;backdrop-filter:blur(16px) saturate(160%);-webkit-backdrop-filter:blur(16px) saturate(160%);text-shadow:0 1px 2px rgba(0,0,0,0.5);overflow:${overflow};"
+        style="${inRow
+          ? `position:relative;${position};box-sizing:border-box;color:var(--cgc-txt);border-radius:var(--cgc-obj-btn-radius, 10px);`
+          : `position:absolute;${position};${placement};color:#fff;backdrop-filter:blur(16px) saturate(160%);-webkit-backdrop-filter:blur(16px) saturate(160%);text-shadow:0 1px 2px rgba(0,0,0,0.5);box-shadow:inset 0 1px 0 rgba(255,255,255,0.14);`}${sizeStyle}${inRow && !isButton ? "border-radius:var(--cgc-obj-btn-radius, 10px);" : ""}font-size:14px;display:flex;align-items:center;justify-content:center;font-weight:600;letter-spacing:0.02em;background:${bg};user-select:none;-webkit-user-select:none;touch-action:none;z-index:5;overflow:${overflow};"
         @pointerdown=${this._onMicPointerDown}
         @pointerup=${this._onMicPointerUp}
         @pointercancel=${this._onMicPointerUp}
         @pointerleave=${this._onMicPointerUp}
       >
         ${radarRings}
-        <span class="mic-talkback-tint" aria-hidden="true" style="position:absolute;inset:0;border-radius:inherit;background:var(--cgc-talkback-bg, var(--cgc-pill-bg, #000));opacity:calc(var(--cgc-talkback-opacity, var(--cgc-bar-opacity, 30)) / 100);pointer-events:none;"></span>
+        <span class="mic-talkback-tint" aria-hidden="true" style="${inRow ? "display:none;" : ""}position:absolute;inset:0;border-radius:inherit;background:var(--cgc-talkback-bg, var(--cgc-pill-bg, #000));opacity:calc(var(--cgc-talkback-opacity, var(--cgc-bar-opacity, 30)) / 100);pointer-events:none;"></span>
         ${isButton || this.config?.live_mic_waveform_enabled === false ? html`` : html`<canvas class="mic-wave" aria-hidden="true" style="position:absolute;inset:0;width:100%;height:100%;opacity:${state === "active" ? 1 : 0};transition:opacity 150ms ease-out;pointer-events:none;z-index:1;"></canvas>`}
         <ha-icon icon=${icon} style="--mdc-icon-size:${isButton ? 22 : 18}px;width:${isButton ? 22 : 18}px;height:${isButton ? 22 : 18}px;display:inline-flex;align-items:center;justify-content:center;line-height:1;position:relative;z-index:2;"></ha-icon>
         ${isButton ? html`` : html`<span style="position:relative;z-index:2;">${label}</span>`}
@@ -6757,7 +6766,7 @@ class CameraGalleryCard extends LitElement {
               </div>
             ` : html``}
             ${isLive && !isGridLayout(this.config, this._liveLayoutOverride) ? hamburgerPanel : html``}
-            ${isLive && !isGridLayout(this.config, this._liveLayoutOverride) ? this._renderMicTalkbackBar() : html``}
+            ${isLive && !isGridLayout(this.config, this._liveLayoutOverride) && !isTalkbackRow(talkbackPosition(this.config?.live_mic_position)) ? this._renderMicTalkbackBar() : html``}
             ${isLive && !isGridLayout(this.config, this._liveLayoutOverride) ? this._renderPtzOverlay() : html``}
           </div>
         `
@@ -6774,6 +6783,16 @@ class CameraGalleryCard extends LitElement {
         ` : html``}
       </div>
     ` : html``;
+
+    // Talkback in its own row below/above the preview (#257). Only when there
+    // is a talk source for the active camera, so no empty row takes a gap.
+    const micPos = talkbackPosition(this.config?.live_mic_position);
+    const talkCam = isLive && !isGridLayout(this.config, this._liveLayoutOverride) ? this._getEffectiveLiveCamera() : "";
+    const talkbackRow = showPreviewSection && isTalkbackRow(micPos) && talkCam && this._talkSourceFor(talkCam)
+      ? html`<div class="talkback-row" style="display:flex;justify-content:${talkbackRowJustify(this.config?.live_mic_shape === "button" ? "button" : "bar", this.config?.live_mic_button_position)};">${this._renderMicTalkbackBar(true)}</div>`
+      : html``;
+    const talkbackAbove = micPos === "above" ? talkbackRow : html``;
+    const talkbackBelow = micPos === "below" ? talkbackRow : html``;
 
     const objectFiltersBlock = visibleObjectFilters.length
       ? html`
@@ -7112,7 +7131,7 @@ class CameraGalleryCard extends LitElement {
       <div class="root" style="${rootVars}">
         <div class="panel" style="width:${PREVIEW_WIDTH}; margin:0 auto;">
           ${!previewAtBottom && showPreviewSection
-            ? html`${previewBlock}${controlsFixedBlock}${showGalleryControls && !fixedMode ? html`<div class="divider"></div>` : html``}`
+            ? html`${talkbackAbove}${previewBlock}${controlsFixedBlock}${talkbackBelow}${showGalleryControls && !fixedMode ? html`<div class="divider"></div>` : html``}`
             : html``}
 
           ${showGalleryControls ? (() => {
@@ -7236,7 +7255,7 @@ class CameraGalleryCard extends LitElement {
           ` : html``}
 
           ${previewAtBottom && showPreviewSection
-            ? html`${showGalleryControls && !fixedMode ? html`<div class="divider"></div>` : html``}${previewBlock}${controlsFixedBlock}`
+            ? html`${showGalleryControls && !fixedMode ? html`<div class="divider"></div>` : html``}${talkbackAbove}${previewBlock}${controlsFixedBlock}${talkbackBelow}`
             : html``}
         </div>
 
@@ -7419,7 +7438,7 @@ const CGC_CONFIG_KEY_ORDER = [
   "live_grid_labels", "live_grid_columns", "live_grid_emphasis", "live_stream_url", "live_stream_name", "live_stream_urls",
   "live_go2rtc_url", "live_go2rtc_stream", "live_pills", "live_chevrons_enabled", "live_auto_recover",
   "tap_action", "live_mic_mode", "live_mic_audio_processing",
-  "live_mic_shape", "live_mic_button_position", "live_native_talk", "live_triggers",
+  "live_mic_shape", "live_mic_button_position", "live_mic_position", "live_native_talk", "live_triggers",
   "live_mic_waveform_enabled", "live_mic_waveform_sensitivity",
   "live_mic_ice_servers", "live_mic_force_relay", "live_mic_streams",
   "live_ptz_enabled", "live_ptz_position", "live_ptz_speed", "live_ptz_cameras",
@@ -10331,6 +10350,21 @@ class CameraGalleryCardEditor extends HTMLElement {
               </div>
             </div>
             ` : ``}`;
+          })()}
+        </div>
+        <div class="row">
+          ${(() => {
+            const mp = this._config.live_mic_position || "overlay";
+            const seg = (val, label) =>
+              `<button class="seg ${mp === val ? "on" : ""}" data-livemicpos="${val}">${label}</button>`;
+            return `
+            <div class="lbl">Position</div>
+            <div class="desc"><code>Over video</code> floats the talk control on the live picture. <code>Below</code> and <code>Above</code> give it its own row, so it never covers the camera view.</div>
+            <div class="segwrap">
+              ${seg("overlay", "Over video")}
+              ${seg("below",   "Below")}
+              ${seg("above",   "Above")}
+            </div>`;
           })()}
         </div>
         <div class="row">
@@ -14051,6 +14085,21 @@ details summary { user-select: none; }
           const n = { ...this._config };
           delete n.live_mic_shape;
           delete n.live_mic_button_position;
+          this._config = this._stripAlwaysTrueKeys(n);
+          this._fire();
+        }
+        this._scheduleRender();
+      });
+    });
+    // Talkback position (#257). "overlay" is the default and not persisted.
+    this.shadowRoot.querySelectorAll("[data-livemicpos]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const pos = btn.dataset.livemicpos;
+        if (pos === "below" || pos === "above") {
+          this._set("live_mic_position", pos);
+        } else {
+          const n = { ...this._config };
+          delete n.live_mic_position;
           this._config = this._stripAlwaysTrueKeys(n);
           this._fire();
         }

@@ -575,6 +575,9 @@ export const cameraGalleryCardConfigStruct = type({
   // shape; `center` is the default and is dropped by the editor.
   live_mic_shape: optional(enums(["bar", "button"])),
   live_mic_button_position: optional(enums(["left", "center", "right"])),
+  // Talkback control over the video (default) or in its own row below /
+  // above the preview (#257). See data/talkback-layout.ts.
+  live_mic_position: optional(enums(["overlay", "below", "above"])),
   // Use Home Assistant's own two-way audio (HA 2026.11, Labs) for cameras
   // that report `two_way_audio` and have no go2rtc backchannel configured.
   // Absent = on; `false` turns it off. See src/data/native-talk.ts.
