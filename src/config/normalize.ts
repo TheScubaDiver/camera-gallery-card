@@ -147,6 +147,7 @@ export interface InputConfig {
   live_stream_name?: string;
   live_stream_urls?: LiveStreamUrlEntryInput[];
   live_go2rtc_url?: string;
+  tap_action?: { action: string; [key: string]: unknown };
   live_go2rtc_stream?: string;
   live_mic_mode?: string;
   live_mic_audio_processing?: {
@@ -220,6 +221,7 @@ export interface InputConfig {
   preview_position?: string;
   clean_mode?: boolean;
   preview_close_on_tap?: boolean;
+  fullscreen_zoom?: boolean;
 
   // ─── Misc ──────────────────────────────────────────────────
   max_media?: number;

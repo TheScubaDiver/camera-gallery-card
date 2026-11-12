@@ -255,6 +255,7 @@ export const FRIGATE_EVENT_CLUSTER_GAP_SEC_MAX = 600;
 export const DEFAULT_CONTROLS_MODE = "overlay" satisfies ControlsMode;
 export const DEFAULT_BROWSE_TIMEOUT_MS = 10000;
 export const DEFAULT_CLEAN_MODE = false;
+export const DEFAULT_FULLSCREEN_ZOOM = true;
 export const DEFAULT_DELETE_CONFIRM = true;
 export const DEFAULT_DELETE_PREFIX = "/config/www/";
 /**
@@ -346,3 +347,21 @@ export const STYLE = {
   topbar_margin: "0px",
   topbar_padding: "0px",
 } as const;
+
+/**
+ * Action types supported by `tap_action`: the standard Home Assistant actions
+ * (minus `assist`, which needs frontend-internal dialogs) plus the card's own
+ * live controls.
+ */
+export const TAP_ACTIONS = [
+  "none",
+  "more-info",
+  "toggle",
+  "perform-action",
+  "call-service",
+  "navigate",
+  "url",
+  "fullscreen",
+  "snapshot",
+  "refresh",
+] as const;
