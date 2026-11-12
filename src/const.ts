@@ -21,7 +21,7 @@ export const CONTROLS_MODES = ["overlay", "fixed"] as const;
 export const ASPECT_RATIOS = ["16:9", "4:3", "1:1"] as const;
 export const LIVE_LAYOUTS = ["single", "grid"] as const;
 export const MIC_MODES = ["toggle", "ptt"] as const;
-export const PTZ_TYPES = ["ezviz", "reolink", "frigate", "onvif"] as const;
+export const PTZ_TYPES = ["ezviz", "reolink", "frigate", "onvif", "service"] as const;
 export const PTZ_DIRECTIONS = ["up", "down", "left", "right"] as const;
 export const PTZ_POSITIONS = ["bottom-left", "bottom-right", "top-left", "top-right"] as const;
 
@@ -255,6 +255,7 @@ export const FRIGATE_EVENT_CLUSTER_GAP_SEC_MAX = 600;
 export const DEFAULT_CONTROLS_MODE = "overlay" satisfies ControlsMode;
 export const DEFAULT_BROWSE_TIMEOUT_MS = 10000;
 export const DEFAULT_CLEAN_MODE = false;
+export const DEFAULT_FULLSCREEN_ZOOM = true;
 export const DEFAULT_DELETE_CONFIRM = true;
 export const DEFAULT_DELETE_PREFIX = "/config/www/";
 /**
@@ -282,6 +283,19 @@ export const FRIGATE_API_RETRY_AFTER_MS = 5 * 60 * 1000;
  * separate events on a busy doorbell camera.
  */
 export const FRIGATE_SNAPSHOT_MATCH_WINDOW_MS = 15_000;
+
+/**
+ * Time window for proximity-pairing a plain-file thumbnail with a video
+ * whose filename differs only in its timestamp digits.
+ *
+ * Cameras that upload over FTP stamp each file with its own capture time:
+ * Reolink names the clip after the recording start (pre-record buffer
+ * included) and the still after the trigger frame, e.g.
+ * `Cam_00_20261012111139.mp4` + `Cam_00_20261012111141.jpg`. Same 15s
+ * budget as the Frigate match; the filename-shape check in
+ * `pairVideoThumbnails` keeps it from bridging two cameras or channels.
+ */
+export const THUMBNAIL_MATCH_WINDOW_MS = 15_000;
 
 /**
  * Time-to-live for a media-source resolve failure. After this elapses,
@@ -333,3 +347,21 @@ export const STYLE = {
   topbar_margin: "0px",
   topbar_padding: "0px",
 } as const;
+
+/**
+ * Action types supported by `tap_action`: the standard Home Assistant actions
+ * (minus `assist`, which needs frontend-internal dialogs) plus the card's own
+ * live controls.
+ */
+export const TAP_ACTIONS = [
+  "none",
+  "more-info",
+  "toggle",
+  "perform-action",
+  "call-service",
+  "navigate",
+  "url",
+  "fullscreen",
+  "snapshot",
+  "refresh",
+] as const;

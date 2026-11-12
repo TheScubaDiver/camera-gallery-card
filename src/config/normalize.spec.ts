@@ -22,6 +22,35 @@ const minimalMedia = {
   path_datetime_format: "YYYY-MM-DD",
 };
 
+describe("manual service PTZ config", () => {
+  it("accepts WebRTC-style service data with non-string values", () => {
+    const { config } = normalizeConfig({
+      ...minimalSensor,
+      live_ptz_enabled: true,
+      live_ptz_cameras: {
+        "camera.manual": {
+          type: "service",
+          service: "script.camera_ptz",
+          data_left: { direction: "directionleft", duration: 1, enabled: true },
+          data_right: { direction: "directionright" },
+          data_up: { direction: "directionup" },
+          data_down: { direction: "directiondown" },
+          data_start_left: { cmd: "DirectionRight" },
+          data_end_left: { cmd: "Stop" },
+        },
+      },
+    });
+
+    expect(config.live_ptz_cameras["camera.manual"]).toMatchObject({
+      type: "service",
+      service: "script.camera_ptz",
+      data_left: { direction: "directionleft", duration: 1, enabled: true },
+      data_start_left: { cmd: "DirectionRight" },
+      data_end_left: { cmd: "Stop" },
+    });
+  });
+});
+
 describe("normalizeSensorEntities", () => {
   it("trims and dedupes (case-insensitive)", () => {
     expect(normalizeSensorEntities(["sensor.A", " sensor.a ", "sensor.B"])).toEqual([
@@ -766,5 +795,48 @@ describe("Idempotence — running normalize on already-canonical output is a no-
     });
     const second = normalizeConfig(first.config);
     expect(second.config).toEqual(first.config);
+  });
+});
+
+describe("tap_action", () => {
+  it("passes a perform-action config through untouched", () => {
+    const tap = {
+      action: "perform-action",
+      perform_action: "light.turn_on",
+      target: { entity_id: "light.porch" },
+      data: { brightness_pct: 50 },
+    };
+    const { config } = normalizeConfig({ ...minimalSensor, tap_action: tap });
+    expect(config.tap_action).toEqual(tap);
+  });
+
+  it.each(["more-info", "toggle", "none", "fullscreen", "snapshot", "refresh"])(
+    "accepts the %s action",
+    (action) => {
+      const { config } = normalizeConfig({ ...minimalSensor, tap_action: { action } });
+      expect(config.tap_action?.action).toBe(action);
+    }
+  );
+
+  it("accepts navigate/url with a confirmation prompt", () => {
+    const { config } = normalizeConfig({
+      ...minimalSensor,
+      tap_action: {
+        action: "navigate",
+        navigation_path: "/lovelace/cameras",
+        confirmation: { text: "Go?" },
+      },
+    });
+    expect(config.tap_action?.navigation_path).toBe("/lovelace/cameras");
+  });
+
+  it("is unset by default", () => {
+    expect(normalizeConfig(minimalSensor).config.tap_action).toBeUndefined();
+  });
+
+  it("rejects an unknown action type", () => {
+    expect(() =>
+      normalizeConfig({ ...minimalSensor, tap_action: { action: "explode" } })
+    ).toThrow();
   });
 });

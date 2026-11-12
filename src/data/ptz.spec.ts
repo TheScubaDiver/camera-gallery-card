@@ -1,6 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { detectPtzType, dispatchPan, getPtzConfig, joystickResolve, ptzCapabilities } from "./ptz";
+import {
+  detectPtzType,
+  dispatchAction,
+  dispatchPan,
+  getPtzConfig,
+  joystickResolve,
+  ptzCapabilities,
+} from "./ptz";
 import type { CameraGalleryCardConfig } from "../config/normalize";
 
 const cfg = (over: Partial<CameraGalleryCardConfig> = {}): CameraGalleryCardConfig =>
@@ -310,6 +317,104 @@ describe("actions override (YAML escape hatch)", () => {
       { action: "stop" },
       { entity_id: "camera.driveway" }
     );
+  });
+});
+
+describe("manual service PTZ", () => {
+  it("calls the configured service with WebRTC-style direction data", async () => {
+    const callService = vi.fn().mockResolvedValue(undefined);
+    const ptz = {
+      type: "service" as const,
+      service: "script.camera_ptz",
+      data_left: { direction: "directionleft", duration: 0.5 },
+    };
+
+    await dispatchPan({ callService }, "camera.manual", ptz, "left", "start", 5);
+
+    expect(callService).toHaveBeenCalledWith("script", "camera_ptz", {
+      direction: "directionleft",
+      duration: 0.5,
+    });
+  });
+
+  it("is pulse-based and does not call a stop service on release", async () => {
+    const callService = vi.fn().mockResolvedValue(undefined);
+    await dispatchPan(
+      { callService },
+      "camera.manual",
+      { type: "service", service: "script.camera_ptz", data_up: { direction: "up" } },
+      "up",
+      "stop",
+      5
+    );
+    expect(callService).not.toHaveBeenCalled();
+  });
+
+  it("calls data_start on press and data_end on release for continuous services", async () => {
+    const callService = vi.fn().mockResolvedValue(undefined);
+    const ptz = {
+      type: "service" as const,
+      service: "icsee_ptz.move",
+      data_start_left: { entity_id: "binary_sensor.camera_motion", cmd: "DirectionRight" },
+      data_end_left: { entity_id: "binary_sensor.camera_motion", cmd: "Stop" },
+    };
+
+    await dispatchPan({ callService }, "camera.manual", ptz, "left", "start", 5);
+    await dispatchPan({ callService }, "camera.manual", ptz, "left", "stop", 5);
+
+    expect(callService).toHaveBeenNthCalledWith(1, "icsee_ptz", "move", {
+      entity_id: "binary_sensor.camera_motion",
+      cmd: "DirectionRight",
+    });
+    expect(callService).toHaveBeenNthCalledWith(2, "icsee_ptz", "move", {
+      entity_id: "binary_sensor.camera_motion",
+      cmd: "Stop",
+    });
+  });
+
+  it("treats a complete start/end direction set as continuous", () => {
+    const directionData = Object.fromEntries(
+      ["left", "right", "up", "down"].flatMap((direction) => [
+        [`data_start_${direction}`, { cmd: `Direction${direction}` }],
+        [`data_end_${direction}`, { cmd: "Stop" }],
+      ])
+    );
+    expect(ptzCapabilities({ type: "service", ...directionData })).toMatchObject({
+      continuous: true,
+    });
+  });
+
+  it("enables optional zoom and home controls from their data entries", async () => {
+    const callService = vi.fn().mockResolvedValue(undefined);
+    const ptz = {
+      type: "service" as const,
+      service: "camera.ptz",
+      data_zoom_in: { command: "zoom_in" },
+      data_zoom_out: { command: "zoom_out" },
+      data_home: { command: "home" },
+    };
+    expect(ptzCapabilities(ptz)).toEqual({
+      continuous: false,
+      zoomable: true,
+      homeable: true,
+    });
+    await dispatchAction({ callService }, "camera.manual", ptz, "zoom_in", "start", 5);
+    await dispatchAction({ callService }, "camera.manual", ptz, "home", "start", 5);
+    expect(callService).toHaveBeenNthCalledWith(1, "camera", "ptz", { command: "zoom_in" });
+    expect(callService).toHaveBeenNthCalledWith(2, "camera", "ptz", { command: "home" });
+  });
+
+  it("fails clearly when service data for the requested direction is absent", async () => {
+    await expect(
+      dispatchPan(
+        { callService: vi.fn() },
+        "camera.manual",
+        { type: "service", service: "script.camera_ptz" },
+        "right",
+        "start",
+        5
+      )
+    ).rejects.toThrow(/right/);
   });
 });
 
