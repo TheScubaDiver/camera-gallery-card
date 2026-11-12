@@ -11,6 +11,12 @@ updates:
     commit-message:
       prefix: chore
       include: scope
+    ignore:
+      # typescript-eslint 8.x peers on typescript <6.1, so a TS 7 bump breaks
+      # `npm ci` (ERESOLVE) and takes the whole dev-tooling group down with it.
+      # Drop this once typescript-eslint supports TypeScript 7.
+      - dependency-name: typescript
+        update-types: ["version-update:semver-major"]
     groups:
       # Bundle all dev-tooling updates into a single weekly PR.
       # Production deps (lit) are not in this group, so they always get an
