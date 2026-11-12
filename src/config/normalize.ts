@@ -221,6 +221,7 @@ export interface InputConfig {
   preview_position?: string;
   clean_mode?: boolean;
   preview_close_on_tap?: boolean;
+  fullscreen_zoom?: boolean;
 
   // ─── Misc ──────────────────────────────────────────────────
   max_media?: number;
