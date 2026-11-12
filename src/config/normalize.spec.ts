@@ -22,6 +22,35 @@ const minimalMedia = {
   path_datetime_format: "YYYY-MM-DD",
 };
 
+describe("manual service PTZ config", () => {
+  it("accepts WebRTC-style service data with non-string values", () => {
+    const { config } = normalizeConfig({
+      ...minimalSensor,
+      live_ptz_enabled: true,
+      live_ptz_cameras: {
+        "camera.manual": {
+          type: "service",
+          service: "script.camera_ptz",
+          data_left: { direction: "directionleft", duration: 1, enabled: true },
+          data_right: { direction: "directionright" },
+          data_up: { direction: "directionup" },
+          data_down: { direction: "directiondown" },
+          data_start_left: { cmd: "DirectionRight" },
+          data_end_left: { cmd: "Stop" },
+        },
+      },
+    });
+
+    expect(config.live_ptz_cameras["camera.manual"]).toMatchObject({
+      type: "service",
+      service: "script.camera_ptz",
+      data_left: { direction: "directionleft", duration: 1, enabled: true },
+      data_start_left: { cmd: "DirectionRight" },
+      data_end_left: { cmd: "Stop" },
+    });
+  });
+});
+
 describe("normalizeSensorEntities", () => {
   it("trims and dedupes (case-insensitive)", () => {
     expect(normalizeSensorEntities(["sensor.A", " sensor.a ", "sensor.B"])).toEqual([
