@@ -15,20 +15,28 @@ Custom **Home Assistant Lovelace card** for browsing camera media in a clean **t
 
 ## Installation
 
-### HACS (Recommended)
+### Marketplace (Home Assistant 2026.11 and newer)
 
-[![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=TheScubadiver&repository=camera-gallery-card&category=plugin)
+Home Assistant 2026.11 has HACS built in as the **Marketplace**.
 
-1. Click the button above
-2. Click **Download**
-3. Restart Home Assistant
+[![Open your Home Assistant instance and open this repository.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=TheScubadiver&repository=camera-gallery-card&category=plugin)
+
+1. Click the button above, or go to **Settings → Marketplace** and search for **Camera Gallery Card**
+2. Click **Install**
+3. Reload your browser
+
+The Marketplace adds the dashboard resource for you and shows updates under **Settings → Updates**.
+
+### HACS (older Home Assistant versions)
+
+On Home Assistant before 2026.11, the same button opens HACS. Click **Download**, then reload your browser.
 
 ## Quick start
 
 Got the card installed? Here's the fastest way to see something on screen.
 
 1. In Home Assistant, open your dashboard and click **Edit dashboard** (top right).
-2. Click **Add card** and search for **Camera Gallery Card**.
+2. Click **Add card** and search for **Camera Gallery Card**. On Home Assistant 2026.6 and newer you can also pick a camera on the **By entity** tab: the card is suggested under **Community** as a live view of that camera.
 3. Pick a **source mode** when prompted:
    - **Sensor mode** — you have snapshot files in `/config/www/...` (e.g. saved by an automation). Also requires [FileTrack](#filetrack-optional--for-sensor-mode).
    - **Media mode** — you use Frigate, a NAS folder, or anything reachable via Home Assistant's media browser.
@@ -49,13 +57,12 @@ The **FileTrack** integration creates a sensor that scans a folder and exposes i
 
 FileTrack is a fork of the archived [files integration by TarheelGrad1998](https://github.com/TarheelGrad1998/files).
 
-1. Open **HACS**
-2. Go to **Integrations**
-3. Click the three-dot menu and choose **Custom repositories**
-4. Add `https://github.com/TheScubadiver/FileTrack` as an **Integration**
-5. Search for **FileTrack** and install it
-6. **Restart Home Assistant**
-7. Go to **Settings → Devices & Services** and add **FileTrack**
+1. Add the FileTrack repository:
+   - **Home Assistant 2026.11 and newer:** go to **Settings → Marketplace → Add from link** and enter `TheScubadiver/FileTrack`
+   - **Older versions:** open **HACS**, click the three-dot menu, choose **Custom repositories** and add `https://github.com/TheScubadiver/FileTrack` as an **Integration**
+2. Install **FileTrack**
+3. **Restart Home Assistant**
+4. Go to **Settings → Devices & Services** and add **FileTrack**
 
 > [!NOTE]
 > Once you have installed FileTrack, you can leave it alone. No need to configure anything in FileTrack — everything is configured in the card editor UI.

@@ -37,6 +37,8 @@ import { collectMediaSamples, scoreSamples } from "./data/path-format-detect";
 import { CombinedSourceClient } from "./data/combined-source";
 import { canDeleteItem, deleteItem } from "./data/delete-service";
 import { nativeTalkShouldToggle, nativeTalkUiState, talkSource } from "./data/native-talk";
+import { entityDisplayName, entitySearchText } from "./util/entity-name";
+import { CARD_GRID_OPTIONS, CARD_LAYOUT_OPTIONS, cardEntitySuggestion } from "./data/card-registration";
 import {
   isMenuButtonOn,
   menuButtonLabel,
@@ -1462,6 +1464,7 @@ class CameraGalleryCard extends LitElement {
       entityId,
       config: this.config,
       hassStates: this._hass?.states,
+      hass: this._hass,
     });
   }
 
@@ -3048,7 +3051,7 @@ class CameraGalleryCard extends LitElement {
 
       const label = document.createElement("div");
       label.className = "live-grid-label";
-      label.textContent = this._hass?.states?.[entity]?.attributes?.friendly_name || entity;
+      label.textContent = this._friendlyCameraName(entity);
       tile.appendChild(label);
 
       host.appendChild(tile);
@@ -4365,7 +4368,7 @@ class CameraGalleryCard extends LitElement {
       isOn,
       icon: isOn && btn.icon_on ? btn.icon_on : btn.icon,
       bg: isOn ? btn.color_on || "" : btn.color_off || "",
-      label: menuButtonLabel(btn, state),
+      label: menuButtonLabel(btn, state, this._hass),
     };
   }
 
@@ -6976,8 +6979,13 @@ class CameraGalleryCard extends LitElement {
 }
 
 CameraGalleryCard.prototype.getCardSize = function() { return 6; };
+// Sections-view size (HA 2024.11+). HA prefers this over the deprecated
+// getLayoutOptions, which stays only for older versions.
+CameraGalleryCard.prototype.getGridOptions = function() {
+  return { ...CARD_GRID_OPTIONS };
+};
 CameraGalleryCard.prototype.getLayoutOptions = function() {
-  return { grid_columns: 4, grid_min_columns: 2 };
+  return { ...CARD_LAYOUT_OPTIONS };
 };
 
 customElements.define("camera-gallery-card", CameraGalleryCard);
@@ -6989,6 +6997,9 @@ window.customCards.push({
   description:
     "Media gallery for Home Assistant (sensor fileList OR media_source folder) with optional live preview",
   preview: true,
+  documentationURL: "https://github.com/TheScubaDiver/camera-gallery-card",
+  // Card picker "By entity" tab (HA 2026.6+): offer this card for cameras.
+  getEntitySuggestion: (hass, entityId) => cardEntitySuggestion(hass, entityId),
 });
 
 console.info(`Camera Gallery Card v${CARD_VERSION}`);
@@ -8796,7 +8807,7 @@ class CameraGalleryCardEditor extends HTMLElement {
         : DEFAULT_LIVE_GRID_EMPHASIS;
 
 
-    const cameraEntities = getEditorCameraEntities(this._hass?.states);
+    const cameraEntities = getEditorCameraEntities(this._hass?.states, this._hass);
 
     const rootVars = `
       --ed-radius-panel: 18px;
@@ -9733,7 +9744,7 @@ class CameraGalleryCardEditor extends HTMLElement {
             ${liveCameraEntities.length > 0 ? `
             <div class="livecam-rows" id="livecam-tags-dnd">
               ${liveCameraEntities.map((id) => {
-                const name = String(this._hass?.states?.[id]?.attributes?.friendly_name || id).trim();
+                const name = (entityDisplayName(this._hass, id) || id);
                 const mic = String(micStreamForCamera(id, this._config) || "");
                 const isOpen = this._livecamRowOpen?.has(id) ? "open" : "";
                 return `
@@ -10104,7 +10115,7 @@ class CameraGalleryCardEditor extends HTMLElement {
           }
           return ptzDatalists + `<div style="display:flex;flex-direction:column;gap:10px;margin-top:10px;">
             ${visibleCams.map((entId) => {
-              const friendly = String(this._hass?.states?.[entId]?.attributes?.friendly_name || entId).trim();
+              const friendly = (entityDisplayName(this._hass, entId) || entId);
               const cfgEntry = ptzMap[entId];
               const enabled = !!cfgEntry;
               return `
@@ -14043,7 +14054,7 @@ details summary { user-select: none; }
         livecamSugg.innerHTML = `
           <div class="sugg-label">Cameras</div>
           ${items.map((id) => {
-            const name = String(this._hass?.states?.[id]?.attributes?.friendly_name || id).trim();
+            const name = (entityDisplayName(this._hass, id) || id);
             return `<button type="button" class="sugg-item" data-addcam="${id}">${name}<span style="opacity:0.45;font-weight:500;margin-left:6px;">${id}</span></button>`;
           }).join("")}
         `;
@@ -14098,8 +14109,7 @@ details summary { user-select: none; }
         return cameraEntities.filter((id) => {
           if (selected.includes(id)) return false;
           if (!q) return true;
-          const name = String(this._hass?.states?.[id]?.attributes?.friendly_name || id).toLowerCase();
-          return name.includes(q) || id.includes(q);
+          return entitySearchText(this._hass, id).includes(q);
         });
       };
 
@@ -14253,8 +14263,7 @@ details summary { user-select: none; }
     const entitySuggestions = (q) => {
       const lq = q.toLowerCase();
       return allEntityIds.filter((id) => {
-        const name = String(this._hass?.states?.[id]?.attributes?.friendly_name || "").toLowerCase();
-        return !lq || id.includes(lq) || name.includes(lq);
+        return !lq || entitySearchText(this._hass, id).includes(lq);
       }).slice(0, 30);
     };
 
@@ -14264,7 +14273,7 @@ details summary { user-select: none; }
         if (!ids.length) { sugg.hidden = true; sugg.innerHTML = ""; return; }
         sugg.hidden = false;
         sugg.innerHTML = ids.map((id) => {
-          const name = String(this._hass?.states?.[id]?.attributes?.friendly_name || id).trim();
+          const name = (entityDisplayName(this._hass, id) || id);
           return `<button type="button" class="sugg-item" data-pick-entity="${id}">${name}<span style="opacity:0.45;font-weight:500;margin-left:6px;">${id}</span></button>`;
         }).join("");
         sugg.querySelectorAll("[data-pick-entity]").forEach((btn) => {

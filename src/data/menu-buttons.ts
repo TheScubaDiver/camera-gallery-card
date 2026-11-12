@@ -8,6 +8,7 @@
  */
 
 import type { HassEntity } from "../types/hass";
+import { entityDisplayName, type EntityNameSource } from "../util/entity-name";
 
 export const MENU_BUTTON_PLACEMENTS = ["menu", "controls"] as const;
 export type MenuButtonPlacement = (typeof MENU_BUTTON_PLACEMENTS)[number];
@@ -124,11 +125,19 @@ export function selectOptionCall(entityId: string, option: string): MenuButtonCa
   return { domain, service: "select_option", data: { entity_id: entityId, option } };
 }
 
-/** Button label: `title`, else the entity's friendly name, else its id. */
+/**
+ * Button label: `title`, else the entity's display name (as the built-in
+ * cards show it when `hass` is given, else `friendly_name`), else its id.
+ */
 export function menuButtonLabel(
   btn: Pick<MenuButtonConfig, "entity" | "title">,
-  state: HassEntity | null | undefined
+  state: HassEntity | null | undefined,
+  hass?: EntityNameSource | null
 ): string {
-  const friendly = state?.attributes?.["friendly_name"];
-  return btn.title || (typeof friendly === "string" && friendly) || btn.entity;
+  if (btn.title) return btn.title;
+  const states = state ? { [btn.entity]: state } : undefined;
+  return (
+    entityDisplayName({ states, formatEntityName: hass?.formatEntityName }, btn.entity) ||
+    btn.entity
+  );
 }

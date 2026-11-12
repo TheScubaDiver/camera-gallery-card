@@ -16,6 +16,7 @@
 import { DEFAULT_LIVE_GRID_EMPHASIS } from "../const";
 import type { CameraGalleryCardConfig } from "../config/normalize";
 import type { HassEntity } from "../types/hass";
+import { entityDisplayName, type EntityNameSource } from "../util/entity-name";
 
 /** A live-stream button (RTSP-go2rtc / HLS / etc. URL surfaced as a picker entry). */
 export interface StreamEntry {
@@ -41,16 +42,15 @@ type LiveCameraEntry = NonNullable<CameraGalleryCardConfig["live_cameras"]>[numb
  * and YAML already accepts them, so the editor should expose them as well.
  */
 export function getEditorCameraEntities(
-  hassStates: Readonly<Record<string, HassEntity>> | null | undefined
+  hassStates: Readonly<Record<string, HassEntity>> | null | undefined,
+  hass?: EntityNameSource | null
 ): string[] {
   const states = hassStates ?? {};
+  const nameSource: EntityNameSource = { states, formatEntityName: hass?.formatEntityName };
+  const nameOf = (id: string): string => (entityDisplayName(nameSource, id) || id).toLowerCase();
   return Object.keys(states)
     .filter((id) => id.startsWith("camera."))
-    .sort((a, b) => {
-      const an = String(states[a]?.attributes?.["friendly_name"] ?? a).toLowerCase();
-      const bn = String(states[b]?.attributes?.["friendly_name"] ?? b).toLowerCase();
-      return an.localeCompare(bn);
-    });
+    .sort((a, b) => nameOf(a).localeCompare(nameOf(b)));
 }
 
 /**
@@ -588,13 +588,16 @@ export function isGridLayout(
 /**
  * Display name for an entry in the live-camera picker. Handles three cases:
  *  - synthetic stream id → the entry's `name` from `live_stream_urls`
- *  - camera entity with `friendly_name` → that
+ *  - camera entity → its Home Assistant display name (`formatEntityName`
+ *    when `hass` is given, else `friendly_name`)
  *  - bare camera entity → title-cased local part
  */
 export function friendlyCameraName(opts: {
   entityId: string;
   config: CameraGalleryCardConfig | null | undefined;
   hassStates: Readonly<Record<string, HassEntity>> | null | undefined;
+  /** `hass`, for names that match the built-in cards (HA 2026.4+). */
+  hass?: EntityNameSource | null;
 }): string {
   const id = String(opts.entityId ?? "").trim();
   if (!id) return "";
@@ -602,9 +605,11 @@ export function friendlyCameraName(opts: {
     const se = getStreamEntryById(opts.config, id);
     return se ? se.name : "Stream";
   }
-  const state = opts.hassStates?.[id];
-  const friendly = String(state?.attributes?.["friendly_name"] ?? "").trim();
-  if (friendly) return friendly;
+  const name = entityDisplayName(
+    { states: opts.hassStates ?? undefined, formatEntityName: opts.hass?.formatEntityName },
+    id
+  );
+  if (name) return name;
   const raw = id.split(".").pop() ?? id;
   const label = raw.replace(/_/g, " ").trim();
   return label ? label.charAt(0).toUpperCase() + label.slice(1) : id;
