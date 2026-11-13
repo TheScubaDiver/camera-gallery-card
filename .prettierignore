@@ -1,5 +1,6 @@
 dist/
-src/index.js
+src/card.js
+src/editor/editor.js
 node_modules/
 package-lock.json
 
