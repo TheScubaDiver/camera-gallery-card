@@ -37,7 +37,7 @@ import { CombinedSourceClient } from "./data/combined-source";
 import { canDeleteItem, deleteItem } from "./data/delete-service";
 import { nativeTalkShouldToggle, nativeTalkUiState, talkSource } from "./data/native-talk";
 import { entityDisplayName, entitySearchText } from "./util/entity-name";
-import { defaultEntityIcon } from "./util/entity-icon";
+import { defaultEntityIcon, iconAfterEntityChange } from "./util/entity-icon";
 import { CARD_GRID_OPTIONS, CARD_LAYOUT_OPTIONS, cardEntitySuggestion } from "./data/card-registration";
 import {
   isMenuButtonOn,
@@ -10438,14 +10438,16 @@ class CameraGalleryCardEditor extends HTMLElement {
                       </div>
                       <div>
                         <div style="font-size:0.75em;opacity:0.6;margin-bottom:2px;">Icon (off)</div>
-                        <div class="field">
+                        <div class="field has-icon-preview">
+                          <ha-icon class="icon-preview" icon="${(btn.icon||"").replace(/"/g,"&quot;")}"></ha-icon>
                           <input type="text" class="ed-input" data-menubtn="${i}" data-mbfield="icon" value="${(btn.icon||"").replace(/"/g,"&quot;")}" placeholder="mdi:lightbulb" autocomplete="off" />
                           <div class="suggestions" data-menubtn-icon-sugg="${i}" hidden></div>
                         </div>
                       </div>
                       <div>
                         <div style="font-size:0.75em;opacity:0.6;margin-bottom:2px;">Icon (on)</div>
-                        <div class="field">
+                        <div class="field has-icon-preview">
+                          <ha-icon class="icon-preview" icon="${(btn.icon_on||"").replace(/"/g,"&quot;")}"></ha-icon>
                           <input type="text" class="ed-input" data-menubtn="${i}" data-mbfield="icon_on" value="${(btn.icon_on||"").replace(/"/g,"&quot;")}" placeholder="mdi:lightbulb" autocomplete="off" />
                           <div class="suggestions" data-menubtn-iconon-sugg="${i}" hidden></div>
                         </div>
@@ -10483,7 +10485,8 @@ class CameraGalleryCardEditor extends HTMLElement {
               </div>
               <div>
                 <div style="font-size:0.75em;opacity:0.6;margin-bottom:2px;">Icon (off)</div>
-                <div class="field">
+                <div class="field has-icon-preview">
+                  <ha-icon class="icon-preview" icon=""></ha-icon>
                   <input type="text" class="ed-input" id="menubtn-icon-input" placeholder="mdi:lightbulb" autocomplete="off" />
                   <div class="suggestions" id="menubtn-icon-sugg" hidden></div>
                 </div>
@@ -11456,6 +11459,20 @@ class CameraGalleryCardEditor extends HTMLElement {
         .field {
           position: relative;
           min-width: 0;
+        }
+        /* Icon fields show the icon they hold (#287). */
+        .field.has-icon-preview > .ed-input {
+          padding-left: 38px;
+        }
+        .field.has-icon-preview > .icon-preview {
+          position: absolute;
+          left: 12px;
+          top: 50%;
+          transform: translateY(-50%);
+          --mdc-icon-size: 18px;
+          color: var(--ed-text2);
+          pointer-events: none;
+          z-index: 1;
         }
 
         .field textarea {
@@ -14701,6 +14718,12 @@ details summary { user-select: none; }
     // Icon autocomplete helpers
     const COMMON_ICONS = ["mdi:lightbulb","mdi:lightbulb-outline","mdi:lightbulb-off","mdi:lightbulb-on","mdi:lamp","mdi:ceiling-light","mdi:floor-lamp","mdi:led-strip","mdi:string-lights","mdi:lock","mdi:lock-open","mdi:lock-outline","mdi:lock-open-outline","mdi:lock-smart","mdi:shield-home","mdi:shield","mdi:door-open","mdi:door-closed","mdi:window-open","mdi:window-closed","mdi:garage","mdi:garage-open","mdi:gate","mdi:gate-open","mdi:thermostat","mdi:thermometer","mdi:fan","mdi:fan-off","mdi:air-conditioner","mdi:radiator","mdi:snowflake","mdi:heat-wave","mdi:home","mdi:home-outline","mdi:home-away","mdi:sleep","mdi:run","mdi:power","mdi:power-off","mdi:toggle-switch","mdi:toggle-switch-off","mdi:electric-switch","mdi:outlet","mdi:television","mdi:television-off","mdi:play","mdi:pause","mdi:stop","mdi:volume-high","mdi:volume-off","mdi:music","mdi:speaker","mdi:camera","mdi:cctv","mdi:motion-sensor","mdi:motion-sensor-off","mdi:smoke-detector","mdi:bell","mdi:bell-off","mdi:alert","mdi:robot-vacuum","mdi:washing-machine","mdi:dishwasher","mdi:coffee","mdi:car","mdi:car-connected","mdi:ev-station","mdi:water","mdi:water-off","mdi:pool","mdi:sprinkler","mdi:blinds","mdi:blinds-open","mdi:curtains","mdi:curtains-closed","mdi:ceiling-fan","mdi:ceiling-fan-light","mdi:battery","mdi:battery-charging","mdi:wifi","mdi:bluetooth","mdi:account","mdi:account-outline","mdi:account-group","mdi:star","mdi:heart","mdi:check","mdi:close","mdi:plus","mdi:minus","mdi:pencil","mdi:delete","mdi:refresh","mdi:eye","mdi:eye-off","mdi:flash","mdi:flash-off","mdi:weather-sunny","mdi:weather-night","mdi:weather-cloudy","mdi:chart-line","mdi:information","mdi:cog","mdi:tools"];
 
+    // Keep the little icon in front of an icon field in step with its text.
+    const syncIconPreview = (input) => {
+      const preview = input?.parentElement?.querySelector(":scope > .icon-preview");
+      if (preview) preview.setAttribute("icon", String(input.value || "").trim());
+    };
+
     const wireIconInput = (input, sugg, onSelect) => {
       if (!input || !sugg) return;
       const getSuggestions = (q) => {
@@ -14716,11 +14739,14 @@ details summary { user-select: none; }
           `<button type="button" class="sugg-item" data-pick-icon="${ic}" style="display:flex;align-items:center;gap:8px;"><ha-icon icon="${ic}" style="--mdc-icon-size:18px;flex-shrink:0;"></ha-icon><span>${ic.replace("mdi:","")}</span></button>`
         ).join("");
         sugg.querySelectorAll("[data-pick-icon]").forEach(btn => {
-          btn.addEventListener("mousedown", (e) => { e.preventDefault(); onSelect(btn.dataset.pickIcon); }, _sig);
+          btn.addEventListener("mousedown", (e) => { e.preventDefault(); onSelect(btn.dataset.pickIcon); syncIconPreview(input); }, _sig);
         });
       };
       input.addEventListener("focus", () => renderIconSugg(getSuggestions(input.value)), _sig);
-      input.addEventListener("input", () => renderIconSugg(getSuggestions(input.value)), _sig);
+      input.addEventListener("input", () => {
+        syncIconPreview(input);
+        renderIconSugg(getSuggestions(input.value));
+      }, _sig);
       input.addEventListener("keydown", (e) => {
         if (e.key === "Enter") { e.preventDefault(); const first = sugg.querySelector("[data-pick-icon]"); if (first) onSelect(first.dataset.pickIcon); }
         else if (e.key === "Escape") { sugg.hidden = true; }
@@ -14755,7 +14781,7 @@ details summary { user-select: none; }
         sugg.hidden = false;
         sugg.innerHTML = ids.map((id) => {
           const name = (entityDisplayName(this._hass, id) || id);
-          return `<button type="button" class="sugg-item" data-pick-entity="${id}" style="display:flex;align-items:center;gap:8px;"><ha-icon icon="${defaultEntityIcon(id, this._hass?.states?.[id])}" style="--mdc-icon-size:18px;flex-shrink:0;"></ha-icon><span>${name}<span style="opacity:0.45;font-weight:500;margin-left:6px;">${id}</span></span></button>`;
+          return `<button type="button" class="sugg-item" data-pick-entity="${id}" style="display:flex;align-items:center;gap:8px;"><ha-icon icon="${this._entityIcon(id)}" style="--mdc-icon-size:18px;flex-shrink:0;"></ha-icon><span>${name}<span style="opacity:0.45;font-weight:500;margin-left:6px;">${id}</span></span></button>`;
         }).join("");
         sugg.querySelectorAll("[data-pick-entity]").forEach((btn) => {
           btn.addEventListener("mousedown", (e) => { e.preventDefault(); onSelect(btn.dataset.pickEntity); }, _sig);
@@ -14780,9 +14806,15 @@ details summary { user-select: none; }
         if (!id) return;
         const current = Array.isArray(this._config.menu_buttons) ? [...this._config.menu_buttons] : [];
         if (!current[i]) return;
+        const prevEntity = current[i].entity;
         const next = { ...current[i], entity: id };
-        // Pre-fill the icon from the entity, only when it is empty (#287).
-        if (!String(next.icon || "").trim()) next.icon = defaultEntityIcon(id, this._hass?.states?.[id]);
+        // Follow the entity's icon unless the user picked their own (#287).
+        const icon = iconAfterEntityChange({
+          currentIcon: next.icon,
+          previousDefault: this._entityIcon(prevEntity),
+          nextDefault: this._entityIcon(id),
+        });
+        if (icon) next.icon = icon;
         current[i] = next;
         this._set("menu_buttons", current);
         this._scheduleRender();
@@ -14818,7 +14850,7 @@ details summary { user-select: none; }
 
     // Menu button veld inline bewerken (title, service, state_on)
     this.shadowRoot.querySelectorAll("input[data-menubtn][data-mbfield]").forEach((input) => {
-      if (input.dataset.mbfield === "icon" || input.dataset.mbfield === "icon_on") return;
+      // Icons typed by hand (not picked from the list) are saved here too.
       input.addEventListener("change", () => {
         const i = Number(input.dataset.menubtn);
         const field = input.dataset.mbfield;
@@ -14826,6 +14858,9 @@ details summary { user-select: none; }
         if (!current[i]) return;
         const updated = { ...current[i] };
         const val = input.value.trim();
+        // The off-icon is required; an emptied field keeps the saved icon.
+        if (!val && field === "icon") return;
+        if (val === (current[i][field] ?? "")) return;
         if (val) updated[field] = val;
         else delete updated[field];
         current[i] = updated;
@@ -14856,10 +14891,19 @@ details summary { user-select: none; }
     const onPickNew = (id) => {
       if (menubtnEntityInput) menubtnEntityInput.value = id;
       if (menubtnEntitySugg) menubtnEntitySugg.hidden = true;
-      // Pre-fill the icon from the entity, only when the field is empty (#287).
-      if (id && menubtnIconInput && !menubtnIconInput.value.trim()) {
-        menubtnIconInput.value = defaultEntityIcon(id, this._hass?.states?.[id]);
+      // Follow the entity's icon unless the user typed their own (#287).
+      if (id && menubtnIconInput) {
+        const icon = iconAfterEntityChange({
+          currentIcon: menubtnIconInput.value,
+          previousDefault: this._entityIcon(this._menubtnNewEntity),
+          nextDefault: this._entityIcon(id),
+        });
+        if (icon) {
+          menubtnIconInput.value = icon;
+          syncIconPreview(menubtnIconInput);
+        }
       }
+      this._menubtnNewEntity = id;
     };
     if (!this._mountHaEntityPicker(menubtnEntityInput, menubtnEntitySugg, onPickNew)) {
       wireEntityInput(menubtnEntityInput, menubtnEntitySugg, onPickNew);
@@ -15588,6 +15632,11 @@ details summary { user-select: none; }
     }
 
     this._scheduleRender();
+  }
+
+  // Automatic icon for an entity: entity settings, attribute, class, domain.
+  _entityIcon(id) {
+    return id ? defaultEntityIcon(id, this._hass?.states?.[id], this._hass?.entities?.[id]) : "";
   }
 
   // Make sure Home Assistant's own entity picker is defined (#287). It is

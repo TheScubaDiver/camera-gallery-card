@@ -2,14 +2,20 @@
  * A sensible icon for an entity, for pre-filling the menu-button icon field
  * in the editor (#287).
  *
- * Order: the entity's own `icon` attribute (what the user or integration set),
- * then a default for its device class, then a default for its domain. Mirrors
+ * Order: the icon set on the entity in Home Assistant's entity settings
+ * (registry), the entity's own `icon` attribute, then a default for its
+ * device class, then a default for its domain. Mirrors
  * the common Home Assistant defaults; it does not need to be exhaustive,
  * because the field stays editable and is only filled when it is empty.
  */
 
 interface EntityLike {
   attributes?: Record<string, unknown>;
+}
+
+/** The entity registry entry as HA exposes it on `hass.entities`. */
+interface RegistryLike {
+  icon?: string | null;
 }
 
 const DEVICE_CLASS_ICONS: Record<string, Record<string, string>> = {
@@ -88,7 +94,13 @@ const DOMAIN_ICONS: Record<string, string> = {
 /** Fallback when nothing else matches. */
 export const GENERIC_ENTITY_ICON = "mdi:gesture-tap-button";
 
-export function defaultEntityIcon(entityId: string, entity?: EntityLike | null): string {
+export function defaultEntityIcon(
+  entityId: string,
+  entity?: EntityLike | null,
+  registry?: RegistryLike | null
+): string {
+  const reg = registry?.icon;
+  if (typeof reg === "string" && reg.trim()) return reg.trim();
   const own = entity?.attributes?.["icon"];
   if (typeof own === "string" && own.trim()) return own.trim();
   const domain = String(entityId || "").split(".")[0] ?? "";
@@ -98,4 +110,20 @@ export function defaultEntityIcon(entityId: string, entity?: EntityLike | null):
     if (byClass) return byClass;
   }
   return DOMAIN_ICONS[domain] ?? GENERIC_ENTITY_ICON;
+}
+
+/**
+ * The icon a menu button should get after its entity changed (#287): the new
+ * entity's icon when the field is empty or still holds the previous entity's
+ * automatic icon. An icon the user chose themselves is kept (returns null).
+ */
+export function iconAfterEntityChange(opts: {
+  currentIcon: string | null | undefined;
+  previousDefault: string | null | undefined;
+  nextDefault: string;
+}): string | null {
+  const cur = String(opts.currentIcon ?? "").trim();
+  if (!cur) return opts.nextDefault;
+  if (opts.previousDefault && cur === opts.previousDefault) return opts.nextDefault;
+  return null;
 }

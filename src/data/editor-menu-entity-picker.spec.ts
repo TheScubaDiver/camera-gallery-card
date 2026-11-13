@@ -92,3 +92,35 @@ describe("editor menu-button entity picker", () => {
     ed.remove();
   });
 });
+
+describe("editor menu-button icon follows the entity", () => {
+  it("replaces the previous entity's automatic icon", () => {
+    const ed = makeEditor([{ entity: "light.porch", icon: "mdi:lightbulb" }]);
+    ed.shadowRoot
+      .querySelector("ha-entity-picker")
+      .dispatchEvent(new CustomEvent("value-changed", { detail: { value: "cover.garage" } }));
+    expect(ed._config.menu_buttons[0]).toMatchObject({
+      entity: "cover.garage",
+      icon: "mdi:garage",
+    });
+    ed.remove();
+  });
+
+  it("saves an icon typed by hand", () => {
+    const ed = makeEditor([{ entity: "light.porch", icon: "mdi:lightbulb" }]);
+    const input = ed.shadowRoot.querySelector('input[data-mbfield="icon"]');
+    input.value = "mdi:outdoor-lamp";
+    input.dispatchEvent(new Event("change"));
+    expect(ed._config.menu_buttons[0].icon).toBe("mdi:outdoor-lamp");
+    ed.remove();
+  });
+
+  it("shows the icon in front of the field", () => {
+    const ed = makeEditor([{ entity: "light.porch", icon: "mdi:outdoor-lamp" }]);
+    const preview = ed.shadowRoot
+      .querySelector('input[data-mbfield="icon"]')
+      .parentElement.querySelector(".icon-preview");
+    expect(preview.getAttribute("icon")).toBe("mdi:outdoor-lamp");
+    ed.remove();
+  });
+});

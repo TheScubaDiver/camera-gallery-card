@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { defaultEntityIcon, GENERIC_ENTITY_ICON } from "./entity-icon";
+import { defaultEntityIcon, GENERIC_ENTITY_ICON, iconAfterEntityChange } from "./entity-icon";
 
 describe("defaultEntityIcon", () => {
   it("prefers the entity's own icon", () => {
@@ -32,5 +32,51 @@ describe("defaultEntityIcon", () => {
 
   it("ignores an empty icon attribute", () => {
     expect(defaultEntityIcon("lock.front", { attributes: { icon: "  " } })).toBe("mdi:lock");
+  });
+});
+
+describe("defaultEntityIcon with the entity registry", () => {
+  it("prefers the icon set in the entity settings", () => {
+    expect(
+      defaultEntityIcon("light.porch", { attributes: { icon: "mdi:a" } }, { icon: "mdi:b" })
+    ).toBe("mdi:b");
+  });
+
+  it("ignores an empty registry icon", () => {
+    expect(defaultEntityIcon("light.porch", { attributes: {} }, { icon: null })).toBe(
+      "mdi:lightbulb"
+    );
+  });
+});
+
+describe("iconAfterEntityChange", () => {
+  it("fills an empty icon", () => {
+    expect(
+      iconAfterEntityChange({
+        currentIcon: "",
+        previousDefault: null,
+        nextDefault: "mdi:thermostat",
+      })
+    ).toBe("mdi:thermostat");
+  });
+
+  it("replaces the previous entity's automatic icon", () => {
+    expect(
+      iconAfterEntityChange({
+        currentIcon: "mdi:lightbulb",
+        previousDefault: "mdi:lightbulb",
+        nextDefault: "mdi:thermostat",
+      })
+    ).toBe("mdi:thermostat");
+  });
+
+  it("keeps an icon the user chose", () => {
+    expect(
+      iconAfterEntityChange({
+        currentIcon: "mdi:star",
+        previousDefault: "mdi:lightbulb",
+        nextDefault: "mdi:thermostat",
+      })
+    ).toBeNull();
   });
 });
