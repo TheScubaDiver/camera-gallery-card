@@ -75,6 +75,16 @@ describe("hybrid view", () => {
     card.remove();
   });
 
+  it("pulses the camera name pill only in hybrid mode", async () => {
+    const hybrid = await makeCard("hybrid");
+    expect(hybrid.shadowRoot.querySelector(".gallery-pill--live")).not.toBeNull();
+    hybrid.remove();
+    const live = await makeCard("live");
+    expect(live.shadowRoot.querySelector(".gallery-pill--info")).not.toBeNull();
+    expect(live.shadowRoot.querySelector(".gallery-pill--live")).toBeNull();
+    live.remove();
+  });
+
   it("has no drawer in gallery mode", async () => {
     const card = await makeCard("gallery");
     expect(card.shadowRoot.querySelector(".hybrid-edge-toggle")).toBeNull();

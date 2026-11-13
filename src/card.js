@@ -7206,7 +7206,7 @@ class CameraGalleryCard extends LitElement {
             <ha-icon icon="mdi:arrow-left"></ha-icon>
           </button>
         ` : html``}
-        ${this.config.show_camera_title !== false && this.config.controls_mode !== "fixed" ? html`<div class="gallery-pill gallery-pill--wide gallery-pill--info"><span>${this._friendlyCameraName(this._getEffectiveLiveCamera())}</span></div>` : html``}
+        ${this.config.show_camera_title !== false && this.config.controls_mode !== "fixed" ? html`<div class="gallery-pill gallery-pill--wide gallery-pill--info${this._isHybridActive() && this._isLiveActive() ? " gallery-pill--live" : ""}"><span>${this._friendlyCameraName(this._getEffectiveLiveCamera())}</span></div>` : html``}
       </div>
     `;
   }
