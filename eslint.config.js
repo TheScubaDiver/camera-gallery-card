@@ -54,7 +54,6 @@ export default [
     // rules from the block above.
     files: ["src/card.js", "src/editor/editor.js"],
     rules: {
-      "no-undef": "off",
       "no-unused-vars": "off",
       "no-useless-assignment": "off",
       "no-redeclare": "off",

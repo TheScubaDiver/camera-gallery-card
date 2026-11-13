@@ -23,7 +23,7 @@ import { REOLINK_LOGO_DATA_URL } from "./assets/reolink-logo";
 import { CombinedSourceClient } from "./data/combined-source";
 import { canDeleteItem, deleteItem } from "./data/delete-service";
 import { nativeTalkShouldToggle, nativeTalkUiState, talkSource } from "./data/native-talk";
-import { cardEntitySuggestion } from "./data/card-registration";
+import { CARD_GRID_OPTIONS, CARD_LAYOUT_OPTIONS, cardEntitySuggestion } from "./data/card-registration";
 import {
   isMenuButtonOn,
   menuButtonLabel,
