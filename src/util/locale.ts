@@ -106,6 +106,23 @@ export function formatDay(dayKey: string, locale: FrontendLocaleData | undefined
   }
 }
 
+export function formatDayNumeric(dayKey: string, locale: FrontendLocaleData | undefined): string {
+  if (!dayKey) return "";
+  try {
+    // Day/month/year in the language's natural order, separators normalised
+    // to slashes (nl emits dashes, de dots) so it always reads e.g. 28/05/2026.
+    return new Intl.DateTimeFormat(locale?.language, {
+      day: "2-digit",
+      month: "2-digit",
+      year: "numeric",
+    })
+      .format(new Date(`${dayKey}T00:00:00`))
+      .replace(/[-.]/g, "/");
+  } catch {
+    return dayKey;
+  }
+}
+
 export function formatTimeFromMs(ms: number, locale: FrontendLocaleData | undefined): string {
   if (!Number.isFinite(ms)) return "";
   try {

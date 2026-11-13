@@ -4230,10 +4230,11 @@ class CameraGalleryCardEditor extends HTMLElement {
     const viewBody = `
         <div class="row">
           <div class="lbl">Default view</div>
-          <div class="desc">Which screen the card opens on. <code>Gallery</code> shows recorded clips; <code>Live</code> shows the camera feed.</div>
+          <div class="desc">Which screen the card opens on. <code>Gallery</code> shows recorded clips; <code>Live</code> shows the camera feed; <code>Hybrid</code> shows live with a side drawer of clips.</div>
           <div class="segwrap">
-            <button class="seg ${startMode !== "live" ? "on" : ""}" data-startmode="gallery">Gallery</button>
+            <button class="seg ${startMode !== "live" && startMode !== "hybrid" ? "on" : ""}" data-startmode="gallery">Gallery</button>
             <button class="seg ${startMode === "live" ? "on" : ""}" data-startmode="live">Live</button>
+            <button class="seg ${startMode === "hybrid" ? "on" : ""}" data-startmode="hybrid">Hybrid</button>
           </div>
         </div>
         <div class="row">

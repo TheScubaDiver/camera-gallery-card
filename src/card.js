@@ -114,6 +114,7 @@ import { frigateEventIdFromSrc, hasFrigateConfig, isFrigateRoot } from "./util/f
 import {
   formatDateTime,
   formatDay,
+  formatDayNumeric,
   formatMonth,
   formatTimeFromMs,
   resolveLocale,
@@ -247,7 +248,12 @@ class CameraGalleryCard extends LitElement {
       _swiping: { type: Boolean },
       _thumbMenuItem: { type: Object },
       _thumbMenuOpen: { type: Boolean },
-      _viewMode: { type: String }, // "media" | "live"
+      _viewMode: { type: String }, // "media" | "live" | "hybrid"
+      _hybridDrawerOpen: { type: Boolean }, // drawer slide-in state
+      _hybridClipOpen: { type: Boolean }, // playing a clip in-place over live
+      _hybridDayMenuOpen: { type: Boolean }, // drawer day dropdown open
+      _hybridDrawerWidthPct: { type: Number }, // user-resizable drawer width (%)
+      _hybridLayout: { type: String }, // drawer clip layout: "grid" | "list"
       _liveMuted: { type: Boolean },
       _liveFullscreen: { type: Boolean },
       _livePipActive: { type: Boolean },
@@ -457,6 +463,22 @@ class CameraGalleryCard extends LitElement {
     this._thumbMenuOpen = false;
     this._thumbMenuOpenedAt = 0;
     this._viewMode = "media";
+    this._hybridDrawerOpen = false;
+    this._hybridClipOpen = false;
+    this._hybridDayMenuOpen = false;
+    this._hybridDrawerWidthPct = 50;
+    this._hybridResizing = false;
+    this._hybridHoverTimer = null;
+    this._hybridCloseTimer = null;
+    // Drawer clip layout ("grid" | "list"). Persisted to localStorage so the
+    // user's choice survives a page reload.
+    this._hybridLayout = (() => {
+      try {
+        const raw = (typeof localStorage !== "undefined") && localStorage.getItem("cgc_hybrid_layout");
+        if (raw === "grid" || raw === "list") return raw;
+      } catch (_) { /* ignore */ }
+      return "grid";
+    })();
     this._liveSelectedCamera = "";
     // One-shot: set when a `cgc_view=gallery` deep-link resolves at first
     // hass, consumed the first time the item list actually populates (see
@@ -744,6 +766,11 @@ class CameraGalleryCard extends LitElement {
     this._onZoomWheel = (e) => {
       if (!this._isZoomAllowed()) return;
       if (isGridLayout(this.config, this._liveLayoutOverride)) return;
+      // Skip when the wheel is on the hybrid drawer — its overflow:auto
+      // body needs the wheel to drive native scroll; otherwise the zoom
+      // handler swallows the event and the drawer feels stuck.
+      const wheelPath = e.composedPath?.() || [];
+      if (wheelPath.some((el) => el?.classList?.contains?.("hybrid-drawer"))) return;
       const host = this._getZoomHost();
       if (!host) return;
       const r = host.getBoundingClientRect();
@@ -909,6 +936,7 @@ class CameraGalleryCard extends LitElement {
     if (this._scrollPillTimer) { clearTimeout(this._scrollPillTimer); this._scrollPillTimer = null; }
     this._scrollPillVisible = false;
     if (this._snapshotToastTimer) { clearTimeout(this._snapshotToastTimer); this._snapshotToastTimer = null; }
+    this._cancelHybridHoverOpen();
     // Tear down the PTZ press-and-hold loop — if the card is removed mid-
     // press (camera card replaced, dashboard navigated away), the interval
     // would otherwise outlive the element and (for continuous types) leave
@@ -955,6 +983,8 @@ class CameraGalleryCard extends LitElement {
     if (firstHass) {
       if (this.config?.start_mode === "live" && this._hasLiveConfig()) {
         this._viewMode = "live";
+      } else if (this.config?.start_mode === "hybrid" && this._hasLiveConfig()) {
+        this._viewMode = "hybrid";
       }
       // Notification deep-link (issue #218): `?cgc_id=<url_id>` overrides
       // `start_mode`/the default live camera. Runs after the block above so
@@ -1634,7 +1664,19 @@ class CameraGalleryCard extends LitElement {
   }
 
   _isLiveActive() {
-    return this._hasLiveConfig() && this._viewMode === "live";
+    // In hybrid mode the preview shows the live feed — unless a clip is being
+    // played in-place (`_hybridClipOpen`). Then the preview renders as media,
+    // but `_viewMode` stays "hybrid" so the gallery toolbar + thumb strip
+    // remain hidden.
+    return (
+      this._hasLiveConfig() &&
+      (this._viewMode === "live" || (this._viewMode === "hybrid" && !this._hybridClipOpen))
+    );
+  }
+
+  /** True when the view is in hybrid mode (live + edge drawer with clips). */
+  _isHybridActive() {
+    return this._hasLiveConfig() && this._viewMode === "hybrid";
   }
 
   // ─── Live helpers ─────────────────────────────────────────────────
@@ -4476,6 +4518,405 @@ class CameraGalleryCard extends LitElement {
     `;
   }
 
+  /**
+   * Hybrid-mode side drawer. Renders only when the view mode is "hybrid"
+   * and there are clips to show. The drawer body is the same filtered
+   * list the gallery uses — object filters / type filter / favorites all
+   * apply identically so the two views stay in sync.
+   *
+   * Open/close: tap the CLIPS edge-toggle, click the scrim, or (desktop)
+   * hover the edge for ~350ms with `_scheduleHybridHoverOpen`.
+   *
+   * @param {ReadonlyArray<{src:string, dtMs?:number|null}>} clips
+   *   Filtered list from the gallery pipeline.
+   */
+  _renderHybridDrawer(clips, days = [], currentDay = null) {
+    if (!this._isHybridActive()) return html``;
+    const isOpen = this._hybridDrawerOpen;
+    // Cap at a sane number — drawer is scrollable so the user can reach
+    // older clips. 50 keeps memory + DOM sensible for typical NVRs.
+    const list = Array.isArray(clips) ? clips.slice(0, 50) : [];
+    // Day filter: a dropdown listing all available days (newest-first).
+    const dayList = Array.isArray(days) ? days : [];
+    // Meta bar (time + object icon under each thumb) shrinks ONLY when the
+    // drawer is narrower than the 50% default — never grows past it. `shrink`
+    // ramps 0→1 as the width drops 50%→25%; widths ≥50% keep full size.
+    const w = this._hybridDrawerWidthPct ?? 50;
+    const shrink = Math.max(0, Math.min(1, (50 - w) / 25));
+    const metaFs = (11 - shrink * 3).toFixed(1);
+    const objSz = (15 - shrink * 4).toFixed(1);
+    const drawerStyle = `width:${w}%;--cgc-hyb-meta-fs:${metaFs}px;--cgc-hyb-obj-sz:${objSz}px`;
+    // Always-visible chevron toggle. The fully-transparent edge zone we
+    // had before was unreliable on iOS (mirroring ACC #801: hover-only
+    // triggers can passthrough taps to whatever element happens to be
+    // underneath). A visible toggle is a clear target on touch and still
+    // pairs well with desktop hover.
+    const isHoverable = typeof window !== "undefined" && window.matchMedia?.("(hover: hover)")?.matches;
+    return html`
+      ${isOpen
+        ? html`<div
+            class="hybrid-scrim"
+            @pointerdown=${(e) => e.stopPropagation()}
+            @pointerup=${(e) => e.stopPropagation()}
+            @click=${(e) => {
+              e.stopPropagation();
+              this._closeHybridDrawer();
+            }}
+          ></div>`
+        : html``}
+      <button type="button"
+              class="hybrid-edge-toggle ${isOpen ? "open" : ""}"
+              aria-label=${isOpen ? "Close clips drawer" : "Open clips drawer"}
+              @pointerdown=${(e) => e.stopPropagation()}
+              @click=${(e) => { e.stopPropagation(); this._cancelHybridHoverOpen(); this._toggleHybridDrawer(); }}
+              @mouseenter=${() => {
+                if (!isHoverable) return;
+                this._cancelHybridHoverClose();
+                if (!this._hybridDrawerOpen) this._scheduleHybridHoverOpen();
+              }}
+              @mouseleave=${() => this._cancelHybridHoverOpen()}>
+        <span class="hybrid-edge-label">CLIPS</span>
+      </button>
+      <div class="hybrid-drawer ${isOpen ? "open" : ""}"
+           style=${drawerStyle}
+           @pointerdown=${(e) => e.stopPropagation()}
+           @mouseenter=${() => this._cancelHybridHoverClose()}
+           @pointerleave=${(e) => { if (e.pointerType === "mouse" && this._hybridDrawerOpen && !this._hybridResizing) this._scheduleHybridHoverClose(); }}>
+        <div class="hybrid-resize ${this._hybridResizing ? "resizing" : ""}"
+             @pointerdown=${(e) => this._startHybridResize(e)}
+             @click=${(e) => e.stopPropagation()}></div>
+        <div class="hybrid-day-filter">
+          ${this._hybridClipOpen ? html`
+            <button type="button" class="hybrid-drawer-live"
+              @pointerdown=${(e) => e.stopPropagation()}
+              @click=${(e) => { e.stopPropagation(); this._returnToLiveFromHybrid(); this._closeHybridDrawer(); }}>
+              <ha-icon class="hybrid-live-arrow" icon="mdi:arrow-left"></ha-icon>LIVE
+            </button>
+          ` : html``}
+          ${dayList.length ? html`
+            <button type="button" class="hybrid-day-btn ${this._hybridDayMenuOpen ? "on" : ""}"
+              aria-label="Choose a day"
+              @pointerdown=${(e) => e.stopPropagation()}
+              @click=${(e) => { e.stopPropagation(); this._toggleHybridDayMenu(); }}>
+              <ha-icon icon="mdi:calendar-month"></ha-icon>
+            </button>
+          ` : html``}
+          <div class="hybrid-layout-toggle">
+            <button type="button" class="hyb-lt ${this._hybridLayout === "list" ? "on" : ""}"
+              aria-label="Lijst (grote thumbnails)"
+              @pointerdown=${(e) => e.stopPropagation()}
+              @click=${(e) => { e.stopPropagation(); this._setHybridLayout("list"); }}>
+              <ha-icon icon="mdi:view-agenda"></ha-icon>
+            </button>
+            <button type="button" class="hyb-lt ${this._hybridLayout === "grid" ? "on" : ""}"
+              aria-label="Grid (compact, meerdere kolommen)"
+              @pointerdown=${(e) => e.stopPropagation()}
+              @click=${(e) => { e.stopPropagation(); this._setHybridLayout("grid"); }}>
+              <ha-icon icon="mdi:view-grid"></ha-icon>
+            </button>
+          </div>
+          ${dayList.length && this._hybridDayMenuOpen ? html`
+            <div class="hybrid-day-menu">
+              ${dayList.map((d) => html`
+                <button type="button" class="hybrid-day-item ${d === currentDay ? "on" : ""}"
+                  @pointerdown=${(e) => e.stopPropagation()}
+                  @click=${(e) => { e.stopPropagation(); this._selectHybridDay(d); }}>
+                  <span>${formatDay(d, this._hass?.locale)}</span>
+                  ${d === currentDay ? html`<ha-icon icon="mdi:check"></ha-icon>` : html``}
+                </button>
+              `)}
+            </div>
+          ` : html``}
+        </div>
+        ${dayList.length && currentDay
+          ? html`<div class="hybrid-date-row">
+              <span class="hybrid-date-num">${formatDayNumeric(currentDay, this._hass?.locale)}</span>
+            </div>`
+          : html``}
+        <div class="hybrid-drawer-body ${this._hybridLayout === "grid" ? "is-grid" : ""}">
+            ${list.length === 0
+              ? html`<div class="hybrid-drawer-empty">No clips for the current filter.</div>`
+              : list.map((c) => {
+                  const time = this._formatHybridTime?.(c.dtMs) || "";
+                  const obj = this._objectForSrc?.(c.src);
+                  const objIcon = obj ? objectIcon(obj, this._customIcons, "mdi:magnify") : null;
+                  const objColor = obj ? objectColor(obj, this.config?.object_colors ?? {}) : null;
+                  // Frigate event cluster: a head clip standing in for several
+                  // back-to-back events. Show a count badge that expands the
+                  // members (already injected into `list` by the cluster helper).
+                  const isMs =
+                    (this.config?.source_mode === "media" ||
+                      this.config?.source_mode === "combined") &&
+                    isMediaSourceId(c.src);
+                  const clusterMeta = isMs ? this._mediaClient?.getClusterMeta?.(c.src) : null;
+                  const isCluster = !!clusterMeta && clusterMeta.count > 1;
+                  const isExpanded = isCluster && this._expandedClusters?.has(c.src);
+                  return html`
+                    <button type="button"
+                            class="hybrid-clip ${c._clusterMember ? "cluster-member" : ""}"
+                            data-hybrid-clip="${c.src}"
+                            @click=${(e) => { e.stopPropagation(); this._onHybridClipClick(c.src); }}>
+                      <div class="hybrid-clip-thumb">
+                        ${this._renderHybridClipThumb?.(c) || html``}
+                      </div>
+                      <div class="hybrid-clip-meta">
+                        <span class="hybrid-clip-time">${time}</span>
+                        ${isCluster
+                          ? html`<button
+                              type="button"
+                              class="hybrid-clip-cluster ${isExpanded ? "open" : ""}"
+                              title="${clusterMeta.count} events — ${isExpanded ? "inklappen" : "uitvouwen"}"
+                              @pointerdown=${(e) => e.stopPropagation()}
+                              @click=${(e) => { e.stopPropagation(); this._toggleClusterExpand(c.src); }}>
+                              ${clusterMeta.count}×<ha-icon icon="mdi:chevron-down"></ha-icon>
+                            </button>`
+                          : html``}
+                        ${objIcon
+                          ? html`<ha-icon
+                              class="hybrid-clip-obj"
+                              icon="${objIcon}"
+                              title="${obj}"
+                              style=${objColor ? `color:${objColor}` : ""}
+                            ></ha-icon>`
+                          : html``}
+                      </div>
+                    </button>
+                  `;
+                })}
+          </div>
+        </div>
+    `;
+  }
+
+  _openHybridDrawer() {
+    this._cancelHybridHoverOpen();
+    this._cancelHybridHoverClose();
+    if (this._hybridDrawerOpen) return;
+    this._hybridDrawerOpen = true;
+    this.requestUpdate();
+  }
+
+  // Desktop hover-to-open with a short delay so brushing past the edge toggle
+  // doesn't fling the drawer open; cancelled on mouseleave before it fires.
+  _scheduleHybridHoverOpen() {
+    if (this._hybridDrawerOpen || this._hybridHoverTimer) return;
+    this._hybridHoverTimer = setTimeout(() => {
+      this._hybridHoverTimer = null;
+      if (!this._hybridDrawerOpen) this._openHybridDrawer();
+    }, 350);
+  }
+
+  _cancelHybridHoverOpen() {
+    if (this._hybridHoverTimer) {
+      clearTimeout(this._hybridHoverTimer);
+      this._hybridHoverTimer = null;
+    }
+  }
+
+  // Symmetric to open: brief grace period before closing so users can dart
+  // between the drawer and the CLIPS edge-toggle without losing the drawer.
+  _scheduleHybridHoverClose() {
+    if (!this._hybridDrawerOpen || this._hybridCloseTimer || this._hybridResizing) return;
+    this._hybridCloseTimer = setTimeout(() => {
+      this._hybridCloseTimer = null;
+      if (this._hybridDrawerOpen && !this._hybridResizing) this._closeHybridDrawer();
+    }, 350);
+  }
+
+  _cancelHybridHoverClose() {
+    if (this._hybridCloseTimer) {
+      clearTimeout(this._hybridCloseTimer);
+      this._hybridCloseTimer = null;
+    }
+  }
+
+  _toggleHybridDrawer() {
+    if (this._hybridDrawerOpen) this._closeHybridDrawer();
+    else this._openHybridDrawer();
+  }
+
+  _closeHybridDrawer() {
+    this._cancelHybridHoverClose();
+    if (!this._hybridDrawerOpen) return;
+    this._hybridDrawerOpen = false;
+    this._hybridDayMenuOpen = false;
+    this.requestUpdate();
+  }
+
+  _onHybridClipClick(src) {
+    if (!src) return;
+    // Play the clip in-place over the live view: stay in "hybrid" viewMode
+    // (so the gallery toolbar + thumb strip stay hidden) but flip
+    // `_hybridClipOpen` so the preview renders the selected clip as media.
+    // The drawer closes; the "← Live" button returns to the feed.
+    const { items } = this._currentFilteredItems();
+    // Match the render path: the preview resolves `_selectedIndex` against the
+    // cluster-injected list, so expanded cluster members are only findable here
+    // once their members are spliced in too.
+    const list = this._injectExpandedClusterMembers(items);
+    const idx = list.findIndex((it) => it.src === src);
+    if (idx < 0) return;
+    this._selectedIndex = idx;
+    this._previewOpen = true;
+    this._hybridClipOpen = true;
+    // Stop the live stream — a hidden live card keeps streaming AND audible
+    // (display:none doesn't pause playback, see _teardownLiveView / #109), so
+    // without this you'd hear live audio under the clip. updated() re-mounts
+    // it when we return (isLive flips back to true).
+    this._teardownLiveView();
+    this._closeHybridDrawer();
+    this.requestUpdate();
+  }
+
+  _returnToLiveFromHybrid() {
+    if (!this._hybridClipOpen) return;
+    this._hybridClipOpen = false;
+    // Stop the clip player before the live feed remounts (updated() handles
+    // the live remount once isLive flips true).
+    this._clearPreviewVideoHostPlayback();
+    this._showPills?.(2500);
+    this.requestUpdate();
+  }
+
+  _toggleHybridDayMenu() {
+    this._hybridDayMenuOpen = !this._hybridDayMenuOpen;
+    this.requestUpdate();
+  }
+
+  _setHybridLayout(mode) {
+    if (mode !== "grid" && mode !== "list") return;
+    if (this._hybridLayout === mode) return;
+    this._hybridLayout = mode;
+    try {
+      localStorage.setItem("cgc_hybrid_layout", mode);
+    } catch (_) { /* localStorage unavailable */ }
+    this.requestUpdate();
+  }
+
+  // Drag the left edge of the right-anchored drawer to resize its width.
+  // Width is a % of the preview box so it scales with the card; everything
+  // inside is %/flex-based so it reflows for free. rAF-throttled to keep the
+  // drag smooth on a big component.
+  _startHybridResize(e) {
+    e.preventDefault();
+    e.stopPropagation();
+    const preview = this.renderRoot?.querySelector(".preview");
+    if (!preview) return;
+    const rect = preview.getBoundingClientRect();
+    if (!rect.width) return;
+    this._hybridResizing = true;
+    let raf = 0;
+    let pct = this._hybridDrawerWidthPct ?? 50;
+    const apply = () => {
+      raf = 0;
+      this._hybridDrawerWidthPct = pct;
+      this.requestUpdate();
+    };
+    const move = (ev) => {
+      pct = Math.max(25, Math.min(85, ((rect.right - ev.clientX) / rect.width) * 100));
+      if (!raf) raf = requestAnimationFrame(apply);
+    };
+    const up = () => {
+      if (raf) cancelAnimationFrame(raf);
+      this._hybridDrawerWidthPct = pct;
+      this._hybridResizing = false;
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", up);
+      this.requestUpdate();
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", up);
+  }
+
+  _selectHybridDay(day) {
+    this._hybridDayMenuOpen = false;
+    if (!day || day === this._selectedDay) {
+      this.requestUpdate();
+      return;
+    }
+    // Switch the day the drawer lists, mirroring the date-picker's reset so
+    // the filtered list + any later gallery view stay consistent.
+    this._selectedDay = day;
+    this._selectedIndex = 0;
+    this._pendingScrollToI = null;
+    this._forceThumbReset = true;
+    this.requestUpdate();
+  }
+
+  _formatHybridTime(dtMs) {
+    if (!dtMs || !Number.isFinite(dtMs)) return "";
+    const d = new Date(dtMs);
+    const today = new Date();
+    const sameDay =
+      d.getFullYear() === today.getFullYear() &&
+      d.getMonth() === today.getMonth() &&
+      d.getDate() === today.getDate();
+    const hh = String(d.getHours()).padStart(2, "0");
+    const mm = String(d.getMinutes()).padStart(2, "0");
+    if (sameDay) return `${hh}:${mm}`;
+    const dd = String(d.getDate()).padStart(2, "0");
+    const mo = String(d.getMonth() + 1).padStart(2, "0");
+    return `${dd}/${mo} ${hh}:${mm}`;
+  }
+
+  /** Heuristic for the "subtle slide-in animation" on new clips: a clip
+   * counts as recently added when the pipeline's rev incremented since
+   * the last hybrid render and this src was not in the previous list. */
+  _renderHybridClipThumb(it) {
+    // Mirror the gallery thumb's poster lookup so the drawer benefits
+    // from the same cache and resolution work. `it` is a `{src, dtMs?}`
+    // entry, identical to what the thumbs strip iterates.
+    const src = typeof it === "string" ? it : (it?.src || "");
+    if (!src) return html`<div class="hybrid-clip-img placeholder" aria-hidden="true"></div>`;
+    // Mark the clip as "revealed" so resolveVideoPoster will enqueue a
+    // capture for sensor-mode video items. Without this the gallery's
+    // IntersectionObserver gate fails (no thumbs strip mounted in
+    // hybrid mode → posters never get captured on mobile-first sessions).
+    if (this._revealedThumbs && !this._revealedThumbs.has(src)) {
+      this._revealedThumbs.add(src);
+    }
+    const usingMediaSource =
+      this.config?.source_mode === "media" || this.config?.source_mode === "combined";
+    const isMs = usingMediaSource && isMediaSourceId(src);
+
+    let thumbUrl = src;
+    let tThumb = "";
+    let tMime = "";
+    let tCls = "";
+    let tTitle = "";
+    if (isMs) {
+      thumbUrl = this._mediaClient?.getUrlCache?.()?.get?.(src) || "";
+      const meta = this._mediaClient?.getMetaById?.(src) || {};
+      tMime = meta.mime || "";
+      tCls = meta.cls || "";
+      tTitle = meta.title || "";
+      tThumb = meta.thumb || "";
+    }
+
+    const isVid = this._isVideoSmart(thumbUrl || tTitle, tMime, tCls);
+
+    let poster = isVid
+      ? this._posterClient?.resolveVideoPoster?.(it, isMs, thumbUrl, tThumb, this._pendingPoster) || ""
+      : thumbUrl;
+
+    if (!isVid && !poster && isMs && tThumb) {
+      poster = this._posterClient?.getPosterUrl?.(tThumb) || "";
+      if (!poster) this._posterClient?.enqueue?.(tThumb);
+    }
+
+    if (poster) {
+      return html`<img class="hybrid-clip-img" src=${poster} alt=""
+        @error=${() => this._posterClient?.onThumbImgError?.(poster)} />`;
+    }
+    // No resolved poster yet → clean placeholder. The async poster pipeline
+    // fills the real thumbnail in on `onChange`. (We deliberately do NOT fall
+    // back to the live camera's entity_picture: it's the wrong image and its
+    // proxy token expires, which rendered broken "?" tiles for older clips.)
+    return html`<div class="hybrid-clip-img placeholder" aria-hidden="true"></div>`;
+  }
+
   _renderDatePicker() {
     if (!this._showDatePicker) return html``;
     const days = this._datePickerDays || [];
@@ -4607,22 +5048,29 @@ class CameraGalleryCard extends LitElement {
   }
 
   _setViewMode(nextMode) {
-    const mode = nextMode === "live" ? "live" : "media";
-    if (mode === "live" && !this._hasLiveConfig()) return;
+    // Normalize to one of three modes; anything unknown falls back to gallery.
+    let mode;
+    if (nextMode === "live") mode = "live";
+    else if (nextMode === "hybrid") mode = "hybrid";
+    else mode = "media";
+
+    const needsLive = mode === "live" || mode === "hybrid";
+    if (needsLive && !this._hasLiveConfig()) return;
 
     // Manual navigation away from gallery outranks the deep-link's pending
     // newest-clip selection — don't let a late item load yank the user back
     // into gallery state they've already left.
     if (mode !== "media") this._pendingUrlGallerySelectNewest = false;
 
-    const wasLive = this._viewMode === "live";
+    const wasLive = this._viewMode === "live" || this._viewMode === "hybrid";
     this._viewMode = mode;
 
-    if (mode === "live" && navigator.maxTouchPoints > 0) {
+    if (needsLive && navigator.maxTouchPoints > 0) {
       this._showPills(5000);
     }
 
-    if (mode !== "live") {
+    // Tear down live infra only when leaving live AND hybrid entirely.
+    if (!needsLive) {
       this._showLivePicker = false;
       this._resetZoom();
       this._aspectRatio = this._parseAspectRatio(this.config?.aspect_ratio);
@@ -4640,6 +5088,19 @@ class CameraGalleryCard extends LitElement {
       this._pathHasClass(path, "live-picker") ||
       this._pathHasClass(path, "live-picker-backdrop")
     ) return;
+
+    // Hybrid: clicking the live area (anywhere outside the drawer)
+    // dismisses the drawer. Clicks inside the drawer bubble up too, but
+    // the path check keeps them from closing it.
+    if (this._hybridDrawerOpen) {
+      const insideDrawer =
+        this._pathHasClass(path, "hybrid-drawer") ||
+        this._pathHasClass(path, "hybrid-edge");
+      if (!insideDrawer) {
+        this._closeHybridDrawer();
+        return;
+      }
+    }
 
     if (this._hamburgerOpen && !this._pathHasClass(path, "live-hamburger-wrap")) {
       this._closeLiveMenu();
@@ -6084,6 +6545,8 @@ class CameraGalleryCard extends LitElement {
       const hasLiveCam = Array.isArray(nextConfig.live_cameras) && nextConfig.live_cameras.length > 0;
       if (startMode === "live" && nextConfig.live_enabled && hasLiveCam) {
         this._viewMode = "live";
+      } else if (startMode === "hybrid" && nextConfig.live_enabled && hasLiveCam) {
+        this._viewMode = "hybrid";
       } else if (startMode === "gallery") {
         this._viewMode = "media";
       } else {
@@ -6096,6 +6559,19 @@ class CameraGalleryCard extends LitElement {
       prevConfig.clean_mode !== this.config.clean_mode
     ) {
       this._previewOpen = !this.config.clean_mode;
+    }
+
+    // Flipping "Default view" in the editor follows live, so the preview
+    // switches immediately instead of only on reload.
+    if (prevConfig && prevConfig.start_mode !== this.config.start_mode) {
+      const sm = this.config.start_mode;
+      const hasLiveCam =
+        Array.isArray(this.config.live_cameras) && this.config.live_cameras.length > 0;
+      if ((sm === "live" || sm === "hybrid") && this.config.live_enabled && hasLiveCam) {
+        this._viewMode = sm === "hybrid" ? "hybrid" : "live";
+      } else if (sm === "gallery") {
+        this._viewMode = "media";
+      }
     }
 
     if (prevConfig && prevConfig.sync_entity !== this.config.sync_entity) {
@@ -6478,6 +6954,7 @@ class CameraGalleryCard extends LitElement {
 
     const showLiveToggle = this._hasLiveConfig();
     const isLive = this._isLiveActive();
+    const isHybrid = this._isHybridActive();
     // Live view is always "open" regardless of _previewOpen
     const previewOpenFinal = previewOpen || isLive;
     const showPreviewSection = previewOpenFinal;
@@ -6488,8 +6965,9 @@ class CameraGalleryCard extends LitElement {
     // it's actually useful:
     //   - clean_mode + preview/live open → user wants minimal UI
     //   - live-only view (issue #169)    → no items at all, nothing to do
+    //   - hybrid mode                    → drawer is the only gallery surface
     // The live overlay pills sit inside `#live-card-host` and stay either way.
-    const showGalleryControls = !liveOnlyView && (!this.config?.clean_mode || (!this._previewOpen && !isLive));
+    const showGalleryControls = !liveOnlyView && !isHybrid && (!this.config?.clean_mode || (!this._previewOpen && !isLive));
 
     const rootVars = this._renderRootVars();
 
@@ -6559,6 +7037,8 @@ class CameraGalleryCard extends LitElement {
       liveRow2Controls,
       hamburgerPanel,
       galleryPillSettings,
+      days,
+      currentForNav,
     });
 
     const showLiveRow2Fixed = isLive && !isGridLayout(this.config, this._liveLayoutOverride) && liveRow2Controls.length;
@@ -6823,11 +7303,13 @@ class CameraGalleryCard extends LitElement {
     liveRow2Controls,
     hamburgerPanel,
     galleryPillSettings,
+    days,
+    currentForNav,
   }) {
     return showPreviewSection
       ? html`
           <div
-            class="preview${isLive && this._getLiveRotationStyle() ? " cgc-rot-pane" : ""}"
+            class="preview${isLive && this._getLiveRotationStyle() ? " cgc-rot-pane" : ""}${this._hybridDrawerOpen ? " hybrid-drawer-open" : ""}"
             style="aspect-ratio:${this._getPreviewAspectRatio(isLive)}; touch-action:${isLive ? "auto" : "pan-y"};"
             @pointerdown=${(e) => {
               if (e?.isPrimary === false) return;
@@ -6854,7 +7336,14 @@ class CameraGalleryCard extends LitElement {
             @pointerup=${(e) => this._onPreviewPointerUp(e, filtered.length)}
             @pointercancel=${(e) => this._onPreviewPointerUp(e, filtered.length)}
             @pointerenter=${(e) => { if (e.pointerType === "mouse") this._showPillsHover(); }}
-            @pointerleave=${(e) => { if (e.pointerType === "mouse") this._hidePillsHover(); }}
+            @pointerleave=${(e) => {
+              if (e.pointerType === "mouse") {
+                this._hidePillsHover();
+                // Hybrid: closing on mouse-leave keeps the hover-driven flow
+                // symmetric — enter the edge to open, leave the card to close.
+                if (this._hybridDrawerOpen) this._closeHybridDrawer();
+              }
+            }}
             @click=${(e) => this._onPreviewClick(e)}
           >
             ${isLive
@@ -6871,6 +7360,7 @@ class CameraGalleryCard extends LitElement {
               const liveCropStyle = this._getLiveCropStyle();
               return html`<div id="live-card-host" class="live-card-host${isLive ? '' : ' live-host-hidden'}${liveCropStyle ? ' has-crop' : ''}${liveRotStyle ? ' has-rot' : ''}" style="${liveCropStyle}${liveRotStyle}"></div>${this._renderSnapshotToast()}${this._renderStreamLostBanner()}`;
             })() : html``}
+            ${this._isHybridActive() ? this._renderHybridDrawer(filtered, days, currentForNav) : html``}
 
             ${!noResultsForFilter && !isLive && this.config?.gallery_chevrons_enabled !== false && filtered.length > 1 && (this._pillsVisible || this.config?.persistent_controls) ? html`
               <div class="pnav">
