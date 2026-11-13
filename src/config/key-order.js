@@ -35,7 +35,6 @@ export const CGC_CONFIG_KEY_ORDER = [
   "show_media_filter",
   "show_favorite",
   "show_live",
-  "preview_close_on_tap",
   "toolbar_order",
   "gallery_pills",
   "gallery_pills_align",
@@ -97,7 +96,6 @@ export const CGC_CONFIG_KEY_ORDER = [
   // ─── Filters / objects ───
   "object_filters",
   "object_colors",
-  "entity_filter_map",
   // ─── Sync / favorites ───
   "sync_entity",
   // ─── Delete ───

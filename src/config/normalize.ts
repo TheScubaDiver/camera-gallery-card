@@ -26,7 +26,6 @@
 import { create, StructError } from "superstruct";
 import type { Infer } from "superstruct";
 
-import { KNOWN_FILTERS } from "../data/object-filters";
 import { getStreamEntries } from "../data/live-config";
 import { normalizeRotation } from "../data/live-rotation";
 import { FRIGATE_URI_PREFIX, hasFrigateConfig } from "../util/frigate";
@@ -240,7 +239,6 @@ export interface InputConfig {
   // ─── Object filters ────────────────────────────────────────
   object_filters?: ObjectFilterEntry[] | ObjectFilterEntry | null;
   object_colors?: Record<string, string>;
-  entity_filter_map?: Record<string, string>;
 
   // ─── Layout / styling ──────────────────────────────────────
   bar_opacity?: number;
@@ -268,7 +266,6 @@ export interface InputConfig {
   // ─── Preview ───────────────────────────────────────────────
   preview_position?: string;
   clean_mode?: boolean;
-  preview_close_on_tap?: boolean;
   fullscreen_zoom?: boolean;
 
   // ─── Misc ──────────────────────────────────────────────────
@@ -584,7 +581,7 @@ function trimOptionalString<K extends keyof InputConfig>(
 
 /**
  * The card's pre-migration: legacy-key rewrite **plus** loose-shape
- * unwrapping for `object_filters` and value-filtering for `entity_filter_map`.
+ * unwrapping for `object_filters`.
  * Returns the canonical shape the struct expects, and the per-filter custom
  * icon map separated out for the card to consume.
  *
@@ -861,20 +858,6 @@ function preMigrateConfig(input: InputConfig): PreMigrated {
   }
   out.object_filters = ofOut;
 
-  // entity_filter_map: filter to known filter names (silent-drop legacy values).
-  if (out.entity_filter_map) {
-    const cleaned: Record<string, string> = {};
-    for (const [entityId, rawFilter] of Object.entries(out.entity_filter_map)) {
-      // `noUncheckedIndexedAccess` widens the value type, so guard explicitly.
-      if (typeof rawFilter !== "string") continue;
-      const e = entityId.trim();
-      const f = rawFilter.toLowerCase().trim();
-      if (!e || !f || !KNOWN_FILTERS.has(f)) continue;
-      cleaned[e] = f;
-    }
-    out.entity_filter_map = cleaned;
-  }
-
   return { migrated: out, customIcons };
 }
 
@@ -893,20 +876,6 @@ function inferSourceMode(
   const hasMedia = validated.media_sources.length > 0;
   const hasSensors = validated.entities.length > 0;
   return hasMedia && !hasSensors ? "media" : "sensor";
-}
-
-/**
- * `preview_close_on_tap` defaults to `true` when `clean_mode: true`, `false`
- * otherwise — but only when the user didn't set it explicitly. The struct
- * defaults the field to `false` unconditionally, so this rule kicks in when
- * the user didn't set it.
- */
-function applyPreviewCloseOnTapDefault(
-  explicit: boolean,
-  config: CameraGalleryCardConfig
-): CameraGalleryCardConfig {
-  if (explicit) return config;
-  return { ...config, preview_close_on_tap: config.clean_mode };
 }
 
 /**
@@ -1019,7 +988,6 @@ export function normalizeConfig(raw: unknown): NormalizedConfig {
   const input = asInputConfig(raw);
   const explicitSourceMode =
     typeof input.source_mode === "string" && input.source_mode.trim() !== "";
-  const explicitPreviewCloseOnTap = "preview_close_on_tap" in input;
 
   const { migrated, customIcons } = preMigrateConfig(input);
 
@@ -1040,7 +1008,6 @@ export function normalizeConfig(raw: unknown): NormalizedConfig {
     ...validated,
     source_mode: inferSourceMode(explicitSourceMode, validated),
   };
-  validated = applyPreviewCloseOnTapDefault(explicitPreviewCloseOnTap, validated);
   validated = applyDeleteGating(validated);
 
   assertRequiredFields(validated);
