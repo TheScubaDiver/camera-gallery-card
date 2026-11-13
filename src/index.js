@@ -37,6 +37,7 @@ import { CombinedSourceClient } from "./data/combined-source";
 import { canDeleteItem, deleteItem } from "./data/delete-service";
 import { nativeTalkShouldToggle, nativeTalkUiState, talkSource } from "./data/native-talk";
 import { entityDisplayName, entitySearchText } from "./util/entity-name";
+import { defaultEntityIcon } from "./util/entity-icon";
 import { CARD_GRID_OPTIONS, CARD_LAYOUT_OPTIONS, cardEntitySuggestion } from "./data/card-registration";
 import {
   isMenuButtonOn,
@@ -14754,7 +14755,7 @@ details summary { user-select: none; }
         sugg.hidden = false;
         sugg.innerHTML = ids.map((id) => {
           const name = (entityDisplayName(this._hass, id) || id);
-          return `<button type="button" class="sugg-item" data-pick-entity="${id}">${name}<span style="opacity:0.45;font-weight:500;margin-left:6px;">${id}</span></button>`;
+          return `<button type="button" class="sugg-item" data-pick-entity="${id}" style="display:flex;align-items:center;gap:8px;"><ha-icon icon="${defaultEntityIcon(id, this._hass?.states?.[id])}" style="--mdc-icon-size:18px;flex-shrink:0;"></ha-icon><span>${name}<span style="opacity:0.45;font-weight:500;margin-left:6px;">${id}</span></span></button>`;
         }).join("");
         sugg.querySelectorAll("[data-pick-entity]").forEach((btn) => {
           btn.addEventListener("mousedown", (e) => { e.preventDefault(); onSelect(btn.dataset.pickEntity); }, _sig);
@@ -14773,14 +14774,20 @@ details summary { user-select: none; }
     this.shadowRoot.querySelectorAll("input[data-menubtn-entity]").forEach((input) => {
       const i = Number(input.dataset.menubtnEntity);
       const sugg = this.shadowRoot.querySelector(`[data-menubtn-entity-sugg="${i}"]`);
-      wireEntityInput(input, sugg, (id) => {
+      const onPick = (id) => {
         input.value = id;
-        sugg.hidden = true;
+        if (sugg) sugg.hidden = true;
+        if (!id) return;
         const current = Array.isArray(this._config.menu_buttons) ? [...this._config.menu_buttons] : [];
         if (!current[i]) return;
-        current[i] = { ...current[i], entity: id };
+        const next = { ...current[i], entity: id };
+        // Pre-fill the icon from the entity, only when it is empty (#287).
+        if (!String(next.icon || "").trim()) next.icon = defaultEntityIcon(id, this._hass?.states?.[id]);
+        current[i] = next;
         this._set("menu_buttons", current);
-      });
+        this._scheduleRender();
+      };
+      if (!this._mountHaEntityPicker(input, sugg, onPick)) wireEntityInput(input, sugg, onPick);
     });
 
     // Menu-button icon autocomplete (per existing button).
@@ -14846,10 +14853,17 @@ details summary { user-select: none; }
     const menubtnIconInput = $("menubtn-icon-input");
     const menubtnAddBtn = $("menubtn-add-btn");
 
-    wireEntityInput(menubtnEntityInput, menubtnEntitySugg, (id) => {
+    const onPickNew = (id) => {
       if (menubtnEntityInput) menubtnEntityInput.value = id;
       if (menubtnEntitySugg) menubtnEntitySugg.hidden = true;
-    });
+      // Pre-fill the icon from the entity, only when the field is empty (#287).
+      if (id && menubtnIconInput && !menubtnIconInput.value.trim()) {
+        menubtnIconInput.value = defaultEntityIcon(id, this._hass?.states?.[id]);
+      }
+    };
+    if (!this._mountHaEntityPicker(menubtnEntityInput, menubtnEntitySugg, onPickNew)) {
+      wireEntityInput(menubtnEntityInput, menubtnEntitySugg, onPickNew);
+    }
 
     const menubtnIconSugg = $("menubtn-icon-sugg");
     wireIconInput(menubtnIconInput, menubtnIconSugg, (ic) => {
@@ -15537,6 +15551,9 @@ details summary { user-select: none; }
   set hass(hass) {
     const prev = this._hass;
     this._hass = hass;
+    // HA entity pickers (#287) need fresh hass for their entity list.
+    this.shadowRoot?.querySelectorAll("ha-entity-picker").forEach((p) => { p.hass = hass; });
+    this._loadHaPickers();
 
     if (this._mediaBrowserOpen) return;
 
@@ -15547,6 +15564,7 @@ details summary { user-select: none; }
     const interacting = !!(
       ae &&
       (tag === "input" ||
+        tag === "ha-entity-picker" ||
         tag === "textarea" ||
         id === "entities" ||
         id === "mediasources" ||
@@ -15570,6 +15588,50 @@ details summary { user-select: none; }
     }
 
     this._scheduleRender();
+  }
+
+  // Make sure Home Assistant's own entity picker is defined (#287). It is
+  // lazy-loaded by HA, so ask a built-in card for its editor, which pulls the
+  // picker in. Re-renders once when it becomes available; until then (or if
+  // it never loads) the editor keeps its own entity search.
+  async _loadHaPickers() {
+    if (this._haPickersRequested) return;
+    this._haPickersRequested = true;
+    if (customElements.get("ha-entity-picker")) return;
+    try {
+      const helpers = await window.loadCardHelpers?.();
+      const card = await helpers?.createCardElement?.({ type: "entities", entities: [] });
+      await card?.constructor?.getConfigElement?.();
+      await Promise.race([
+        customElements.whenDefined("ha-entity-picker"),
+        new Promise((r) => setTimeout(r, 5000)),
+      ]);
+      if (customElements.get("ha-entity-picker")) this._scheduleRender();
+    } catch (_) {
+      /* keep the built-in entity search */
+    }
+  }
+
+  // Swap one of our entity inputs for HA's entity picker. The input stays in
+  // the DOM (hidden) as the value holder and fallback. Returns false when the
+  // picker is not available.
+  _mountHaEntityPicker(input, sugg, onSelect) {
+    if (!input || !customElements.get("ha-entity-picker")) return false;
+    const picker = document.createElement("ha-entity-picker");
+    picker.hass = this._hass;
+    picker.value = input.value || "";
+    picker.allowCustomEntity = true;
+    picker.style.display = "block";
+    picker.addEventListener("value-changed", (ev) => {
+      ev.stopPropagation();
+      const id = String(ev.detail?.value || "");
+      input.value = id;
+      onSelect(id);
+    });
+    input.style.display = "none";
+    if (sugg) sugg.hidden = true;
+    input.parentElement?.insertBefore(picker, input);
+    return true;
   }
 
   _sortUniqueStrings(arr) {
