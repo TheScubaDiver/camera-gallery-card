@@ -48,10 +48,11 @@ export default [
     },
   },
   {
-    // The legacy 12k-line blob is exempt from strict rules until it's broken
-    // up into focused modules (see migration plan). New modules under src/
-    // get the strict rules from the block above.
-    files: ["src/index.js"],
+    // The two large legacy files (the card element and the visual editor,
+    // split out of the old index.js) are exempt from strict rules until
+    // they're broken up further. New modules under src/ get the strict
+    // rules from the block above.
+    files: ["src/card.js", "src/editor/editor.js"],
     rules: {
       "no-undef": "off",
       "no-unused-vars": "off",
