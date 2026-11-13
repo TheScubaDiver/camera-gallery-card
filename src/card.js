@@ -85,6 +85,7 @@ import { syncLiveAudio } from "./data/live-audio";
 import { mediaAspect } from "./data/live-aspect";
 import { liveControlZones } from "./data/live-controls-layout";
 import { isTalkbackRow, talkbackPosition, talkbackRowJustify } from "./data/talkback-layout";
+import { resolveTapAction } from "./data/tap-action-target";
 import { StreamWatchdog } from "./data/stream-watchdog";
 import {
   buildTriggerMap,
@@ -3443,7 +3444,7 @@ class CameraGalleryCard extends LitElement {
       // out of position, DOM order alone won't match `cameras` order
       // either — `_applyTileLayout`'s `order` assignment fixes both cases.
       this._applyTileLayout(tile, cameras.indexOf(entity), layout);
-      tile.addEventListener("click", () => this._onGridTileTap(entity));
+      tile.addEventListener("click", () => this._onGridTileClick(entity));
       this._applyTileRotation(tile, entity);
 
       const stream = document.createElement("ha-camera-stream");
@@ -5110,12 +5111,12 @@ class CameraGalleryCard extends LitElement {
     this._runTapAction(path);
   }
 
-  // Fires `tap_action` (HA action syntax) for a tap on the single-camera live
-  // preview. Returns true when an action consumed the tap. Taps on pills / nav
-  // buttons keep their own behaviour, and grid tiles keep "tap to focus".
+  // Fires the tap action (HA action syntax) for a tap on the single-camera
+  // live preview: the camera's own `tap_action` first, then the card-wide one
+  // (see data/tap-action-target.ts). Returns true when an action consumed the
+  // tap. Taps on pills / nav buttons keep their own behaviour; grid tiles go
+  // through _onGridTileClick.
   _runTapAction(path) {
-    const cfg = this.config?.tap_action;
-    if (!cfg || !cfg.action || cfg.action === "none") return false;
     if (this.config?.live_layout === "grid" && this._liveLayoutOverride !== "single") return false;
     if (
       this._pathHasClass(path, "gallery-pill") ||
@@ -5123,14 +5124,42 @@ class CameraGalleryCard extends LitElement {
       this._pathHasClass(path, "pnav") ||
       this._pathHasClass(path, "live-hamburger-wrap")
     ) return false;
+    const camera = this._getEffectiveLiveCamera();
+    const cfg = resolveTapAction({
+      cameraAction: liveCameraEntry(camera, this.config)?.tap_action,
+      cardAction: this.config?.tap_action,
+      grid: false,
+    });
+    if (!cfg || cfg.action === "none") return false;
+    return this._executeTapAction(cfg, camera);
+  }
 
+  // A tap on a grid tile (#288): the camera's own `tap_action` when it has
+  // one (`none` makes the tile do nothing), otherwise the built-in focus.
+  // Camera triggers call _onGridTileTap directly and never run tap actions.
+  _onGridTileClick(entity) {
+    const cfg = resolveTapAction({
+      cameraAction: liveCameraEntry(entity, this.config)?.tap_action,
+      grid: true,
+    });
+    if (!cfg) {
+      this._onGridTileTap(entity);
+      return;
+    }
+    if (cfg.action !== "none") this._executeTapAction(cfg, entity);
+  }
+
+  // Run one tap action for `camera`. Returns true when it did something.
+  _executeTapAction(cfg, camera) {
     if (cfg.confirmation) {
       const text = (typeof cfg.confirmation === "object" && cfg.confirmation.text) || "Are you sure?";
       if (!window.confirm(text)) return true;
     }
 
     const hass = this._hass;
-    const entity = cfg.entity || this._liveSelectedCamera;
+    // The camera the tap was on, unless the action names its own entity.
+    // Stream-URL cameras have no entity in Home Assistant.
+    const entity = cfg.entity || (String(camera || "").startsWith("__cgc_stream") ? "" : camera);
     switch (cfg.action) {
       case "more-info":
         if (!entity) return false;
@@ -5156,6 +5185,14 @@ class CameraGalleryCard extends LitElement {
         else history.pushState(null, "", cfg.navigation_path);
         window.dispatchEvent(new CustomEvent("location-changed", {
           detail: { replace: !!cfg.navigation_replace },
+        }));
+        return true;
+      case "assist":
+        // Home Assistant opens its own Assist dialog for this action.
+        this.dispatchEvent(new CustomEvent("hass-action", {
+          bubbles: true,
+          composed: true,
+          detail: { config: { tap_action: cfg }, action: "tap" },
         }));
         return true;
       case "url":
@@ -5211,9 +5248,19 @@ class CameraGalleryCard extends LitElement {
     };
   }
 
-  /** Tap on a menu button: call its service, or open its option list (#215). */
+  /**
+   * Tap on a menu button: run its tap action (#302), call its service, or
+   * open its option list (#215).
+   */
   _onMenuButtonTap(btn) {
     const tap = menuButtonTap(btn, this._hass?.states?.[btn.entity]);
+    if (tap.kind === "none") return;
+    if (tap.kind === "action") {
+      if (this._hamburgerOpen) this._closeLiveMenu();
+      // The button's own entity is the default target (more-info, toggle).
+      this._executeTapAction(tap.action, btn.entity || "");
+      return;
+    }
     if (tap.kind === "select") {
       const alreadyOpen = this._hamburgerOpen && this._menuSelectEntity === btn.entity;
       if (alreadyOpen) {

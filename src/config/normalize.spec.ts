@@ -1053,3 +1053,32 @@ describe("live camera rotation", () => {
     for (const cam of config.live_cameras) expect("rotation" in cam).toBe(false);
   });
 });
+
+describe("per-camera tap_action (#288)", () => {
+  it("keeps a camera's tap_action", () => {
+    const { config } = normalizeConfig({
+      live_enabled: true,
+      live_cameras: [
+        {
+          entity: "camera.driveway",
+          tap_action: { action: "navigate", navigation_path: "/security/driveway" },
+        },
+        { entity: "camera.garden", tap_action: { navigation_path: "/x" } },
+      ],
+    });
+    expect(config.live_cameras[0]?.tap_action).toEqual({
+      action: "navigate",
+      navigation_path: "/security/driveway",
+    });
+    expect(config.live_cameras[1] && "tap_action" in config.live_cameras[1]).toBe(false);
+  });
+
+  it("rejects an unknown action", () => {
+    expect(() =>
+      normalizeConfig({
+        live_enabled: true,
+        live_cameras: [{ entity: "camera.a", tap_action: { action: "dance" } }],
+      })
+    ).toThrow();
+  });
+});

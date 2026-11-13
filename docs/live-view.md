@@ -24,7 +24,7 @@ Live cameras, the grid, the hybrid view, crop and rotation, camera triggers, PTZ
 - **Rotation per camera** — turn a camera's picture by 90, 180 or 270 degrees, for a camera mounted upside down on a ceiling or on its side. See [Camera rotation](#camera-rotation)
 - **Offline camera placeholder** — unavailable cameras show a clear "offline" tile instead of a black frame
 - **Keyboard navigation** — <kbd>←</kbd>/<kbd>→</kbd> to switch between cameras in single layout
-- **Tap action** — choose what a tap on the live picture does with `tap_action`: a standard Home Assistant action (`more-info`, `toggle`, `perform-action`, `navigate`, `url`) or the card's own `fullscreen`, `snapshot` or `refresh`
+- **Tap action** — choose what a tap on the live picture does, for the whole card or per camera, also on grid tiles. See [Tap actions](#tap-actions)
 - **PTZ overlay** — a joystick with zoom and home buttons for cameras that can pan and tilt. Built-in support for EZVIZ, Reolink, Frigate and ONVIF, plus a manual mode that calls any service (see [Manual service PTZ](#manual-service-ptz))
 - Camera friendly names and entity IDs in selector
 - Auto-teardown of stream + push-to-talk on view switch (no audio/bandwidth leak)
@@ -53,15 +53,16 @@ live_cameras:
     name: Shed
 ```
 
-| Key        | Description                                                                                                                                 |
-| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| `entity`   | Camera entity. Use either `entity` or `url`, not both                                                                                       |
-| `url`      | RTSP stream URL, for a camera without an entity in Home Assistant                                                                           |
-| `name`     | Display name. Empty uses the entity's friendly name                                                                                         |
-| `mic`      | go2rtc stream name that carries the camera's backchannel audio. See [Two-way audio](two-way-audio.md#two-way-audio-advanced)                |
-| `crop`     | Visible region in percent of the full picture: `x`, `y` (top-left corner), `w`, `h` (size). Easiest to set with **Crop view** in the editor |
-| `triggers` | Entities that switch the card to this camera when they turn active. See [Camera triggers](#camera-triggers)                                 |
-| `rotation` | Turn the live picture clockwise: `0` (default), `90`, `180` or `270`. See [Camera rotation](#camera-rotation)                               |
+| Key          | Description                                                                                                                                 |
+| ------------ | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `entity`     | Camera entity. Use either `entity` or `url`, not both                                                                                       |
+| `url`        | RTSP stream URL, for a camera without an entity in Home Assistant                                                                           |
+| `name`       | Display name. Empty uses the entity's friendly name                                                                                         |
+| `mic`        | go2rtc stream name that carries the camera's backchannel audio. See [Two-way audio](two-way-audio.md#two-way-audio-advanced)                |
+| `crop`       | Visible region in percent of the full picture: `x`, `y` (top-left corner), `w`, `h` (size). Easiest to set with **Crop view** in the editor |
+| `triggers`   | Entities that switch the card to this camera when they turn active. See [Camera triggers](#camera-triggers)                                 |
+| `rotation`   | Turn the live picture clockwise: `0` (default), `90`, `180` or `270`. See [Camera rotation](#camera-rotation)                               |
+| `tap_action` | What a tap on this camera does: its grid tile, or its single live view. See [Tap actions](#tap-actions)                                     |
 
 Stream URLs play through the [AlexxIT/WebRTC](https://github.com/AlexxIT/WebRTC) integration, or through your own go2rtc server when you set `live_go2rtc_url` (for example `http://192.168.1.10:1984`). If Home Assistant runs on HTTPS, that go2rtc URL must be HTTPS too, or the browser blocks it.
 
@@ -153,6 +154,42 @@ live_cameras:
 
 ---
 
+## Tap actions
+
+What happens when you tap the live picture. Uses standard Home Assistant action syntax: `more-info`, `toggle`, `perform-action`, `navigate`, `url`, `assist` (opens Home Assistant's Assist dialog) and `none`, with `confirmation`, `target` and `data` where they apply. The card also has its own `fullscreen`, `snapshot` and `refresh`.
+
+**For the whole card**, `tap_action` sets what a tap on the single-camera live view does:
+
+```yaml
+tap_action:
+  action: more-info
+```
+
+**Per camera**, `tap_action` on a camera in [`live_cameras`](#live-cameras) works on its grid tile and on its single live view. For example, to make each grid tile open that camera's own page:
+
+```yaml
+live_layout: grid
+live_cameras:
+  - entity: camera.driveway
+    tap_action:
+      action: navigate
+      navigation_path: /security/driveway
+  - entity: camera.garden
+    tap_action:
+      action: navigate
+      navigation_path: /security/garden
+  - entity: camera.door # no tap_action: tapping the tile shows this camera large
+```
+
+How it is picked:
+
+- **Grid tile:** the camera's own `tap_action`. Without one, a tap shows that camera large, as before. `action: none` makes the tile do nothing. The card-wide `tap_action` does not apply to grid tiles.
+- **Single live view:** the camera's own `tap_action` first, then the card-wide one. Without either, a tap only shows the controls.
+- **`more-info` and `toggle`** act on the camera that was tapped, unless the action names its own `entity`.
+- **Not run by camera triggers:** a [camera trigger](#camera-triggers) that switches the view never runs a tap action.
+
+Tap actions are set in YAML; the visual editor keeps them when you change other options.
+
 ## Live menu buttons
 
 `menu_buttons` adds action buttons to the live view. You can add them in the editor (Live tab → Menu buttons) or in YAML. In the editor you pick the entity with Home Assistant's own entity picker, and the icon is filled in from that entity when the icon field is still empty. You can change it afterwards.
@@ -171,7 +208,7 @@ menu_buttons:
 
 | Key                      | Description                                                                                                                                                                                               |
 | ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `entity`                 | Entity the button acts on (required)                                                                                                                                                                      |
+| `entity`                 | Entity the button acts on. Optional when the button has a `tap_action`                                                                                                                                    |
 | `icon` / `icon_on`       | Icon, and the icon while the entity is "on"                                                                                                                                                               |
 | `color_on` / `color_off` | Button background while on / off                                                                                                                                                                          |
 | `title`                  | Label (default: the entity's friendly name)                                                                                                                                                               |
@@ -180,6 +217,7 @@ menu_buttons:
 | `placement`              | `menu` (default) puts the button in the hamburger menu. `controls` shows it directly among the live control pills                                                                                         |
 | `order`                  | Position among the live controls, sorted together with the built-in pills (`mute` is 10, `picker` 15, `pip` 20, `fullscreen` 30, `snapshot` 35, `refresh` 40). Without it the button goes after the pills |
 | `row`                    | `2` puts the button on a second row of live controls. See [Rows and order of the live controls](#rows-and-order-of-the-live-controls)                                                                     |
+| `tap_action`             | What a tap does instead of the defaults below, in Home Assistant action syntax. See [Shortcut buttons](#shortcut-buttons)                                                                                 |
 
 What a tap does:
 
@@ -187,8 +225,37 @@ What a tap does:
 - **Automations** are triggered, and **scripts** are run.
 - **Everything else** is toggled.
 - A `service`, when set, always wins over these defaults.
+- A `tap_action`, when set, wins over all of the above.
 
 In the editor you create buttons under **Live → Menu buttons**, and choose where each one shows under **Live → Controls**.
+
+### Shortcut buttons
+
+Give a button a `tap_action` and it works like Home Assistant's shortcut card, right among the live controls: open another dashboard, start Assist, or run an action. It does not need an entity:
+
+```yaml
+menu_buttons:
+  - icon: mdi:cctv
+    title: Driveway
+    placement: controls
+    tap_action:
+      action: navigate
+      navigation_path: /security/driveway
+  - icon: mdi:microphone
+    title: Assist
+    tap_action:
+      action: assist
+  - icon: mdi:gate
+    title: Open gate
+    tap_action:
+      action: perform-action
+      perform_action: cover.open_cover
+      target:
+        entity_id: cover.gate
+      confirmation: true
+```
+
+The actions are the same as for [tap actions](#tap-actions). A button without an entity has no on/off state, so `icon_on`, `color_on` and `state_on` don't apply. With an entity, `more-info` and `toggle` act on that entity. Shortcut buttons are set in YAML; the editor shows them in the list and keeps their `tap_action` when you change other options.
 
 ### Rows and order of the live controls
 

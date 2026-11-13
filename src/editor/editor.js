@@ -5295,7 +5295,7 @@ class CameraGalleryCardEditor extends HTMLElement {
             }
             const btn = btns[item.index];
             if (!btn) return "";
-            const label = btn.title || entityDisplayName(this._hass, btn.entity) || btn.entity;
+            const label = btn.title || (btn.entity ? entityDisplayName(this._hass, btn.entity) || btn.entity : "Shortcut");
             return `
                 <div class="row pill-dnd-row" data-ctl-key="${key}" draggable="true">
                   <div class="pill-dnd-line">

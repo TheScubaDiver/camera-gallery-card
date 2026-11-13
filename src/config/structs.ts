@@ -185,6 +185,23 @@ const liveCameraCrop = object({
   source_ar: optional(string()),
 });
 
+/**
+ * Home Assistant-style action config, fired when the live preview is tapped.
+ * Standard HA actions plus the card's own `fullscreen` / `snapshot` / `refresh`.
+ * Loose (`type`) so action-specific keys (`perform_action`, `target`, `data`,
+ * `navigation_path`, `url_path`, ...) pass through untouched.
+ */
+const tapAction = type({
+  action: enums(TAP_ACTIONS),
+  entity: optional(string()),
+  perform_action: optional(string()),
+  service: optional(string()),
+  navigation_path: optional(string()),
+  navigation_replace: optional(boolean()),
+  url_path: optional(string()),
+  confirmation: optional(union([boolean(), type({ text: optional(string()) })])),
+});
+
 const liveCameraEntry = object({
   entity: optional(string()),
   url: optional(string()),
@@ -197,6 +214,9 @@ const liveCameraEntry = object({
   // Entities that switch the card to this camera when they turn active
   // (motion, occupancy, a doorbell event). See data/live-triggers.ts.
   triggers: optional(array(string())),
+  // What a tap on this camera does: its grid tile, or its single live view
+  // (overrides the card-wide tap_action there). Unset keeps the default.
+  tap_action: optional(tapAction),
 });
 
 /**
@@ -273,23 +293,6 @@ const ptzServiceCall = object({
 const ptzActionPair = object({
   start: ptzServiceCall,
   stop: optional(ptzServiceCall),
-});
-
-/**
- * Home Assistant-style action config, fired when the live preview is tapped.
- * Standard HA actions plus the card's own `fullscreen` / `snapshot` / `refresh`.
- * Loose (`type`) so action-specific keys (`perform_action`, `target`, `data`,
- * `navigation_path`, `url_path`, ...) pass through untouched.
- */
-const tapAction = type({
-  action: enums(TAP_ACTIONS),
-  entity: optional(string()),
-  perform_action: optional(string()),
-  service: optional(string()),
-  navigation_path: optional(string()),
-  navigation_replace: optional(boolean()),
-  url_path: optional(string()),
-  confirmation: optional(union([boolean(), type({ text: optional(string()) })])),
 });
 
 /**
@@ -408,8 +411,9 @@ const livePillEntry = object({
   row: optional(enums([1, 2])),
 });
 
-const menuButton = object({
-  entity: nonEmptyString,
+const menuButtonFields = object({
+  // Optional when the button has a `tap_action` (a shortcut button, #302).
+  entity: optional(nonEmptyString),
   icon: nonEmptyString,
   icon_on: optional(string()),
   color_on: optional(string()),
@@ -424,7 +428,16 @@ const menuButton = object({
   // `placement: controls`. See data/live-controls-layout.ts.
   order: optional(integer()),
   row: optional(enums([1, 2])),
+  // What a tap does instead of toggling or calling `service` on the entity:
+  // HA action syntax, e.g. `navigate` for a shortcut button (#302).
+  tap_action: optional(tapAction),
 });
+// A button needs something to act on: an entity, a tap action, or both.
+const menuButton = refine(
+  menuButtonFields,
+  "menu_button_entity_or_tap_action",
+  (v) => !!v.entity || !!v.tap_action || "a menu button needs an `entity` or a `tap_action`"
+);
 
 /**
  * Canonical `CameraGalleryCardConfig` shape.
