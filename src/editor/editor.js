@@ -39,6 +39,7 @@ import {
 import { svgIcon } from "../ui/icons";
 import { sortConfigKeysForOutput } from "../config/key-order";
 import { EDITOR_CSS } from "./editor-styles";
+import { wireDragSort } from "./drag-sort";
 
 class CameraGalleryCardEditor extends HTMLElement {
   constructor() {
@@ -4292,83 +4293,12 @@ class CameraGalleryCardEditor extends HTMLElement {
     // the row under the finger).
     const pillsList = this.shadowRoot.getElementById("pills-dnd-list");
     if (pillsList) {
-      let pillDragSrcId = null;
-      const clearOver = () =>
-        pillsList.querySelectorAll(".pill-dnd-over").forEach((el) => el.classList.remove("pill-dnd-over"));
-      const finishReorder = (targetId) => {
-        if (!pillDragSrcId || pillDragSrcId === targetId) return;
-        this._reorderGalleryPillTo(pillDragSrcId, targetId);
-      };
-
-      pillsList.querySelectorAll(".pill-dnd-row").forEach((row) => {
-        const srcId = row.dataset.pillRow;
-        // Mouse drag — fires on the whole row.
-        row.addEventListener("dragstart", (e) => {
-          pillDragSrcId = srcId;
-          row.classList.add("pill-dnd-dragging");
-          if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
-        });
-        row.addEventListener("dragend", () => {
-          row.classList.remove("pill-dnd-dragging");
-          clearOver();
-          pillDragSrcId = null;
-        });
-        row.addEventListener("dragover", (e) => {
-          e.preventDefault();
-          if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
-          if (srcId !== pillDragSrcId) {
-            clearOver();
-            row.classList.add("pill-dnd-over");
-          }
-        });
-        row.addEventListener("dragleave", () => row.classList.remove("pill-dnd-over"));
-        row.addEventListener("drop", (e) => {
-          e.preventDefault();
-          clearOver();
-          finishReorder(srcId);
-        });
-
-        // Touch drag — only starts when the user grips the handle, so
-        // accidental swipes on the row don't trigger a reorder.
-        const grip = row.querySelector(".pill-drag-grip");
-        if (grip) {
-          grip.addEventListener(
-            "touchstart",
-            (e) => {
-              e.preventDefault();
-              pillDragSrcId = srcId;
-              row.classList.add("pill-dnd-dragging");
-            },
-            { passive: false }
-          );
-          grip.addEventListener(
-            "touchmove",
-            (e) => {
-              e.preventDefault();
-              const touch = e.touches[0];
-              const el = this.shadowRoot.elementFromPoint
-                ? this.shadowRoot.elementFromPoint(touch.clientX, touch.clientY)
-                : document.elementFromPoint(touch.clientX, touch.clientY);
-              const target = el?.closest?.(".pill-dnd-row");
-              clearOver();
-              if (target && target.dataset.pillRow !== pillDragSrcId) target.classList.add("pill-dnd-over");
-            },
-            { passive: false }
-          );
-          grip.addEventListener(
-            "touchend",
-            (e) => {
-              e.preventDefault();
-              row.classList.remove("pill-dnd-dragging");
-              const over = pillsList.querySelector(".pill-dnd-over");
-              const targetId = over?.dataset?.pillRow;
-              clearOver();
-              if (targetId) finishReorder(targetId);
-              pillDragSrcId = null;
-            },
-            { passive: false }
-          );
-        }
+      wireDragSort({
+        root: pillsList,
+        item: ".pill-dnd-row",
+        keyOf: (el) => el.dataset.pillRow,
+        grip: ".pill-drag-grip",
+        onDrop: ({ src, before }) => this._reorderGalleryPillTo(src, before),
       });
     }
 
@@ -4377,68 +4307,12 @@ class CameraGalleryCardEditor extends HTMLElement {
     // toolbar) don't cross-fire on shared event types.
     const toolbarList = this.shadowRoot.getElementById("toolbar-dnd-list");
     if (toolbarList) {
-      let toolbarDragSrcId = null;
-      const clearOver = () =>
-        toolbarList.querySelectorAll(".pill-dnd-over").forEach((el) => el.classList.remove("pill-dnd-over"));
-      const finishReorder = (targetId) => {
-        if (!toolbarDragSrcId || toolbarDragSrcId === targetId) return;
-        this._reorderToolbarButtonTo(toolbarDragSrcId, targetId);
-      };
-
-      toolbarList.querySelectorAll(".pill-dnd-row").forEach((row) => {
-        const srcId = row.dataset.toolbarRow;
-        row.addEventListener("dragstart", (e) => {
-          toolbarDragSrcId = srcId;
-          row.classList.add("pill-dnd-dragging");
-          if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
-        });
-        row.addEventListener("dragend", () => {
-          row.classList.remove("pill-dnd-dragging");
-          clearOver();
-          toolbarDragSrcId = null;
-        });
-        row.addEventListener("dragover", (e) => {
-          e.preventDefault();
-          if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
-          if (srcId !== toolbarDragSrcId) {
-            clearOver();
-            row.classList.add("pill-dnd-over");
-          }
-        });
-        row.addEventListener("dragleave", () => row.classList.remove("pill-dnd-over"));
-        row.addEventListener("drop", (e) => {
-          e.preventDefault();
-          clearOver();
-          finishReorder(srcId);
-        });
-
-        const grip = row.querySelector(".pill-drag-grip");
-        if (grip) {
-          grip.addEventListener("touchstart", (e) => {
-            e.preventDefault();
-            toolbarDragSrcId = srcId;
-            row.classList.add("pill-dnd-dragging");
-          }, { passive: false });
-          grip.addEventListener("touchmove", (e) => {
-            e.preventDefault();
-            const touch = e.touches[0];
-            const el = this.shadowRoot.elementFromPoint
-              ? this.shadowRoot.elementFromPoint(touch.clientX, touch.clientY)
-              : document.elementFromPoint(touch.clientX, touch.clientY);
-            const target = el?.closest?.(".pill-dnd-row");
-            clearOver();
-            if (target && target.dataset.toolbarRow !== toolbarDragSrcId) target.classList.add("pill-dnd-over");
-          }, { passive: false });
-          grip.addEventListener("touchend", (e) => {
-            e.preventDefault();
-            row.classList.remove("pill-dnd-dragging");
-            const over = toolbarList.querySelector(".pill-dnd-over");
-            const targetId = over?.dataset?.toolbarRow;
-            clearOver();
-            if (targetId) finishReorder(targetId);
-            toolbarDragSrcId = null;
-          }, { passive: false });
-        }
+      wireDragSort({
+        root: toolbarList,
+        item: ".pill-dnd-row",
+        keyOf: (el) => el.dataset.toolbarRow,
+        grip: ".pill-drag-grip",
+        onDrop: ({ src, before }) => this._reorderToolbarButtonTo(src, before),
       });
     }
 
@@ -4446,99 +4320,40 @@ class CameraGalleryCardEditor extends HTMLElement {
     // pills can't go in the menu. Mouse drag-and-drop plus touch on the grip.
     const ctlRoot = this.shadowRoot.getElementById("live-ctl-zones");
     if (ctlRoot) {
-      let dragKey = null;
-      const clearOver = () =>
-        ctlRoot.querySelectorAll(".pill-dnd-over, .ctl-zone-over").forEach((el) => el.classList.remove("pill-dnd-over", "ctl-zone-over"));
-      const allowed = (zoneKey) => !(zoneKey === "menu" && String(dragKey || "").startsWith("pill:"));
-      const commit = (zoneKey, beforeKey) => {
-        if (!dragKey || !allowed(zoneKey) || dragKey === beforeKey) return;
-        const lists = {};
-        ctlRoot.querySelectorAll("[data-ctl-zone]").forEach((z) => {
-          lists[z.dataset.ctlZone] = [...z.querySelectorAll("[data-ctl-key]")].map((r) => r.dataset.ctlKey);
-        });
-        for (const k of Object.keys(lists)) lists[k] = lists[k].filter((x) => x !== dragKey);
-        const target = lists[zoneKey] || (lists[zoneKey] = []);
-        const at = beforeKey ? target.indexOf(beforeKey) : -1;
-        if (at >= 0) target.splice(at, 0, dragKey);
-        else target.push(dragKey);
-        const out = zonesToConfig(
-          { row1: lists.row1 || [], row2: lists.row2 || [], menu: lists.menu || [] },
-          this._config.live_pills,
-          this._config.menu_buttons
-        );
-        const next = { ...this._config };
-        if (Object.keys(out.live_pills).length) next.live_pills = out.live_pills;
-        else delete next.live_pills;
-        if (out.menu_buttons.length) next.menu_buttons = out.menu_buttons;
-        else delete next.menu_buttons;
-        this._config = this._stripAlwaysTrueKeys(next);
-        this._fire();
-        this._scheduleRender();
-      };
-      const dropTargetAt = (x, y) => {
-        const el = this.shadowRoot.elementFromPoint
-          ? this.shadowRoot.elementFromPoint(x, y)
-          : document.elementFromPoint(x, y);
-        return { row: el?.closest?.("[data-ctl-key]"), zone: el?.closest?.("[data-ctl-zone]") };
-      };
-
-      ctlRoot.querySelectorAll("[data-ctl-key]").forEach((row) => {
-        const key = row.dataset.ctlKey;
-        row.addEventListener("dragstart", (e) => {
-          dragKey = key;
-          row.classList.add("pill-dnd-dragging");
-          if (e.dataTransfer) { e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", key); }
-        });
-        row.addEventListener("dragend", () => { row.classList.remove("pill-dnd-dragging"); clearOver(); dragKey = null; });
-        row.addEventListener("dragover", (e) => {
-          const zoneKey = row.closest("[data-ctl-zone]")?.dataset.ctlZone;
-          if (!allowed(zoneKey)) return;
-          e.preventDefault();
-          e.stopPropagation();
-          if (key !== dragKey) { clearOver(); row.classList.add("pill-dnd-over"); }
-        });
-        row.addEventListener("drop", (e) => {
-          e.preventDefault();
-          e.stopPropagation();
-          clearOver();
-          commit(row.closest("[data-ctl-zone]")?.dataset.ctlZone, key);
-        });
-
-        const grip = row.querySelector(".pill-drag-grip");
-        if (grip) {
-          grip.addEventListener("touchstart", (e) => { e.preventDefault(); dragKey = key; row.classList.add("pill-dnd-dragging"); }, { passive: false });
-          grip.addEventListener("touchmove", (e) => {
-            e.preventDefault();
-            const t0 = e.touches[0];
-            const { row: overRow, zone } = dropTargetAt(t0.clientX, t0.clientY);
-            clearOver();
-            if (overRow && overRow.dataset.ctlKey !== dragKey && allowed(zone?.dataset.ctlZone)) overRow.classList.add("pill-dnd-over");
-            else if (zone && allowed(zone.dataset.ctlZone)) zone.classList.add("ctl-zone-over");
-          }, { passive: false });
-          grip.addEventListener("touchend", (e) => {
-            e.preventDefault();
-            row.classList.remove("pill-dnd-dragging");
-            const t0 = e.changedTouches[0];
-            const { row: overRow, zone } = dropTargetAt(t0.clientX, t0.clientY);
-            clearOver();
-            if (zone) commit(zone.dataset.ctlZone, overRow && overRow.dataset.ctlKey !== key ? overRow.dataset.ctlKey : null);
-            dragKey = null;
-          }, { passive: false });
-        }
-      });
-      ctlRoot.querySelectorAll("[data-ctl-zone]").forEach((zone) => {
-        zone.addEventListener("dragover", (e) => {
-          if (!allowed(zone.dataset.ctlZone)) return;
-          e.preventDefault();
-          clearOver();
-          zone.classList.add("ctl-zone-over");
-        });
-        zone.addEventListener("dragleave", (e) => { if (!zone.contains(e.relatedTarget)) zone.classList.remove("ctl-zone-over"); });
-        zone.addEventListener("drop", (e) => {
-          e.preventDefault();
-          clearOver();
-          commit(zone.dataset.ctlZone, null);
-        });
+      wireDragSort({
+        root: ctlRoot,
+        item: "[data-ctl-key]",
+        keyOf: (el) => el.dataset.ctlKey,
+        grip: ".pill-drag-grip",
+        zone: "[data-ctl-zone]",
+        zoneKeyOf: (el) => el.dataset.ctlZone,
+        // Built-in pills can't go in the menu.
+        canDrop: (src, zone) => !(zone === "menu" && src.startsWith("pill:")),
+        onDrop: ({ src, before, zone }) => {
+          const lists = {};
+          ctlRoot.querySelectorAll("[data-ctl-zone]").forEach((z) => {
+            lists[z.dataset.ctlZone] = [...z.querySelectorAll("[data-ctl-key]")]
+              .map((r) => r.dataset.ctlKey)
+              .filter((k) => k !== src);
+          });
+          const target = lists[zone] || (lists[zone] = []);
+          const at = before ? target.indexOf(before) : -1;
+          if (at >= 0) target.splice(at, 0, src);
+          else target.push(src);
+          const out = zonesToConfig(
+            { row1: lists.row1 || [], row2: lists.row2 || [], menu: lists.menu || [] },
+            this._config.live_pills,
+            this._config.menu_buttons
+          );
+          const next = { ...this._config };
+          if (Object.keys(out.live_pills).length) next.live_pills = out.live_pills;
+          else delete next.live_pills;
+          if (out.menu_buttons.length) next.menu_buttons = out.menu_buttons;
+          else delete next.menu_buttons;
+          this._config = this._stripAlwaysTrueKeys(next);
+          this._fire();
+          this._scheduleRender();
+        },
       });
     }
 
@@ -5605,7 +5420,6 @@ class CameraGalleryCardEditor extends HTMLElement {
     if (dndContainer) {
       let dragSrcId = null;
 
-      const clearOver = () => dndContainer.querySelectorAll(".dnd-over").forEach((el) => el.classList.remove("dnd-over"));
 
       const doReorder = (targetId) => {
         if (!dragSrcId || dragSrcId === targetId) return;
@@ -5639,60 +5453,17 @@ class CameraGalleryCardEditor extends HTMLElement {
         this._scheduleRender();
       };
 
-      dndContainer.querySelectorAll("[data-dragcam]").forEach((chip) => {
-        // Mouse drag
-        chip.addEventListener("dragstart", (e) => {
-          dragSrcId = chip.dataset.dragcam;
-          chip.classList.add("dnd-dragging");
-          e.dataTransfer.effectAllowed = "move";
-        });
-        chip.addEventListener("dragend", () => {
-          chip.classList.remove("dnd-dragging");
-          clearOver();
-          dragSrcId = null;
-        });
-        chip.addEventListener("dragover", (e) => {
-          e.preventDefault();
-          e.dataTransfer.dropEffect = "move";
-          if (chip.dataset.dragcam !== dragSrcId) { clearOver(); chip.classList.add("dnd-over"); }
-        });
-        chip.addEventListener("dragleave", () => chip.classList.remove("dnd-over"), _sig);
-        chip.addEventListener("drop", (e) => {
-          e.preventDefault();
-          clearOver();
-          doReorder(chip.dataset.dragcam);
-        });
-
-        // Touch drag — alleen starten via grip
-        const grip = chip.querySelector(".livecam-rowgrip");
-        if (grip) {
-          grip.addEventListener("touchstart", (e) => {
-            e.preventDefault();
-            dragSrcId = chip.dataset.dragcam;
-            chip.classList.add("dnd-dragging");
-          }, { passive: false });
-
-          grip.addEventListener("touchmove", (e) => {
-            e.preventDefault();
-            const touch = e.touches[0];
-            const el = this.shadowRoot.elementFromPoint
-              ? this.shadowRoot.elementFromPoint(touch.clientX, touch.clientY)
-              : document.elementFromPoint(touch.clientX, touch.clientY);
-            const target = el?.closest?.("[data-dragcam]");
-            clearOver();
-            if (target && target.dataset.dragcam !== dragSrcId) target.classList.add("dnd-over");
-          }, { passive: false });
-
-          grip.addEventListener("touchend", (e) => {
-            e.preventDefault();
-            chip.classList.remove("dnd-dragging");
-            const over = dndContainer.querySelector(".dnd-over");
-            const targetId = over?.dataset?.dragcam;
-            clearOver();
-            if (targetId) doReorder(targetId);
-            dragSrcId = null;
-          }, { passive: false });
-        }
+      wireDragSort({
+        root: dndContainer,
+        item: "[data-dragcam]",
+        keyOf: (el) => el.dataset.dragcam,
+        grip: ".livecam-rowgrip",
+        draggingClass: "dnd-dragging",
+        overClass: "dnd-over",
+        onDrop: ({ src, before }) => {
+          dragSrcId = src;
+          doReorder(before);
+        },
       });
     }
 
