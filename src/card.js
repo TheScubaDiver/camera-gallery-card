@@ -541,7 +541,7 @@ class CameraGalleryCard extends LitElement {
     // open in the live menu panel (#215), or null for the regular menu.
     this._menuSelectEntity = null;
 
-    // Pinch-to-zoom state (alleen actief in fullscreen live mode)
+    // Pinch-to-zoom state (only active in fullscreen live mode)
     this._zoomScale = 1;
     this._zoomPanX = 0;
     this._zoomPanY = 0;
@@ -1816,7 +1816,7 @@ class CameraGalleryCard extends LitElement {
       this._nativeMicState = String(ev?.detail?.state || "off");
       this.requestUpdate();
     });
-    player.muted = true; // start muted zodat autoplay werkt; _syncLiveMuted unmute daarna
+    player.muted = true; // start muted so autoplay works; _syncLiveMuted unmutes afterwards
     player.controls = false;
     player.style.cssText = `display:block;width:100%;height:100%;margin:0;object-fit:cover;`;
 
@@ -1841,7 +1841,7 @@ class CameraGalleryCard extends LitElement {
       return this._liveCardPending.promise;
     }
 
-    // Sluit bestaande peer connection en WebSocket als die er zijn
+    // Close the existing peer connection and WebSocket, if any
     if (this._rtcWebSocket) {
       try { this._rtcWebSocket.close(); } catch (_) {}
       this._rtcWebSocket = null;
@@ -1883,7 +1883,7 @@ class CameraGalleryCard extends LitElement {
         if (e.streams?.[0]) video.srcObject = e.streams[0];
       };
 
-      // Gebruik HA ingebouwde go2rtc (auth/sign_path) of externe go2rtc instantie
+      // Use HA's built-in go2rtc (auth/sign_path) or an external go2rtc instance
       const go2rtcBase = this._getGo2rtcUrl();
       let wsUrl;
       let pathLabel;
@@ -1966,7 +1966,7 @@ class CameraGalleryCard extends LitElement {
         };
       });
 
-      // Stuur ICE candidates door naar go2rtc
+      // Forward ICE candidates to go2rtc
       pc.onicecandidate = (e) => {
         if (e.candidate && ws.readyState === WebSocket.OPEN) {
           ws.send(JSON.stringify({ type: "webrtc/candidate", value: e.candidate.candidate }));
@@ -2352,7 +2352,7 @@ class CameraGalleryCard extends LitElement {
       !!document.fullscreenEnabled,
     );
 
-    // iOS Safari: webkitEnterFullscreen op video element
+    // iOS Safari: webkitEnterFullscreen on the video element
     if (target === "webkit") {
       this._setLiveVideoControls(video, true);
       armWebkitExitResume(video);
@@ -3461,7 +3461,7 @@ class CameraGalleryCard extends LitElement {
       host.appendChild(card);
     }
 
-    // stateObj alleen updaten bij entity-modus
+    // Only update stateObj in entity mode
     if (!isStreamUrl) {
       const entity = this._getEffectiveLiveCamera();
       const newStateObj = this._hass?.states?.[entity];
@@ -3470,7 +3470,7 @@ class CameraGalleryCard extends LitElement {
       }
     }
 
-    // Style-injectie alleen bij nieuwe mount (timers + MutationObserver doen de rest)
+    // Inject styles only on a new mount (timers + MutationObserver do the rest)
     if (isNewMount) {
       card.hass = this._hass;
       injectLiveFillStyle(card);
@@ -5405,8 +5405,8 @@ class CameraGalleryCard extends LitElement {
         } catch (_) {}
       }
 
-      // Herstart observer na scroll reset zodat zichtbare elementen
-      // correct worden gedetecteerd op de nieuwe scroll positie
+      // Restart the observer after the scroll reset so visible elements
+      // are detected at the new scroll position
       this._observedThumbs = new WeakSet();
       this._setupThumbObserver();
     });

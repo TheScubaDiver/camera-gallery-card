@@ -1351,7 +1351,7 @@ export const EDITOR_CSS = `
           transform: rotate(45deg);
         }
 
-        /* Nieuwe styles voor custom filters */
+        /* Custom filter styles */
         .custom-filter-add {
           display: flex;
           flex-direction: column;

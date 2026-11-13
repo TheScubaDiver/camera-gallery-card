@@ -601,7 +601,7 @@ class CameraGalleryCardEditor extends HTMLElement {
 
         if (!key || seen.has(key)) continue;
         seen.add(key);
-        out.push(item); // We bewaren het originele item (string of object)
+        out.push(item); // Keep the original item (string or object)
       }
       return out;
     }
@@ -710,9 +710,7 @@ class CameraGalleryCardEditor extends HTMLElement {
    * `source_ar` so detection only runs once per camera.
    */
   _renderLivecamCropInline(cameraId) {
-    const cams = Array.isArray(this._config?.live_cameras) ? this._config.live_cameras : [];
-    const entry = cams.find((c) => c?.entity === cameraId);
-    const crop = entry?.crop || {};
+    const crop = this._liveCameraEntry(cameraId)?.crop || {};
     const x = Number.isFinite(Number(crop.x)) ? Number(crop.x) : 0;
     const y = Number.isFinite(Number(crop.y)) ? Number(crop.y) : 0;
     const w = Number.isFinite(Number(crop.w)) && crop.w > 0 ? Number(crop.w) : 100;
@@ -804,14 +802,10 @@ class CameraGalleryCardEditor extends HTMLElement {
    */
   _saveCropForCamera(cameraId, next) {
     if (!cameraId) return;
-    const cams = Array.isArray(this._config.live_cameras) ? [...this._config.live_cameras] : [];
-    const idx = cams.findIndex((c) => c?.entity === cameraId);
-    const baseEntry = idx >= 0 ? { ...cams[idx] } : { entity: cameraId, name: "" };
     const fullFrame = next.x === 0 && next.y === 0 && next.w === 100 && next.h === 100;
-    if (fullFrame) {
-      delete baseEntry.crop;
-    } else {
-      const cropOut = {
+    let cropOut;
+    if (!fullFrame) {
+      cropOut = {
         x: Math.round(next.x),
         y: Math.round(next.y),
         w: Math.round(next.w),
@@ -820,11 +814,8 @@ class CameraGalleryCardEditor extends HTMLElement {
       if (next.source_ar && next.source_ar !== "16/9") {
         cropOut.source_ar = next.source_ar;
       }
-      baseEntry.crop = cropOut;
     }
-    if (idx >= 0) cams[idx] = baseEntry;
-    else cams.push(baseEntry);
-    this._set("live_cameras", cams);
+    this._updateLiveCamera(cameraId, { crop: cropOut }, { render: true });
   }
 
   _resetCropForCamera(cameraId) {
@@ -902,9 +893,7 @@ class CameraGalleryCardEditor extends HTMLElement {
     });
 
     const getSavedSourceAR = () => {
-      const cams = Array.isArray(this._config?.live_cameras) ? this._config.live_cameras : [];
-      const entry = cams.find((c) => c?.entity === cameraId);
-      return String(entry?.crop?.source_ar || this._livecamCropDetectedAR.get(cameraId) || "16/9");
+      return String(this._liveCameraEntry(cameraId)?.crop?.source_ar || this._livecamCropDetectedAR.get(cameraId) || "16/9");
     };
 
     const sourceARNum = () => {
@@ -2684,7 +2673,7 @@ class CameraGalleryCardEditor extends HTMLElement {
                       <div class="livecam-fieldrow">
                         <label>Triggers</label>
                         <input type="text" class="ed-input livecam-trig-input" data-trig-cam="${id}" value="${(() => {
-                          const entry = (Array.isArray(this._config.live_cameras) ? this._config.live_cameras : []).find((lc) => lc && lc.entity === id);
+                          const entry = this._liveCameraEntry(id);
                           return (Array.isArray(entry?.triggers) ? entry.triggers : []).join(", ").replace(/"/g, "&quot;");
                         })()}" placeholder="binary_sensor.motion, event.doorbell" autocomplete="off" />
                       </div>
@@ -2692,7 +2681,7 @@ class CameraGalleryCardEditor extends HTMLElement {
                         <label>Rotation</label>
                         <div class="segwrap">
                           ${(() => {
-                            const entry = (Array.isArray(this._config.live_cameras) ? this._config.live_cameras : []).find((lc) => lc && lc.entity === id);
+                            const entry = this._liveCameraEntry(id);
                             const rot = normalizeRotation(entry?.rotation);
                             return [0, 90, 180, 270]
                               .map((r) => `<button type="button" class="seg ${rot === r ? "on" : ""}" data-rotcam="${id}" data-rot="${r}">${r}°</button>`)
@@ -3764,7 +3753,7 @@ class CameraGalleryCardEditor extends HTMLElement {
 
     const $ = (id) => this.shadowRoot.getElementById(id);
 
-        // 1. Zoek de elementen op
+        // 1. Find the elements
         const addBtn = $("add-filter-btn");
         const nameInput = $("new-filter-name");
         const iconInput = $("new-filter-icon");
@@ -3777,14 +3766,14 @@ class CameraGalleryCardEditor extends HTMLElement {
 
           if (!name) return;
 
-          // Haal huidige filters op
+          // Current filters
           const currentFilters = this._normalizeObjectFilters(this._config.object_filters || []);
           const newFilter = { [name]: icon };
           
-          // Sla op in de config
+          // Save to the config
           this._set("object_filters", [...currentFilters, newFilter]);
           
-          // Maak velden leeg
+          // Clear the fields
           if (nameInput) nameInput.value = "";
           if (iconInput) iconInput.value = "";
         };
@@ -3792,7 +3781,7 @@ class CameraGalleryCardEditor extends HTMLElement {
         // 3. Wire the click listener onto the button.
         addBtn?.addEventListener("click", handleAddFilter, _sig);
 
-        // 4. Enter op naam-veld voegt toe
+        // 4. Enter in the name field adds the filter
         nameInput?.addEventListener("keydown", (e) => {
           if (e.key === "Enter") { e.preventDefault(); handleAddFilter(); }
         });
@@ -4228,7 +4217,7 @@ class CameraGalleryCardEditor extends HTMLElement {
     });
 
     // Toolbar buttons — switches map to the underlying show_* keys (BC),
-    // ordering writes into toolbar_order (sparse). Drag-en-drop wiring
+    // ordering writes into toolbar_order (sparse). Drag-and-drop wiring
     // lives further below alongside the gallery + live pill lists.
     this.shadowRoot.querySelectorAll("[id^='toolbar-enable-']").forEach((el) => {
       el.addEventListener("change", (e) => {
@@ -4875,7 +4864,7 @@ class CameraGalleryCardEditor extends HTMLElement {
     });
 
 
-    // Camera tag input voor live picker
+    // Camera tag input for the live picker
     const livecamInput = $("livecam-input");
     const livecamSugg = $("livecam-suggestions");
 
@@ -4987,19 +4976,7 @@ class CameraGalleryCardEditor extends HTMLElement {
       inp.addEventListener("change", (e) => {
         const id = e.target.dataset.micCam;
         const value = String(e.target.value || "").trim();
-        const liveCams = Array.isArray(this._config.live_cameras) ? [...this._config.live_cameras] : [];
-        let idx = liveCams.findIndex((lc) => lc && lc.entity === id);
-        if (idx < 0) {
-          liveCams.push({ entity: id });
-          idx = liveCams.length - 1;
-        }
-        const entry = { ...liveCams[idx] };
-        if (value) entry.mic = value;
-        else delete entry.mic;
-        liveCams[idx] = entry;
-        const next = { ...this._config, live_cameras: liveCams };
-        this._config = this._stripAlwaysTrueKeys(next);
-        this._fire();
+        this._updateLiveCamera(id, { mic: value });
         // Update the row's mic-summary label live without a full re-render.
         const row = e.target.closest(".livecam-row");
         const summary = row?.querySelector(".livecam-rowmic");
@@ -5016,18 +4993,7 @@ class CameraGalleryCardEditor extends HTMLElement {
       inp.addEventListener("change", (e) => {
         const id = e.target.dataset.trigCam;
         const ids = [...new Set(String(e.target.value || "").split(/[\s,]+/).map((s) => s.trim()).filter(Boolean))];
-        const liveCams = Array.isArray(this._config.live_cameras) ? [...this._config.live_cameras] : [];
-        let idx = liveCams.findIndex((lc) => lc && lc.entity === id);
-        if (idx < 0) {
-          liveCams.push({ entity: id });
-          idx = liveCams.length - 1;
-        }
-        const entry = { ...liveCams[idx] };
-        if (ids.length) entry.triggers = ids;
-        else delete entry.triggers;
-        liveCams[idx] = entry;
-        this._config = this._stripAlwaysTrueKeys({ ...this._config, live_cameras: liveCams });
-        this._fire();
+        this._updateLiveCamera(id, { triggers: ids.length ? ids : undefined });
       });
     });
 
@@ -5036,19 +5002,7 @@ class CameraGalleryCardEditor extends HTMLElement {
       btn.addEventListener("click", () => {
         const id = btn.dataset.rotcam;
         const rot = normalizeRotation(btn.dataset.rot);
-        const liveCams = Array.isArray(this._config.live_cameras) ? [...this._config.live_cameras] : [];
-        let idx = liveCams.findIndex((lc) => lc && lc.entity === id);
-        if (idx < 0) {
-          liveCams.push({ entity: id });
-          idx = liveCams.length - 1;
-        }
-        const entry = { ...liveCams[idx] };
-        if (rot) entry.rotation = rot;
-        else delete entry.rotation;
-        liveCams[idx] = entry;
-        this._config = this._stripAlwaysTrueKeys({ ...this._config, live_cameras: liveCams });
-        this._fire();
-        this._scheduleRender();
+        this._updateLiveCamera(id, { rotation: rot || undefined }, { render: true });
       });
     });
 
@@ -5141,7 +5095,7 @@ class CameraGalleryCardEditor extends HTMLElement {
       });
     });
 
-    // Menu button veld inline bewerken (entity autocomplete + icon/title/service/state_on)
+    // Edit menu button fields inline (entity autocomplete + icon/title/service/state_on)
     const allEntityIds = Object.keys(this._hass?.states || {}).sort();
     const entitySuggestions = (q) => {
       const lq = q.toLowerCase();
@@ -5224,7 +5178,7 @@ class CameraGalleryCardEditor extends HTMLElement {
       });
     });
 
-    // Menu button veld inline bewerken (title, service, state_on)
+    // Edit menu button fields inline (title, service, state_on)
     this.shadowRoot.querySelectorAll("input[data-menubtn][data-mbfield]").forEach((input) => {
       // Icons typed by hand (not picked from the list) are saved here too.
       input.addEventListener("change", () => {
@@ -5415,7 +5369,7 @@ class CameraGalleryCardEditor extends HTMLElement {
       );
     }
 
-    // Drag-and-drop reorder voor live_camera_entities chips (mouse + touch)
+    // Drag-and-drop reorder for the live_camera_entities chips (mouse + touch)
     const dndContainer = this.shadowRoot.getElementById("livecam-tags-dnd");
     if (dndContainer) {
       let dragSrcId = null;
@@ -5988,6 +5942,36 @@ class CameraGalleryCardEditor extends HTMLElement {
   }
 
 
+  /** The `live_cameras` entry of an entity camera, or undefined. */
+  _liveCameraEntry(id) {
+    const cams = Array.isArray(this._config?.live_cameras) ? this._config.live_cameras : [];
+    return cams.find((lc) => lc && lc.entity === id);
+  }
+
+  /**
+   * Set or clear fields on one entity camera's `live_cameras` entry, adding
+   * the entry when the camera has none yet. A field set to undefined, null
+   * or "" is removed, so the YAML stays clean. Re-renders only on request,
+   * so text inputs keep their focus.
+   */
+  _updateLiveCamera(id, patch, { render = false } = {}) {
+    const cams = Array.isArray(this._config.live_cameras) ? [...this._config.live_cameras] : [];
+    let idx = cams.findIndex((lc) => lc && lc.entity === id);
+    if (idx < 0) {
+      cams.push({ entity: id });
+      idx = cams.length - 1;
+    }
+    const entry = { ...cams[idx] };
+    for (const [key, value] of Object.entries(patch)) {
+      if (value === undefined || value === null || value === "") delete entry[key];
+      else entry[key] = value;
+    }
+    cams[idx] = entry;
+    this._config = this._stripAlwaysTrueKeys({ ...this._config, live_cameras: cams });
+    this._fire();
+    if (render) this._scheduleRender();
+  }
+
   _stripAlwaysTrueKeys(cfg) {
     const next = { ...(cfg || {}) };
 
@@ -6136,7 +6120,7 @@ class CameraGalleryCardEditor extends HTMLElement {
         <button class="cgc-wizard-toggle" id="cgc-wizard-toggle">
           ${this._wizardOpen ? "▾" : "▸"} Create new FileTrack sensor
         </button>
-        <a class="cgc-wizard-link" href="https://github.com/TheScubadiver/FileTrack" target="_blank" rel="noopener">FileTrack op GitHub</a>
+        <a class="cgc-wizard-link" href="https://github.com/TheScubaDiver/FileTrack" target="_blank" rel="noopener">FileTrack on GitHub</a>
         ${this._wizardOpen ? `
           <div class="cgc-wizard-body">
             <div class="cgc-wizard-row">
