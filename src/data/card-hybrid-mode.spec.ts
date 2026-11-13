@@ -75,7 +75,7 @@ describe("hybrid view", () => {
     card.remove();
   });
 
-  it("pulses the camera name pill only in hybrid mode", async () => {
+  it("colours the camera name pill red only in hybrid mode", async () => {
     const hybrid = await makeCard("hybrid");
     expect(hybrid.shadowRoot.querySelector(".gallery-pill--live")).not.toBeNull();
     hybrid.remove();

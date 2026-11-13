@@ -2114,7 +2114,7 @@ export const cardStyles = css`
     pointer-events: none;
   }
 
-  /* Hybrid view: the camera name pill pulses light red while the live feed
+  /* Hybrid view: the camera name pill turns light red while the live feed
      is showing, so it's clear you're watching live and not a clip. */
   .gallery-pill--live::after {
     content: "";
@@ -2122,24 +2122,8 @@ export const cardStyles = css`
     inset: 0;
     border-radius: inherit;
     background: rgb(226, 75, 74);
-    opacity: 0.25;
+    opacity: 0.45;
     pointer-events: none;
-    animation: cgc-live-pulse 2s ease-in-out infinite;
-  }
-  @keyframes cgc-live-pulse {
-    0%,
-    100% {
-      opacity: 0.2;
-    }
-    50% {
-      opacity: 0.6;
-    }
-  }
-  @media (prefers-reduced-motion: reduce) {
-    .gallery-pill--live::after {
-      animation: none;
-      opacity: 0.4;
-    }
   }
 
   /* Mic error toast — sits inside live-controls-bar so layout doesn't
