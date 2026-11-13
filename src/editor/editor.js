@@ -1723,7 +1723,336 @@ class CameraGalleryCardEditor extends HTMLElement {
 
     const cameraEntities = getEditorCameraEntities(this._hass?.states, this._hass);
 
-    const rootVars = `
+    const rootVars = this._renderRootVars();
+
+    const tabBtn = (key, label, icon) => `
+      <button
+        type="button"
+        class="tabbtn ${this._activeTab === key ? "on" : ""}"
+        data-tab="${key}"
+      >
+        ${svgIcon(icon, 16)}
+        <span>${label}</span>
+      </button>
+    `;
+
+    const mediaBrowserHtml = this._renderMediaBrowser();
+
+    // Shared styling-tab markup — identical between v1 and v2.
+    const buildStylingPanelHtml = () => this._renderStylingTab();
+
+    // ====================================================================
+    // v2 editor (beta) — 6 tabs with collapsibles in Gallery / Live.
+    // Each builder returns a complete `<div class="tabpanel">` so the
+    // partial-update path (replaceWith on .tabpanel) keeps working.
+    // ====================================================================
+    // v2 collapsibles reuse the existing .style-section / .style-section-head
+    // CSS so they look identical to the Styling-tab accordion users already
+    // know. `icon` is optional — pass an mdi name to show a leading glyph.
+    //
+    // Open-state lookup order:
+    //   1. `_v2OpenSections` map keyed `${tab}.${id}` — set by user toggles
+    //   2. fallback to `openByDefault` for first render
+    const v2Collapsible = (id, title, openByDefault, bodyHtml, icon, opts) => {
+      const key = `${this._activeTab}.${id}`;
+      const isOpen = this._v2OpenSections.has(key)
+        ? this._v2OpenSections.get(key)
+        : openByDefault;
+      const muted = opts?.muted === true;
+      const mutedHint = opts?.mutedHint || "";
+      return `
+        <details class="style-section ${muted ? "muted" : ""}" ${isOpen ? "open" : ""} data-v2-section="${id}">
+          <summary class="style-section-head">
+            ${icon ? svgIcon(icon, 18) : ``}
+            <span>${title}</span>
+            ${muted && mutedHint ? `<em style="margin-left:8px;font-size:11px;opacity:0.6;font-style:italic;">${mutedHint}</em>` : ""}
+            <span class="style-chevron">${svgIcon('mdi:chevron-down', 18)}</span>
+          </summary>
+          <div class="style-section-body">
+            ${bodyHtml}
+          </div>
+        </details>
+      `;
+    };
+
+    // Small right-aligned "Expand all / Collapse all" link rendered at
+    // the top of any v2 tabpanel that has multiple collapsibles. Click
+    // handler is wired in the post-render block.
+    const v2ExpandToggle = `
+      <div class="v2-expand-row">
+        <button type="button" class="v2-expand-all" data-v2-expand>Expand all</button>
+      </div>
+    `;
+
+    const buildSourceTabV2 = () => this._renderSourceTab({
+      startMode,
+      sensorModeOn,
+      mediaModeOn,
+      combinedModeOn,
+      invalidEntities,
+      mediaHasFile,
+      v2ExpandToggle,
+      v2Collapsible,
+    });
+
+    /**
+     * Toggle-row helper for the "Show chevrons" config flag in both
+     * Gallery and Live tabs. Same shape (row + row-head + label + desc
+     * + switch), only the id, label, and description differ — extracted
+     * so the two callers stay in sync if the row chrome ever changes.
+     */
+    const chevronToggleRow = (id, desc, checked) => `
+      <div class="row">
+        <div class="row-head">
+          <div>
+            <div class="lbl">Show chevrons</div>
+            <div class="desc">${desc}</div>
+          </div>
+          <div class="togrow">
+            <label class="cgc-switch"><input type="checkbox" id="${id}" ${checked ? "checked" : ""}><span class="cgc-track"></span></label>
+          </div>
+        </div>
+      </div>
+    `;
+
+    const buildGalleryTabV2 = () => this._renderGalleryTab({
+      objectFit,
+      previewPos,
+      cleanMode,
+      fullscreenZoom,
+      c,
+      chevronToggleRow,
+      persistentControls,
+      v2ExpandToggle,
+      v2Collapsible,
+    });
+
+    const buildLiveTabV2 = () => this._renderLiveTab({
+      liveEnabled,
+      cameraEntities,
+      liveCameraEntities,
+      liveLayout,
+      liveGridEmphasis,
+      liveFullscreen,
+      c,
+      chevronToggleRow,
+      v2Collapsible,
+      liveGridCols,
+    });
+
+    const buildThumbsTabV2 = () => this._renderThumbsTab({
+      c,
+      cleanMode,
+      selectedCount,
+      objectFiltersArr,
+      thumbLayout,
+      thumbSizeMuted,
+      thumbBarPos,
+      thumbSortOrder,
+      thumbFramePct,
+      v2ExpandToggle,
+      v2Collapsible,
+      objectColors,
+    });
+
+    const buildStylingTabV2 = () =>
+      buildStylingPanelHtml().replace(
+        '<div class="tabpanel" data-panel="styling">',
+        `<div class="tabpanel" data-panel="styling">${v2ExpandToggle}`
+      );
+
+    const buildAdvancedTabV2 = () => this._renderAdvancedTab({
+      mediaModeOn,
+      deleteOk,
+      deleteChoices,
+      c,
+      frigateDeleteOk,
+      frigateDeleteChoices,
+      v2ExpandToggle,
+      v2Collapsible,
+      deleteService,
+      frigateDeleteService,
+    });
+
+    const buildV2PanelHtml = () => {
+      const tab = this._activeTab;
+      if (tab === "source")   return buildSourceTabV2();
+      if (tab === "gallery")  return buildGalleryTabV2();
+      if (tab === "live")     return buildLiveTabV2();
+      if (tab === "thumbs")   return buildThumbsTabV2();
+      if (tab === "styling")  return buildStylingTabV2();
+      if (tab === "advanced") return buildAdvancedTabV2();
+      return `<div class="tabpanel" data-panel="${tab}"></div>`;
+    };
+
+    const buildPanelHtml = () => buildV2PanelHtml();
+
+    if (!this._editorRendered) {
+    this.shadowRoot.innerHTML = `
+      <style>${EDITOR_CSS}</style>
+
+      <div class="wrap v2" style="${rootVars}">
+
+        <div class="tabs">
+          <div class="tabbar">
+            ${tabBtn("source", "Source", "mdi:database-outline")}
+            ${tabBtn("gallery", "Gallery", "mdi:image-outline")}
+            ${tabBtn("live", "Live", "mdi:video-outline")}
+            ${tabBtn("thumbs", "Thumbnails", "mdi:view-grid-outline")}
+            ${tabBtn("styling", "Styling", "mdi:palette-outline")}
+            ${tabBtn("advanced", "Advanced", "mdi:tune-vertical")}
+          </div>
+
+          ${buildPanelHtml()}
+
+        </div>
+      </div>
+
+      <div id="cgc-browser-slot">${mediaBrowserHtml}</div>
+    `;
+    this.shadowRoot.querySelectorAll("[data-tab]").forEach((btn) => {
+      btn.addEventListener("click", () => this._setActiveTab(btn.dataset.tab));
+    });
+    this._editorRendered = true;
+    } else {
+      // Partial update — avoid rebuilding the full shadow DOM
+      const panelHtml = buildPanelHtml();
+
+      // Update CSS vars on wrap
+      const wrapEl = this.shadowRoot.querySelector(".wrap");
+      if (wrapEl) wrapEl.setAttribute("style", rootVars);
+
+      // Update tab button active states
+      this.shadowRoot.querySelectorAll("[data-tab]").forEach((btn) => {
+        btn.classList.toggle("on", btn.dataset.tab === this._activeTab);
+      });
+
+      // Swap tab panel
+      const oldPanel = this.shadowRoot.querySelector(".tabpanel");
+      const tmp = document.createElement("div");
+      tmp.innerHTML = panelHtml;
+      const newPanel = tmp.firstElementChild;
+      // Preserve v2 collapsible open-state across re-renders. Without
+      // this, flipping a toggle inside Playback/Toolbar would re-render
+      // the tab and collapse the section back to its default state.
+      if (oldPanel && newPanel) {
+        oldPanel.querySelectorAll("details[data-v2-section]").forEach((oldS) => {
+          const id = oldS.getAttribute("data-v2-section");
+          const newS = newPanel.querySelector(`details[data-v2-section="${id}"]`);
+          if (!newS) return;
+          if (oldS.hasAttribute("open")) newS.setAttribute("open", "");
+          else newS.removeAttribute("open");
+        });
+      }
+      if (oldPanel && newPanel) {
+        oldPanel.replaceWith(newPanel);
+      } else if (!oldPanel && newPanel) {
+        this.shadowRoot.querySelector(".tabbar")?.insertAdjacentElement("afterend", newPanel);
+      }
+
+      // Update media browser slot
+      const browserSlot = this.shadowRoot.getElementById("cgc-browser-slot");
+      if (browserSlot) browserSlot.innerHTML = mediaBrowserHtml;
+
+    }
+
+    if (this._evtCtrl) this._evtCtrl.abort();
+    this._evtCtrl = new AbortController();
+    const _sig = { signal: this._evtCtrl.signal };
+
+    this._wireSectionToggles({ _sig });
+
+    const $ = (id) => this.shadowRoot.getElementById(id);
+
+    this._wireObjectFilters({ _sig, $ });
+
+    const entitiesEl = $("entities");
+    const mediaEl = $("mediasources");
+    const pathFmtEl = $("pathfmt");
+    const delserviceEl = $("delservice");
+
+    const thumbEl = $("thumb");
+    const maxmediaEl = $("maxmedia");
+    const thumbpctEl = $("thumbpct");
+    const thumbpctvalEl = $("thumbpctval");
+
+    const autoplayEl = $("autoplay");
+    const autoMutedEl = $("auto_muted");
+    const liveAutoMutedEl = $("live_auto_muted");
+
+    this._setControlValue(entitiesEl, entitiesText);
+    this._setControlValue(mediaEl, mediaSourcesText);
+    this._setControlValue(pathFmtEl, pathDatetimeFormat);
+    this._setControlValue(thumbEl, String(thumbSize));
+    this._setControlValue(maxmediaEl, String(maxMedia));
+    this._setControlValue(thumbpctEl, thumbFramePct);
+    if (autoplayEl) autoplayEl.checked = autoplay;
+    if (autoMutedEl) autoMutedEl.checked = autoMuted;
+    if (liveAutoMutedEl) liveAutoMutedEl.checked = liveAutoMuted;
+
+    if (delserviceEl) delserviceEl.value = deleteService;
+
+    this._applyFieldValidation("entities");
+    this._applyFieldValidation("mediasources");
+
+    this._bindColorControls(_sig);
+    this._bindWizardEvents(_sig);
+
+    this._wireSourceAndGalleryFields({ _sig, $, pathFmtEl, delserviceEl, thumbEl, maxmediaEl });
+
+    this._wirePillsAndToolbar();
+
+    this._wireLiveOptions({ _sig, $, autoplayEl, autoMutedEl, liveAutoMutedEl });
+
+    this._wirePtz({ $ });
+
+    this._wireAdvanced({ $ });
+
+    this._wireLiveLayout({ $ });
+
+    this._wireLiveCameras({ cameraEntities, _sig, $ });
+
+    this._wireMenuButtonsAndThumbActions({ _sig, $ });
+
+    this._wireLiveCameraReorder();
+
+    this._wireThumbFramePct({ thumbpctEl, thumbpctvalEl });
+
+    this._wireMediaBrowser({ $ });
+
+    try {
+      const fs = this._focusState;
+      if (fs && fs.id) {
+        const el = $(fs.id);
+        if (el && typeof el.focus === "function") {
+          if (
+            fs.value != null &&
+            typeof el.value === "string" &&
+            el.value !== fs.value
+          ) {
+            el.value = fs.value;
+          }
+
+          el.focus({ preventScroll: true });
+
+          if (
+            fs.start != null &&
+            fs.end != null &&
+            typeof el.setSelectionRange === "function"
+          ) {
+            el.setSelectionRange(fs.start, fs.end);
+          }
+        }
+      }
+    } catch (_) {}
+
+    this._renderSuggestions("entities");
+    this._renderSuggestions("mediasources");
+  }
+
+  /** CSS variables for the editor root. Part of _render(). */
+  _renderRootVars() {
+    return `
       --ed-radius-panel: 18px;
       --ed-radius-row: 16px;
       --ed-radius-input: 12px;
@@ -1922,1787 +2251,10 @@ class CameraGalleryCardEditor extends HTMLElement {
       );
       --ed-backdrop: var(--cgc-editor-backdrop, rgba(0,0,0,0.68));
     `;
+  }
 
-    const tabBtn = (key, label, icon) => `
-      <button
-        type="button"
-        class="tabbtn ${this._activeTab === key ? "on" : ""}"
-        data-tab="${key}"
-      >
-        ${svgIcon(icon, 16)}
-        <span>${label}</span>
-      </button>
-    `;
-
-    const mediaBrowserHtml = this._mediaBrowserOpen
-      ? `
-        <div class="browser-backdrop" id="browser-backdrop"></div>
-        <div class="browser-modal" role="dialog" aria-modal="true" aria-label="Browse media folders">
-          <div class="browser-head">
-            <div class="browser-head-copy">
-              <div class="browser-title">Browse folders</div>
-              <div class="browser-path">${this._mediaBrowserPath || "—"}</div>
-            </div>
-            <button type="button" class="browser-iconbtn" id="browser-close" title="Close">
-              ${svgIcon('mdi:close', 18)}
-            </button>
-          </div>
-
-          <div class="browser-toolbar">
-            <button
-              type="button"
-              class="browser-btn ${this._mediaBrowserHistory.length ? "" : "disabled"}"
-              id="browser-back"
-              ${this._mediaBrowserHistory.length ? "" : "disabled"}
-            >
-              ${svgIcon('mdi:arrow-left', 18)}
-              <span>Back</span>
-            </button>
-
-            <button
-              type="button"
-              class="browser-btn primary"
-              id="browser-select-current"
-              ${this._mediaBrowserPath ? "" : "disabled"}
-            >
-              ${svgIcon('mdi:check', 18)}
-              <span>Use current folder</span>
-            </button>
-          </div>
-
-          <div class="browser-body">
-            ${
-              this._mediaBrowserLoading
-                ? `<div class="browser-empty">Loading folders…</div>`
-                : this._mediaBrowserItems.length
-                  ? `
-                    <div class="browser-list">
-                      ${this._mediaBrowserItems
-                        .map(
-                          (item) => `
-                            <div class="browser-item">
-                              <button
-                                type="button"
-                                class="browser-open"
-                                data-browser-open="${item.id.replace(/"/g, "&quot;")}"
-                                title="${item.id.replace(/"/g, "&quot;")}"
-                              >
-                                <span class="browser-open-icon">
-                                  ${svgIcon('mdi:folder-outline', 20)}
-                                </span>
-                                <span class="browser-open-copy">
-                                  <span class="browser-open-title">${item.title}</span>
-                                  <span class="browser-open-sub">${item.id}</span>
-                                </span>
-                              </button>
-
-                              <button
-                                type="button"
-                                class="browser-select"
-                                data-browser-select="${item.id.replace(/"/g, "&quot;")}"
-                                title="Select folder"
-                              >
-                                Select
-                              </button>
-                            </div>
-                          `
-                        )
-                        .join("")}
-                    </div>
-                  `
-                  : `<div class="browser-empty">No folders found here.</div>`
-            }
-          </div>
-        </div>
-      `
-      : ``;
-
-    // Shared styling-tab markup — identical between v1 and v2.
-    const buildStylingPanelHtml = () => `
-      <div class="tabpanel" data-panel="styling">
-        <div class="style-sections">
-          ${STYLE_SECTIONS.map((section) => `
-            <details
-              class="style-section"
-              id="style-section-${section.id}"
-              ${this._openStyleSections.has(section.id) ? "open" : ""}
-            >
-              <summary class="style-section-head">
-                ${svgIcon(section.icon, 18)}
-                <span>${section.label}</span>
-                <span class="style-chevron">${svgIcon('mdi:chevron-down', 18)}</span>
-              </summary>
-              <div class="style-section-body">
-                <div class="color-grid">
-                  ${section.controls.map((ctrl) => {
-                    if (ctrl.type === "color") {
-                      return `
-                        <div class="color-row">
-                          <div class="lbl">${ctrl.label}</div>
-                          <div class="color-controls">
-                            <div id="${ctrl.hostId}"></div>
-                            <label class="color-transparent">
-                              <input type="checkbox" data-transparent="${ctrl.variable}">
-                              Transparent
-                            </label>
-                            <button type="button" class="color-reset" data-reset="${ctrl.variable}" title="Reset to default">
-                              ${svgIcon('mdi:backup-restore', 16)}
-                            </button>
-                          </div>
-                        </div>
-                      `;
-                    }
-                    if (ctrl.type === "radius") {
-                      const raw = this._getStyleVariableValue(ctrl.variable);
-                      const val = raw ? parseInt(raw) : ctrl.default;
-                      const safeId = ctrl.variable.replace(/[^a-z0-9]/gi, "-");
-                      return `
-                        <div class="color-row">
-                          <div class="lbl">${ctrl.label}</div>
-                          <div class="color-controls">
-                            <input
-                              type="range"
-                              class="radius-range"
-                              data-radius="${ctrl.variable}"
-                              data-radius-mirror-id="radius-num-${safeId}"
-                              min="${ctrl.min}"
-                              max="${ctrl.max}"
-                              value="${val}"
-                            >
-                            <span class="radius-value-wrap" id="radius-val-${safeId}">
-                              <input
-                                type="number"
-                                class="radius-value-input"
-                                id="radius-num-${safeId}"
-                                data-radius-input="${ctrl.variable}"
-                                data-radius-default="${ctrl.default}"
-                                min="${ctrl.min}"
-                                max="${ctrl.max}"
-                                step="1"
-                                value="${val}"
-                              >
-                              <span class="radius-value-unit">px</span>
-                            </span>
-                            <button type="button" class="color-reset" data-reset="${ctrl.variable}" title="Reset to default">
-                              ${svgIcon('mdi:backup-restore', 16)}
-                            </button>
-                          </div>
-                        </div>
-                      `;
-                    }
-                    if (ctrl.type === "select") {
-                      const current = String(this._config?.[ctrl.configKey] || ctrl.options[0].value);
-                      const isDisabled = ctrl.disabledFn ? ctrl.disabledFn(this._config || {}) : false;
-                      const opts = ctrl.options.map((o) => `<option value="${o.value}" ${current === o.value ? "selected" : ""}>${o.label}</option>`).join("");
-                      return `
-                        <div class="color-row ${isDisabled ? "muted" : ""}">
-                          <div class="lbl">${ctrl.label}</div>
-                          <div class="selectwrap" style="min-width:120px">
-                            <select class="select" data-seg-key="${ctrl.configKey}" ${isDisabled ? "disabled" : ""}>${opts}</select>
-                            <span class="selarrow"></span>
-                          </div>
-                        </div>
-                      `;
-                    }
-                    if (ctrl.type === "slider") {
-                      const n = Number(this._config?.[ctrl.configKey]);
-                      const val = Number.isFinite(n) ? Math.min(ctrl.max, Math.max(ctrl.min, n)) : ctrl.default;
-                      return `
-                        <div class="color-row">
-                          <div class="lbl">${ctrl.label}</div>
-                          <div class="color-controls">
-                            <input
-                              type="range"
-                              class="radius-range"
-                              data-config-slider="${ctrl.configKey}"
-                              data-slider-val-id="${ctrl.valId}"
-                              data-slider-unit="${ctrl.unit}"
-                              data-slider-default="${ctrl.default}"
-                              data-slider-mirror-id="${ctrl.id}-num"
-                              id="${ctrl.id}"
-                              min="${ctrl.min}"
-                              max="${ctrl.max}"
-                              value="${val}"
-                            >
-                            <span class="radius-value-wrap" id="${ctrl.valId}" data-slider-unit="${ctrl.unit}">
-                              <input
-                                type="number"
-                                class="radius-value-input"
-                                id="${ctrl.id}-num"
-                                data-slider-input="${ctrl.configKey}"
-                                data-slider-target="${ctrl.id}"
-                                data-slider-default="${ctrl.default}"
-                                min="${ctrl.min}"
-                                max="${ctrl.max}"
-                                step="1"
-                                value="${val}"
-                              >
-                              <span class="radius-value-unit">${ctrl.unit}</span>
-                            </span>
-                            <button type="button" class="color-reset" data-slider-reset="${ctrl.configKey}" data-slider-default="${ctrl.default}" title="Reset to default">
-                              ${svgIcon('mdi:backup-restore', 16)}
-                            </button>
-                          </div>
-                        </div>
-                      `;
-                    }
-                    return "";
-                  }).join("")}
-                </div>
-              </div>
-            </details>
-          `).join("")}
-        </div>
-      </div>
-    `;
-
-    // ====================================================================
-    // v2 editor (beta) — 6 tabs with collapsibles in Gallery / Live.
-    // Each builder returns a complete `<div class="tabpanel">` so the
-    // partial-update path (replaceWith on .tabpanel) keeps working.
-    // ====================================================================
-    // v2 collapsibles reuse the existing .style-section / .style-section-head
-    // CSS so they look identical to the Styling-tab accordion users already
-    // know. `icon` is optional — pass an mdi name to show a leading glyph.
-    //
-    // Open-state lookup order:
-    //   1. `_v2OpenSections` map keyed `${tab}.${id}` — set by user toggles
-    //   2. fallback to `openByDefault` for first render
-    const v2Collapsible = (id, title, openByDefault, bodyHtml, icon, opts) => {
-      const key = `${this._activeTab}.${id}`;
-      const isOpen = this._v2OpenSections.has(key)
-        ? this._v2OpenSections.get(key)
-        : openByDefault;
-      const muted = opts?.muted === true;
-      const mutedHint = opts?.mutedHint || "";
-      return `
-        <details class="style-section ${muted ? "muted" : ""}" ${isOpen ? "open" : ""} data-v2-section="${id}">
-          <summary class="style-section-head">
-            ${icon ? svgIcon(icon, 18) : ``}
-            <span>${title}</span>
-            ${muted && mutedHint ? `<em style="margin-left:8px;font-size:11px;opacity:0.6;font-style:italic;">${mutedHint}</em>` : ""}
-            <span class="style-chevron">${svgIcon('mdi:chevron-down', 18)}</span>
-          </summary>
-          <div class="style-section-body">
-            ${bodyHtml}
-          </div>
-        </details>
-      `;
-    };
-
-    // Small right-aligned "Expand all / Collapse all" link rendered at
-    // the top of any v2 tabpanel that has multiple collapsibles. Click
-    // handler is wired in the post-render block.
-    const v2ExpandToggle = `
-      <div class="v2-expand-row">
-        <button type="button" class="v2-expand-all" data-v2-expand>Expand all</button>
-      </div>
-    `;
-
-    const buildSourceTabV2 = () => {
-      const viewBody = `
-        <div class="row">
-          <div class="lbl">Default view</div>
-          <div class="desc">Which screen the card opens on. <code>Gallery</code> shows recorded clips; <code>Live</code> shows the camera feed.</div>
-          <div class="segwrap">
-            <button class="seg ${startMode !== "live" ? "on" : ""}" data-startmode="gallery">Gallery</button>
-            <button class="seg ${startMode === "live" ? "on" : ""}" data-startmode="live">Live</button>
-          </div>
-        </div>
-        <div class="row">
-          <div class="lbl">Deep-link id <span style="font-weight:400;color:var(--ed-text2);font-size:0.85em;">(optional)</span></div>
-          <div class="desc">Opt-in id that names this card in a URL, for HA notification actions. When set, a link like <code>?cgc_id=porch&amp;cgc_camera=camera.porch_gate</code> opens straight into live view on that camera, or <code>?cgc_id=porch&amp;cgc_view=gallery</code> opens the gallery on the newest clip. Blank means the card ignores URL parameters entirely.</div>
-          <div class="field">
-            <input type="text" class="ed-input" id="url_id" placeholder="e.g. porch" autocomplete="off" value="${this._config.url_id || ""}" />
-          </div>
-        </div>
-      `;
-
-      const sourceBody = `
-        <div class="row">
-          <div class="lbl">Source mode</div>
-          <div class="desc">Where the card pulls clips from. <code>File sensor</code> reads from a sensor entity; <code>Media folders</code> walks Home Assistant's media-source tree; <code>Combined</code> merges both.</div>
-          <div class="segwrap">
-            <button class="seg ${sensorModeOn ? "on" : ""}" data-src="sensor">File sensor</button>
-            <button class="seg ${mediaModeOn ? "on" : ""}" data-src="media">Media folders</button>
-            <button class="seg ${combinedModeOn ? "on" : ""}" data-src="combined">Combined</button>
-          </div>
-        </div>
-
-        ${sensorModeOn ? `
-        <div class="row">
-          <div class="field" id="entities-field">
-            <textarea id="entities" rows="4" placeholder="Enter one sensor per line"></textarea>
-            <div class="suggestions" id="entities-suggestions" hidden></div>
-          </div>
-          ${invalidEntities.length ? `<div class="desc">⚠️ Invalid / missing sensor(s): <code>${invalidEntities.join("</code>, <code>")}</code></div>` : ``}
-          ${this._renderFilesWizard()}
-        </div>
-        ` : mediaModeOn ? `
-        <div class="row">
-          <div class="field" id="mediasources-field">
-            <textarea id="mediasources" rows="4" placeholder="Enter one folder per line, or browse and select folders"></textarea>
-            <div class="suggestions" id="mediasources-suggestions" hidden></div>
-          </div>
-          <div class="row-actions">
-            <button type="button" class="actionbtn" id="browse-media-folders">${svgIcon('mdi:folder-search-outline', 18)}<span>Browse</span></button>
-            <button type="button" class="actionbtn" id="clear-media-folders">${svgIcon('mdi:delete-outline', 18)}<span>Clear</span></button>
-          </div>
-          ${mediaHasFile ? `<div class="desc">⚠️ One of your entries looks like a file (extension). This field expects folders.</div>` : ``}
-        </div>
-        ` : `
-        <div class="row">
-          <div class="lbl">File sensors</div>
-          <div class="field" id="entities-field">
-            <textarea id="entities" rows="3" placeholder="Enter one sensor per line"></textarea>
-            <div class="suggestions" id="entities-suggestions" hidden></div>
-          </div>
-          ${invalidEntities.length ? `<div class="desc">⚠️ Invalid / missing sensor(s): <code>${invalidEntities.join("</code>, <code>")}</code></div>` : ``}
-        </div>
-        <div class="row">
-          <div class="lbl">Media folders</div>
-          <div class="field" id="mediasources-field">
-            <textarea id="mediasources" rows="3" placeholder="Enter one folder per line, or browse and select folders"></textarea>
-            <div class="suggestions" id="mediasources-suggestions" hidden></div>
-          </div>
-          <div class="row-actions">
-            <button type="button" class="actionbtn" id="browse-media-folders">${svgIcon('mdi:folder-search-outline', 18)}<span>Browse</span></button>
-            <button type="button" class="actionbtn" id="clear-media-folders">${svgIcon('mdi:delete-outline', 18)}<span>Clear</span></button>
-          </div>
-          ${mediaHasFile ? `<div class="desc">⚠️ One of your entries looks like a file (extension). This field expects folders.</div>` : ``}
-        </div>
-        `}
-      `;
-
-      const frigateBody = `
-        <div class="row">
-          <div class="lbl">Frigate URL <span style="font-weight:400;color:var(--ed-text2);font-size:0.85em;">(optional)</span></div>
-          <div class="desc">Direct URL to your Frigate API (e.g. <code>http://192.168.1.x:5000</code>). When set, clips load through Frigate's REST API — much faster than crawling Home Assistant's media tree folder by folder.</div>
-          <div class="field">
-            <input type="text" class="ed-input" id="frigate_url" placeholder="http://192.168.1.x:5000" autocomplete="off" value="${this._config.frigate_url || ""}" />
-          </div>
-        </div>
-        <div class="row">
-          <div class="row-head">
-            <div>
-              <div class="lbl">Bounding box on thumbs</div>
-              <div class="desc">Use Frigate's annotated snapshot for gallery thumbs instead of the plain thumbnail. Requires <code>snapshots.bounding_box: true</code> in your Frigate camera config.</div>
-            </div>
-            <div class="togrow">
-              <label class="cgc-switch"><input type="checkbox" id="frigate-thumb-bbox" ${this._config.frigate_thumb_bbox ? "checked" : ""}><span class="cgc-track"></span></label>
-            </div>
-          </div>
-        </div>
-        <div class="row">
-          <div class="row-head">
-            <div>
-              <div class="lbl">Cluster near-adjacent events</div>
-              <div class="desc">Collapse multiple Frigate events for the same camera + label within a short time window into one representative thumb. Tap the count badge in the gallery to expand the cluster inline.</div>
-            </div>
-            <div class="togrow">
-              <label class="cgc-switch"><input type="checkbox" id="frigate-event-cluster" ${this._config.frigate_event_cluster ? "checked" : ""}><span class="cgc-track"></span></label>
-            </div>
-          </div>
-        </div>
-        ${this._config.frigate_event_cluster ? `
-        <div class="row">
-          <div class="lbl">Cluster gap <span style="font-weight:400;color:var(--ed-text2);font-size:0.85em;">(seconds)</span></div>
-          <div class="desc">Events less than this many seconds apart get merged. Start with 30 — increase if you still see duplicate bezorger / cleaner / dog-loose thumbs.</div>
-          <div class="field">
-            <input type="number" class="ed-input" id="frigate-event-cluster-gap-sec" min="1" max="600" step="1" value="${this._config.frigate_event_cluster_gap_sec ?? 30}" />
-          </div>
-        </div>
-        ` : ""}
-      `;
-
-      const showFrigate = mediaModeOn || combinedModeOn;
-      const hasFrigateUrl = !!this._config.frigate_url;
-
-      return `
-        <div class="tabpanel" data-panel="source">
-          ${v2ExpandToggle}
-          ${v2Collapsible("view",   "View",   true, viewBody,   "mdi:image-outline")}
-          ${v2Collapsible("source", "Source", true, sourceBody, "mdi:database-outline")}
-          ${showFrigate ? v2Collapsible("frigate", "Frigate", hasFrigateUrl, frigateBody, "mdi:link-variant") : ""}
-        </div>
-      `;
-    };
-
-    /**
-     * Toggle-row helper for the "Show chevrons" config flag in both
-     * Gallery and Live tabs. Same shape (row + row-head + label + desc
-     * + switch), only the id, label, and description differ — extracted
-     * so the two callers stay in sync if the row chrome ever changes.
-     */
-    const chevronToggleRow = (id, desc, checked) => `
-      <div class="row">
-        <div class="row-head">
-          <div>
-            <div class="lbl">Show chevrons</div>
-            <div class="desc">${desc}</div>
-          </div>
-          <div class="togrow">
-            <label class="cgc-switch"><input type="checkbox" id="${id}" ${checked ? "checked" : ""}><span class="cgc-track"></span></label>
-          </div>
-        </div>
-      </div>
-    `;
-
-    const buildGalleryTabV2 = () => {
-      const displayBody = `
-        <div class="row">
-          <div class="lbl">Image fit</div>
-          <div class="desc"><code>Cover</code> fills the preview and may crop edges; <code>Contain</code> shows the whole frame with letterbox bars.</div>
-          <div class="segwrap">
-            <button class="seg ${objectFit === "cover" ? "on" : ""}" data-objfit="cover">Cover</button>
-            <button class="seg ${objectFit === "contain" ? "on" : ""}" data-objfit="contain">Contain</button>
-          </div>
-        </div>
-
-        <div class="row">
-          <div class="lbl">Preview position</div>
-          <div class="desc">Where the preview pane sits relative to the thumbnail strip.</div>
-          <div class="segwrap">
-            <button class="seg ${previewPos === "top" ? "on" : ""}" data-ppos="top">Top</button>
-            <button class="seg ${previewPos === "bottom" ? "on" : ""}" data-ppos="bottom">Bottom</button>
-          </div>
-        </div>
-
-        <div class="row">
-          <div class="row-head">
-            <div>
-              <div class="lbl">Preview-only mode</div>
-              <div class="desc">Only shows the preview window — toolbar, thumbnails and filters are hidden until the user taps back into the gallery.</div>
-            </div>
-            <div class="togrow">
-              <label class="cgc-switch"><input type="checkbox" id="cleanmode" ${cleanMode ? "checked" : ""}><span class="cgc-track"></span></label>
-            </div>
-          </div>
-        </div>
-
-        <div class="row">
-          <div class="row-head">
-            <div>
-              <div class="lbl">Fullscreen zoom</div>
-              <div class="desc">Enable pinch-to-zoom, pan, double-tap and mouse wheel zoom in the fullscreen image viewer.</div>
-            </div>
-            <div class="togrow">
-              <label class="cgc-switch"><input type="checkbox" id="fullscreenzoom" ${fullscreenZoom ? "checked" : ""}><span class="cgc-track"></span></label>
-            </div>
-          </div>
-        </div>
-      `;
-
-      const playbackBody = `
-        <div class="row">
-          <div class="subrows">
-            <div class="row-head">
-              <div>
-                <div class="lbl">Autoplay</div>
-                <div class="desc">Start playing a clip as soon as it's opened in the preview.</div>
-              </div>
-              <div class="togrow">
-                <label class="cgc-switch"><input type="checkbox" id="autoplay"><span class="cgc-track"></span></label>
-              </div>
-            </div>
-
-            <div class="row-head">
-              <div>
-                <div class="lbl">Start muted</div>
-                <div class="desc">Begin clips muted. Users can unmute via the player controls.</div>
-              </div>
-              <div class="togrow">
-                <label class="cgc-switch"><input type="checkbox" id="auto_muted"><span class="cgc-track"></span></label>
-              </div>
-            </div>
-          </div>
-        </div>
-        <div class="row">
-          <div class="lbl">Clip fullscreen</div>
-          <div class="desc"><code>Card</code> opens clips in the card's own fullscreen viewer, with the arrows and your place in the clip. <code>Video</code> hands the clip to the browser's or phone's own player (AirPlay, picture-in-picture, system gestures).</div>
-          <div class="segwrap">
-            <button class="seg ${c.gallery_fullscreen === "video" ? "" : "on"}" data-galleryfs="overlay">Card</button>
-            <button class="seg ${c.gallery_fullscreen === "video" ? "on" : ""}" data-galleryfs="video">Video</button>
-          </div>
-        </div>
-      `;
-
-
-      // Pills — per-pill on/off + reorder via up/down arrows. Sparse
-      // overrides only in `gallery_pills`: pills not mentioned use catalog
-      // defaults (see `src/data/pill-catalog.ts`). The editor lists pills
-      // in their current render order so the arrows match the visual
-      // outcome.
-      const cfgGalleryPills =
-        c.gallery_pills && typeof c.gallery_pills === "object" ? c.gallery_pills : {};
-      const hasPillOverrides = Object.keys(cfgGalleryPills).length > 0;
-      const pillSettingsMap = resolvePillSettings(GALLERY_PILL_CATALOG, cfgGalleryPills);
-      // Show pills in effective render order. Disabled pills stay in the
-      // list (at their current order slot) so the user can re-enable
-      // them with a single click — without them disappearing into an
-      // "off" pool.
-      const pillRowsOrdered = [...GALLERY_PILL_CATALOG]
-        .map((entry) => ({ entry, s: pillSettingsMap.get(entry.id) }))
-        .sort((a, b) => {
-          // Disabled pills sink to the bottom so they're out of the way;
-          // within each group sort by effective order, then catalog order.
-          if (a.s.enabled !== b.s.enabled) return a.s.enabled ? -1 : 1;
-          return (
-            a.s.order - b.s.order ||
-            GALLERY_PILL_CATALOG.indexOf(a.entry) - GALLERY_PILL_CATALOG.indexOf(b.entry)
-          );
-        });
-
-      const pillsModeVal = c.controls_mode ?? "overlay";
-      const pillsBarPosVal = c.bar_position ?? "top";
-      const pillsAlignVal = c.gallery_pills_align || "center";
-      const pillsAlignDisabled = pillsModeVal === "fixed" || pillsBarPosVal === "hidden";
-      const pillsAlignDisabledReason =
-        pillsBarPosVal === "hidden"
-          ? " <em>No effect</em> — the pill row is hidden."
-          : pillsModeVal === "fixed"
-            ? " <em>Ignored in fixed mode</em> — pills always fill the bar."
-            : "";
-      const pillsBody = `
-        ${chevronToggleRow(
-          "gallerychevrons",
-          "Left/right arrows over the preview to walk through the filtered clip list. Auto-hidden when there's only one clip.",
-          c.gallery_chevrons_enabled !== false,
-        )}
-        <div class="row">
-          <div class="lbl">Mode</div>
-          <div class="desc"><code>Overlay</code> floats pills over the preview; <code>Fixed</code> reserves a strip and stretches them across.</div>
-          <div class="segwrap" style="margin-top:6px;">
-            <button class="seg ${pillsModeVal === "overlay" ? "on" : ""}" data-ctrlmode="overlay">Overlay</button>
-            <button class="seg ${pillsModeVal === "fixed" ? "on" : ""}" data-ctrlmode="fixed">Fixed</button>
-          </div>
-        </div>
-        <div class="row">
-          <div class="lbl">Position</div>
-          <div class="desc">Where the pill row sits relative to the preview. Pick <code>Hidden</code> to drop it entirely.</div>
-          <div class="segwrap" style="margin-top:6px;">
-            <button class="seg ${pillsBarPosVal === "top" ? "on" : ""}" data-pillsbarpos="top">Top</button>
-            <button class="seg ${pillsBarPosVal === "bottom" ? "on" : ""}" data-pillsbarpos="bottom">Bottom</button>
-            <button class="seg ${pillsBarPosVal === "hidden" ? "on" : ""}" data-pillsbarpos="hidden">Hidden</button>
-          </div>
-        </div>
-        <div class="row ${pillsAlignDisabled ? "muted" : ""}">
-          <div class="lbl">Alignment</div>
-          <div class="desc">Where the row of pills sits within the bar.${pillsAlignDisabledReason}</div>
-          <div class="segwrap" style="margin-top:6px;">
-            <button class="seg ${pillsAlignVal === "left" ? "on" : ""}" data-pillsalign="left" ${pillsAlignDisabled ? "disabled" : ""}>Left</button>
-            <button class="seg ${pillsAlignVal === "center" ? "on" : ""}" data-pillsalign="center" ${pillsAlignDisabled ? "disabled" : ""}>Center</button>
-            <button class="seg ${pillsAlignVal === "right" ? "on" : ""}" data-pillsalign="right" ${pillsAlignDisabled ? "disabled" : ""}>Right</button>
-          </div>
-        </div>
-        <div class="row ${c.controls_mode === "fixed" ? "muted" : ""}">
-          <div class="row-head">
-            <div>
-              <div class="lbl">Persistent controls</div>
-              <div class="desc">Keep the pill row on screen all the time instead of auto-hiding after a few seconds.${c.controls_mode === "fixed" ? " <em>Ignored in fixed mode</em> — the bar is always visible." : ""}</div>
-            </div>
-            <div class="togrow">
-              <label class="cgc-switch"><input type="checkbox" id="persistentcontrols" ${persistentControls ? "checked" : ""} ${c.controls_mode === "fixed" ? "disabled" : ""}><span class="cgc-track"></span></label>
-            </div>
-          </div>
-        </div>
-        <div class="pills-dnd-list" id="pills-dnd-list">
-          ${pillRowsOrdered
-            .map((row) => {
-              const entry = row.entry;
-              const enabled = row.s.enabled;
-              const idAttr = String(entry.id).replace(/"/g, "&quot;");
-              const labelEsc = String(entry.label).replace(/</g, "&lt;");
-              const previewMarkup = entry.previewText
-                ? `<span class="pill-dnd-preview-text">${String(entry.previewText).replace(/</g, "&lt;")}</span>`
-                : entry.icon
-                  ? `<ha-icon icon="${entry.icon}" style="--mdc-icon-size:18px;width:18px;height:18px;display:inline-flex;align-items:center;justify-content:center;"></ha-icon>`
-                  : "";
-              return `
-                <div class="row pill-dnd-row ${enabled ? "" : "pill-dnd-disabled"}" data-pill-row="${idAttr}" draggable="true">
-                  <div class="pill-dnd-line">
-                    <span class="pill-drag-grip" title="Drag to reorder" aria-label="Drag to reorder">⠿</span>
-                    <span class="pill-dnd-icon" aria-hidden="true">${previewMarkup}</span>
-                    <div class="lbl pill-dnd-label">${labelEsc}</div>
-                    <label class="cgc-switch"><input type="checkbox" id="pill-enable-${idAttr}" ${enabled ? "checked" : ""}><span class="cgc-track"></span></label>
-                  </div>
-                </div>
-              `;
-            })
-            .join("")}
-        </div>
-      `;
-
-      // ── Long-press actions (`thumb_actions`, #243)
-      const thumbActions = Array.isArray(this._config.thumb_actions) ? this._config.thumb_actions : [];
-      const escTa = (v) =>
-        String(v ?? "")
-          .replace(/&/g, "&amp;")
-          .replace(/</g, "&lt;")
-          .replace(/>/g, "&gt;")
-          .replace(/"/g, "&quot;");
-      const taLabel = (txt) => `<div style="font-size:0.75em;opacity:0.6;margin-bottom:2px;">${txt}</div>`;
-      const thumbActionsBody = `
-        <div class="row">
-          <div class="desc">Extra entries in the long-press (right-click) menu of a thumbnail. Each one calls a Home Assistant action with details of the pressed item, for example a script that archives the clip. In <b>Data</b> you can use <code>{path}</code>, <code>{media_id}</code>, <code>{url}</code> and <code>{filename}</code>; they are filled in per item.</div>
-          ${thumbActions.length ? `
-            <div class="menubtn-list">
-              ${thumbActions.map((a, i) => `
-                <div class="menubtn-card">
-                  <div class="menubtn-card-header">
-                    <span style="flex:1;font-size:0.82em;opacity:0.65;">${escTa(a?.name || "Action " + (i + 1))}</span>
-                    <button type="button" class="livecam-tag-del" data-ta-del="${i}" title="Remove">×</button>
-                  </div>
-                  <div class="menubtn-fields">
-                    <div>
-                      ${taLabel("Name")}
-                      <div class="field"><input type="text" class="ed-input" data-ta="${i}" data-ta-field="name" value="${escTa(a?.name)}" placeholder="Archive" autocomplete="off" /></div>
-                    </div>
-                    <div>
-                      ${taLabel("Icon")}
-                      <div class="field">
-                        <input type="text" class="ed-input" data-ta="${i}" data-ta-field="icon" value="${escTa(a?.icon)}" placeholder="mdi:archive-arrow-down" autocomplete="off" />
-                        <div class="suggestions" data-ta-icon-sugg="${i}" hidden></div>
-                      </div>
-                    </div>
-                    <div style="grid-column:1/-1;">
-                      ${taLabel("Action")}
-                      <div class="field"><input type="text" class="ed-input" data-ta="${i}" data-ta-field="perform_action" value="${escTa(a?.perform_action)}" placeholder="script.archive_clip" autocomplete="off" spellcheck="false" /></div>
-                    </div>
-                    <div style="grid-column:1/-1;">
-                      ${taLabel("Data (JSON)")}
-                      <textarea class="ed-input" data-ta-data="${i}" rows="3" spellcheck="false" placeholder='{"path":"{path}"}' style="width:100%;box-sizing:border-box;resize:vertical;font-family:monospace;font-size:0.78em;">${escTa(a?.data && typeof a.data === "object" ? JSON.stringify(a.data, null, 2) : "")}</textarea>
-                    </div>
-                    <div style="grid-column:1/-1;display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:2px;">
-                      <span style="font-size:0.82em;">Ask for confirmation</span>
-                      <label class="cgc-switch"><input type="checkbox" data-ta-confirm="${i}" ${a?.confirmation ? "checked" : ""}><span class="cgc-track"></span></label>
-                    </div>
-                  </div>
-                </div>
-              `).join("")}
-            </div>
-          ` : ""}
-          <div style="margin-top:8px;border:1px solid var(--ed-input-border);border-radius:var(--ed-radius-input,8px);padding:8px 10px;">
-            <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;">
-              <div>
-                ${taLabel("Name")}
-                <div class="field"><input type="text" class="ed-input" id="ta-add-name" placeholder="Archive" autocomplete="off" /></div>
-              </div>
-              <div>
-                ${taLabel("Action")}
-                <div class="field"><input type="text" class="ed-input" id="ta-add-action" placeholder="script.archive_clip" autocomplete="off" spellcheck="false" /></div>
-              </div>
-              <div style="grid-column:1/-1;display:flex;align-items:flex-end;">
-                <button type="button" id="ta-add-btn" class="actionbtn" style="width:100%;justify-content:center;">+ Add action</button>
-              </div>
-            </div>
-          </div>
-        </div>
-      `;
-
-      return `
-        <div class="tabpanel" data-panel="gallery">
-          ${v2ExpandToggle}
-          ${v2Collapsible("display",  "Display",  true,  displayBody,  "mdi:image-outline")}
-          ${v2Collapsible("playback", "Playback", false, playbackBody, "mdi:play-circle-outline")}
-          ${v2Collapsible("controls", "Controls", hasPillOverrides, pillsBody, "mdi:tune-vertical")}
-          ${v2Collapsible("thumbactions", "Long-press actions", thumbActions.length > 0, thumbActionsBody, "mdi:dots-horizontal")}
-        </div>
-      `;
-    };
-
-    const buildLiveTabV2 = () => {
-      // Auto-open helpers — collapsibles default open if the user has already
-      // configured something inside them, so they don't have to hunt for it
-      // after the v1 → v2 switch.
-      // Use the canonical readers so unified-shape configs (#137) don't
-      // close their collapsibles on first render. Legacy callers stay
-      // covered via the same helpers' fallback paths.
-      const liveCamsArr = Array.isArray(this._config.live_cameras) ? this._config.live_cameras : [];
-      const hasStreamUrls =
-        (Array.isArray(this._config.live_stream_urls) && this._config.live_stream_urls.length > 0) ||
-        !!this._config.live_stream_url ||
-        liveCamsArr.some((lc) => lc && typeof lc.url === "string" && lc.url.trim());
-      const hasMic = hasAnyMicStream(this._config);
-      const hasMenuButtons = Array.isArray(this._config.menu_buttons) && this._config.menu_buttons.length > 0;
-      const hasPtz =
-        !!this._config.live_ptz_enabled ||
-        (this._config.live_ptz_cameras &&
-          typeof this._config.live_ptz_cameras === "object" &&
-          Object.keys(this._config.live_ptz_cameras).length > 0);
-
-      // ── Basics: live picker, layout, default cam, auto-muted, camera-name.
-      // The master "Enable live view" toggle has been promoted out of this
-      // body — it now lives on the tab header next to the Expand-all
-      // button so it stays visible no matter which collapsible is open.
-      const basicsBody = `
-
-        ${liveEnabled ? `
-          ${cameraEntities.length > 1 ? `
-          <div class="row">
-            <div class="lbl">Cameras in picker</div>
-            <div class="desc">Cameras in the live-view picker. Drag the <code>⠿</code> handle to reorder, tap a row to expand. Setting a <strong>mic stream</strong> for a camera enables the talk button on that camera's live view (toggle / push-to-talk mode + audio settings live under <strong>Two-way audio</strong> below). The first camera is selected by default unless you set another one below.</div>
-            ${(() => {
-              const se = Array.isArray(this._config.live_stream_urls) && this._config.live_stream_urls.length > 0
-                ? this._config.live_stream_urls.filter(e => e?.url)
-                : (this._config.live_stream_url ? [{ url: this._config.live_stream_url, name: this._config.live_stream_name || "Stream" }] : []);
-              return se.length > 0 ? `
-                <div class="livecam-tags">
-                  ${se.map((e, i) => `<div class="livecam-tag"><span style="opacity:0.5;font-size:10px;text-transform:uppercase;letter-spacing:0.05em;">stream ${se.length > 1 ? i+1 : ""}</span><span style="margin-left:4px;">${e.name || "Stream"}</span></div>`).join("")}
-                </div>` : ``;
-            })()}
-            ${liveCameraEntities.length > 0 ? `
-            <div class="livecam-rows" id="livecam-tags-dnd">
-              ${liveCameraEntities.map((id) => {
-                const name = (entityDisplayName(this._hass, id) || id);
-                const mic = String(micStreamForCamera(id, this._config) || "");
-                const isOpen = this._livecamRowOpen?.has(id) ? "open" : "";
-                return `
-                  <div class="livecam-row ${isOpen}" data-dragcam="${id}" draggable="true">
-                    <div class="livecam-rowhead" data-livecam-toggle="${id}">
-                      <span class="livecam-rowgrip">⠿</span>
-                      <span class="livecam-rowname">${name}<span class="livecam-rowent">${id}</span></span>
-                      <span class="livecam-rowmic ${mic ? "" : "none"}">${mic ? mic : "no mic"}</span>
-                      <span class="livecam-chevron">›</span>
-                    </div>
-                    <div class="livecam-rowbody">
-                      <div class="livecam-fieldrow">
-                        <label>Mic stream</label>
-                        <input type="text" class="ed-input livecam-mic-input" data-mic-cam="${id}" value="${mic.replace(/"/g, "&quot;")}" placeholder="go2rtc stream (empty = no mic)" autocomplete="off" />
-                      </div>
-                      <div class="livecam-fieldrow">
-                        <label>Triggers</label>
-                        <input type="text" class="ed-input livecam-trig-input" data-trig-cam="${id}" value="${(() => {
-                          const entry = this._liveCameraEntry(id);
-                          return (Array.isArray(entry?.triggers) ? entry.triggers : []).join(", ").replace(/"/g, "&quot;");
-                        })()}" placeholder="binary_sensor.motion, event.doorbell" autocomplete="off" />
-                      </div>
-                      <div class="livecam-fieldrow">
-                        <label>Rotation</label>
-                        <div class="segwrap">
-                          ${(() => {
-                            const entry = this._liveCameraEntry(id);
-                            const rot = normalizeRotation(entry?.rotation);
-                            return [0, 90, 180, 270]
-                              .map((r) => `<button type="button" class="seg ${rot === r ? "on" : ""}" data-rotcam="${id}" data-rot="${r}">${r}°</button>`)
-                              .join("");
-                          })()}
-                        </div>
-                      </div>
-                      ${this._renderLivecamCropInline(id)}
-                      <div class="livecam-actions">
-                        <button type="button" class="livecam-row-del" data-delcam="${id}">${svgIcon('mdi:delete-outline', 14)}<span>Remove camera</span></button>
-                      </div>
-                    </div>
-                  </div>
-                `;
-              }).join("")}
-            </div>
-            ` : ``}
-            <div class="field" style="margin-top:6px;">
-              <input type="text" class="ed-input" id="livecam-input" placeholder="Search cameras..." autocomplete="off" />
-              <div class="suggestions" id="livecam-suggestions" hidden></div>
-            </div>
-          </div>
-          ` : ``}
-
-          ${liveCameraEntities.length > 1 ? `
-          <div class="row">
-            <div class="lbl">Live layout</div>
-            <div class="desc"><code>Single</code> shows one camera at a time. <code>Grid</code> tiles all of them — tap a tile to focus.</div>
-            <div class="segwrap">
-              <button class="seg ${liveLayout === "single" ? "on" : ""}" data-livelayout="single">Single</button>
-              <button class="seg ${liveLayout === "grid" ? "on" : ""}" data-livelayout="grid">Grid</button>
-            </div>
-            ${liveLayout === "grid" ? `
-            <div class="lbl" style="margin-top:10px;">Grid columns</div>
-            <div class="desc"><code>Auto</code> shapes the grid to the number of cameras and fills every cell. Pin a number to force a fixed column count.</div>
-            <div class="segwrap">
-              ${[0, 1, 2, 3, 4].map((n) => `
-                <button class="seg ${liveGridCols === n ? "on" : ""}" data-gridcols="${n}">${n === 0 ? "Auto" : n}</button>
-              `).join("")}
-            </div>
-            <div class="lbl" style="margin-top:10px;">Larger tiles</div>
-            <div class="desc">Where the bigger tiles land when a row has fewer cameras than the rest. <code>Bottom</code> puts the short row last. <code>Top</code> puts it first. <code>Hero</code> gives camera 1 a full row to itself.</div>
-            <div class="segwrap">
-              <button class="seg ${liveGridEmphasis === "bottom" ? "on" : ""}" data-gridemphasis="bottom">Bottom</button>
-              <button class="seg ${liveGridEmphasis === "top" ? "on" : ""}" data-gridemphasis="top">Top</button>
-              <button class="seg ${liveGridEmphasis === "hero" ? "on" : ""}" data-gridemphasis="hero">Hero</button>
-            </div>
-            ` : ``}
-          </div>
-          ` : ``}
-
-          <div class="row">
-            <div class="lbl">Fullscreen</div>
-            <div class="desc"><code>Card</code> keeps the pills, PTZ and zoom on screen. <code>Video</code> hands the stream to the browser's own player. Grid layout always uses <code>Card</code>.</div>
-            <div class="segwrap">
-              <button class="seg ${liveFullscreen === "card" ? "on" : ""}" data-livefs="card">Card</button>
-              <button class="seg ${liveFullscreen === "video" ? "on" : ""}" data-livefs="video">Video</button>
-            </div>
-          </div>
-
-          <div class="row">
-            <div class="row-head">
-              <div>
-                <div class="lbl">Start muted</div>
-                <div class="desc">Begin live streams muted on tab switch. Users can unmute per camera.</div>
-              </div>
-              <div class="togrow">
-                <label class="cgc-switch"><input type="checkbox" id="live_auto_muted"><span class="cgc-track"></span></label>
-              </div>
-            </div>
-            <div class="row-head">
-              <div>
-                <div class="lbl">Show camera name</div>
-                <div class="desc">Show the camera's name on the live preview — as a pill in single view, and as a label on each tile in grid view.</div>
-              </div>
-              <div class="togrow">
-                <label class="cgc-switch"><input type="checkbox" id="showcameratitle" ${c.show_camera_title !== false && c.live_grid_labels !== false ? "checked" : ""}><span class="cgc-track"></span></label>
-              </div>
-            </div>
-          </div>
-        ` : ``}
-      `;
-
-      // ── Streams collapsible
-      const streamsBody = `
-        <div class="row">
-          <div class="desc">Add RTSP / HLS / RTMP stream URLs as extra entries in the picker. Useful for cameras that don't have a Home Assistant entity.</div>
-          <div id="stream-urls-list">
-            ${(() => {
-              const entries = (() => {
-                if (Array.isArray(this._config.live_stream_urls) && this._config.live_stream_urls.length > 0)
-                  return this._config.live_stream_urls;
-                if (this._config.live_stream_url)
-                  return [{ url: this._config.live_stream_url, name: this._config.live_stream_name || "" }];
-                return [];
-              })();
-              return entries.map((e, i) => `
-                <div class="stream-url-row" data-si="${i}" style="display:flex;flex-direction:column;gap:4px;padding:8px 0 8px 0;border-bottom:1px solid var(--divider-color,#e0e0e0);">
-                  <div style="display:flex;gap:6px;align-items:center;">
-                    <input type="text" class="ed-input stream-url-input" data-si="${i}" placeholder="rtsp://192.168.1.x:554/stream" autocomplete="off" value="${(e.url || "").replace(/"/g, "&quot;")}" style="flex:1;" />
-                    <button type="button" class="livecam-tag-del stream-url-del" data-si="${i}" style="flex-shrink:0;">×</button>
-                  </div>
-                  <input type="text" class="ed-input stream-name-input" data-si="${i}" placeholder="Name (e.g. Front door)" autocomplete="off" value="${(e.name || "").replace(/"/g, "&quot;")}" />
-                </div>
-              `).join("");
-            })()}
-          </div>
-          <button type="button" id="stream-url-add" class="cgc-ed-btn" style="margin-top:8px;">+ Add stream URL</button>
-        </div>
-      `;
-
-      // ── Two-way audio collapsible
-      const lt = this._config.live_triggers || {};
-      const hasTriggers =
-        !!this._config.live_triggers ||
-        (Array.isArray(this._config.live_cameras) &&
-          this._config.live_cameras.some((lc) => Array.isArray(lc?.triggers) && lc.triggers.length > 0));
-      const ltReturn = lt.return_to || "previous";
-      const triggersBody = `
-        <div class="row">
-          <div class="desc">Switch to a camera's live view when something happens there, then go back. Pick the entities per camera under <strong>Basics → Cameras in picker</strong>: expand a camera and fill in <em>Triggers</em> (motion or occupancy sensors, a doorbell <code>event</code>, any entity that turns <code>on</code>). Only works while the dashboard is open; the card cannot wake a sleeping screen.</div>
-        </div>
-        <div class="row">
-          <div class="row-head">
-            <div>
-              <div class="lbl">Frigate events</div>
-              <div class="desc">A new Frigate event switches to <code>camera.&lt;frigate camera name&gt;</code>, when that camera is in the live list.</div>
-            </div>
-            <div class="togrow">
-              <label class="cgc-switch"><input type="checkbox" id="live-trig-frigate" ${lt.frigate ? "checked" : ""}><span class="cgc-track"></span></label>
-            </div>
-          </div>
-          ${lt.frigate ? `
-          <div class="field" style="margin-top:8px;">
-            <input type="text" class="ed-input" id="live-trig-frigate-labels" placeholder="Only these labels, e.g. person, car (empty = all)" autocomplete="off" value="${(Array.isArray(lt.frigate_labels) ? lt.frigate_labels : []).join(", ").replace(/"/g, "&quot;")}" />
-          </div>` : ""}
-        </div>
-        <div class="row">
-          <div class="lbl">Stay on the camera (seconds)</div>
-          <div class="desc">How long after the last trigger the card goes back. A tap on the card in the meantime keeps it where it is.</div>
-          <div class="field">
-            <input type="number" class="ed-input" id="live-trig-hold" min="5" max="3600" step="1" value="${lt.hold_seconds ?? 30}" />
-          </div>
-        </div>
-        <div class="row">
-          <div class="lbl">Cooldown per camera (seconds)</div>
-          <div class="desc">Ignore repeat triggers for the same camera within this time.</div>
-          <div class="field">
-            <input type="number" class="ed-input" id="live-trig-cooldown" min="0" max="3600" step="1" value="${lt.cooldown_seconds ?? 10}" />
-          </div>
-        </div>
-        <div class="row">
-          <div class="lbl">Afterwards</div>
-          <div class="desc"><code>Previous</code> returns to the view it came from. <code>Gallery</code> always goes to the gallery. <code>Stay</code> keeps showing the camera.</div>
-          <div class="segwrap">
-            <button class="seg ${ltReturn === "previous" ? "on" : ""}" data-livetrigreturn="previous">Previous</button>
-            <button class="seg ${ltReturn === "gallery" ? "on" : ""}" data-livetrigreturn="gallery">Gallery</button>
-            <button class="seg ${ltReturn === "stay" ? "on" : ""}" data-livetrigreturn="stay">Stay</button>
-          </div>
-        </div>
-      `;
-      const twoWayBody = `
-        <div class="row">
-          <div class="desc">Global settings for talkback. Per-camera mic streams are configured in the <strong>Cameras</strong> section above — expand a camera and fill in its <em>Mic stream</em> (the go2rtc stream name under <code>streams:</code> in <code>go2rtc.yaml</code>) to enable the talk button on that camera.</div>
-          <div class="desc" style="margin-top:4px;font-size:0.78em;opacity:0.7;">Needs: <a href="https://github.com/AlexxIT/WebRTC" target="_blank" rel="noopener">WebRTC Camera</a> HACS integration · camera with audio backchannel · HTTPS or localhost.</div>
-          ${(() => {
-            const comps = this._hass?.config?.components;
-            const hasWebrtc = Array.isArray(comps) && comps.includes("webrtc");
-            if (hasWebrtc || !hasAnyMicStream(this._config)) return ``;
-            return `<div class="cgc-inline-warn">${svgIcon('mdi:alert-outline', 14)}<span>WebRTC Camera integration not detected — install it via HACS for the mic to work.</span></div>`;
-          })()}
-          ${(() => {
-            const legacy = String(this._config.live_go2rtc_stream ?? "").trim();
-            if (!legacy) return ``;
-            return `<div class="desc" style="margin-top:8px;">
-              <strong>Legacy single-stream config detected:</strong> <code>live_go2rtc_stream: ${legacy.replace(/</g,"&lt;")}</code> is set in your YAML. It still works (applies to whichever camera is active) and you don't need to change anything. Setting a per-camera mic stream in the Cameras section above switches to the per-camera map — once you do, the legacy key is ignored.
-            </div>`;
-          })()}
-        </div>
-        <div class="row">
-          <div class="row-head">
-            <div>
-              <div class="lbl">Home Assistant two-way audio</div>
-              <div class="desc">Use Home Assistant's own talk support for cameras without a mic stream above. Needs Home Assistant 2026.11 with <strong>Settings → System → Labs → Two-way audio</strong> on, a camera whose integration supports it (for example Reolink over RTSP, or Matter) and HTTPS. The talk button only appears on cameras that support it.</div>
-            </div>
-            <div class="togrow">
-              <label class="cgc-switch"><input type="checkbox" id="live-native-talk" ${this._config.live_native_talk !== false ? "checked" : ""}><span class="cgc-track"></span></label>
-            </div>
-          </div>
-        </div>
-        ${hasAnyMicStream(this._config) || this._config.live_native_talk !== false ? `
-        <div class="row">
-          <div class="lbl">Interaction</div>
-          <div class="desc"><code>Toggle</code> latches the mic on/off with one tap. <code>Push-to-talk</code> holds the mic open only while pressed.</div>
-          <div class="segwrap">
-            <button class="seg ${(this._config.live_mic_mode || "toggle") === "toggle" ? "on" : ""}" data-livemicmode="toggle">Toggle</button>
-            <button class="seg ${this._config.live_mic_mode === "ptt" ? "on" : ""}" data-livemicmode="ptt">Push-to-talk</button>
-          </div>
-        </div>
-        <div class="row">
-          ${(() => {
-            const shape = this._config.live_mic_shape === "button" ? "button" : "bar";
-            const pos = this._config.live_mic_button_position || "center";
-            const segShape = (val, label) =>
-              `<button class="seg ${shape === val ? "on" : ""}" data-livemicshape="${val}">${label}</button>`;
-            const segPos = (val, label) =>
-              `<button class="seg ${pos === val ? "on" : ""}" data-livemicbtnpos="${val}">${label}</button>`;
-            return `
-            <div class="lbl">Shape</div>
-            <div class="desc"><code>Bar</code> spans the full preview width. <code>Button</code> shows a compact round mic button.</div>
-            <div class="segwrap">
-              ${segShape("bar",    "Bar")}
-              ${segShape("button", "Button")}
-            </div>
-            ${shape === "button" ? `
-            <div style="margin-top:14px;">
-              <div class="lbl" style="margin-bottom:8px;">Button position</div>
-              <div class="segwrap">
-                ${segPos("left",   "Left")}
-                ${segPos("center", "Center")}
-                ${segPos("right",  "Right")}
-              </div>
-            </div>
-            ` : ``}`;
-          })()}
-        </div>
-        <div class="row">
-          ${(() => {
-            const mp = this._config.live_mic_position || "overlay";
-            const seg = (val, label) =>
-              `<button class="seg ${mp === val ? "on" : ""}" data-livemicpos="${val}">${label}</button>`;
-            return `
-            <div class="lbl">Position</div>
-            <div class="desc"><code>Over video</code> floats the talk control on the live picture. <code>Below</code> and <code>Above</code> give it its own row, so it never covers the camera view.</div>
-            <div class="segwrap">
-              ${seg("overlay", "Over video")}
-              ${seg("below",   "Below")}
-              ${seg("above",   "Above")}
-            </div>`;
-          })()}
-        </div>
-        <div class="row">
-          <div class="lbl">Audio processing</div>
-          <div class="desc">Browser-level mic processing applied before the audio reaches your camera.</div>
-          ${(() => {
-            const ap = this._config.live_mic_audio_processing || {};
-            const ec = ap.echo_cancellation !== false;
-            const ns = ap.noise_suppression !== false;
-            const agc = ap.auto_gain_control !== false;
-            return `
-            <div style="display:flex;flex-direction:column;gap:10px;margin-top:6px;">
-              <div class="row-inline"><span>Echo cancellation</span><label class="cgc-switch"><input type="checkbox" id="live-mic-ec" ${ec ? "checked" : ""}><span class="cgc-track"></span></label></div>
-              <div class="row-inline"><span>Noise suppression</span><label class="cgc-switch"><input type="checkbox" id="live-mic-ns" ${ns ? "checked" : ""}><span class="cgc-track"></span></label></div>
-              <div class="row-inline"><span>Auto gain control</span><label class="cgc-switch"><input type="checkbox" id="live-mic-agc" ${agc ? "checked" : ""}><span class="cgc-track"></span></label></div>
-            </div>`;
-          })()}
-        </div>
-        <div class="row">
-          ${(() => {
-            const enabled = this._config.live_mic_waveform_enabled !== false;
-            const sens = this._config.live_mic_waveform_sensitivity || "medium";
-            const seg = (val, label) =>
-              `<button class="seg ${sens === val ? "on" : ""}" data-wfsens="${val}">${label}</button>`;
-            return `
-            <div class="lbl">Waveform visualizer</div>
-            <div class="desc">Frequency-bars overlay on the talkback bar while the mic is live.</div>
-            <div style="display:flex;flex-direction:column;gap:10px;margin-top:6px;">
-              <div class="row-inline">
-                <span>Enabled</span>
-                <label class="cgc-switch"><input type="checkbox" id="live-mic-wf-enabled" ${enabled ? "checked" : ""}><span class="cgc-track"></span></label>
-              </div>
-              ${enabled ? `
-              <div style="display:flex;flex-direction:column;gap:6px;">
-                <span>Sensitivity</span>
-                <div class="segwrap">
-                  ${seg("low",    "Low")}
-                  ${seg("medium", "Medium")}
-                  ${seg("high",   "High")}
-                </div>
-              </div>
-              ` : ``}
-            </div>`;
-          })()}
-        </div>
-        ` : ``}
-      `;
-
-      // ── Menu buttons collapsible
-      const menuButtonsBody = `
-        <div class="row">
-          <div class="desc">Custom buttons in the live view — handy for toggling lights, sirens or running scripts without leaving the camera. Buttons sit in the hamburger menu, or directly among the live controls when "Show among live controls" is on. A button on an <code>input_select</code> or <code>select</code> entity opens a list of its options.</div>
-          ${(() => {
-            const menuButtons = Array.isArray(this._config.menu_buttons) ? this._config.menu_buttons : [];
-            return menuButtons.length ? `
-              <div class="menubtn-list">
-                ${menuButtons.map((btn, i) => `
-                  <div class="menubtn-card">
-                    <div class="menubtn-card-header">
-                      <span style="flex:1;font-size:0.82em;opacity:0.65;">${(btn.title || btn.entity || "Button " + (i + 1)).replace(/</g,"&lt;")}</span>
-                      <button type="button" class="livecam-tag-del" data-delmenubutton="${i}">×</button>
-                    </div>
-                    <div class="menubtn-fields">
-                      <div style="grid-column:1/-1;">
-                        <div style="font-size:0.75em;opacity:0.6;margin-bottom:2px;">Entity</div>
-                        <div class="field">
-                          <input type="text" class="ed-input" data-menubtn-entity="${i}" placeholder="entity_id" value="${(btn.entity||"").replace(/"/g,"&quot;")}" autocomplete="off" />
-                          <div class="suggestions" data-menubtn-entity-sugg="${i}" hidden></div>
-                        </div>
-                      </div>
-                      <div>
-                        <div style="font-size:0.75em;opacity:0.6;margin-bottom:2px;">Icon (off)</div>
-                        <div class="field has-icon-preview">
-                          <ha-icon class="icon-preview" icon="${(btn.icon||"").replace(/"/g,"&quot;")}"></ha-icon>
-                          <input type="text" class="ed-input" data-menubtn="${i}" data-mbfield="icon" value="${(btn.icon||"").replace(/"/g,"&quot;")}" placeholder="mdi:lightbulb" autocomplete="off" />
-                          <div class="suggestions" data-menubtn-icon-sugg="${i}" hidden></div>
-                        </div>
-                      </div>
-                      <div>
-                        <div style="font-size:0.75em;opacity:0.6;margin-bottom:2px;">Icon (on)</div>
-                        <div class="field has-icon-preview">
-                          <ha-icon class="icon-preview" icon="${(btn.icon_on||"").replace(/"/g,"&quot;")}"></ha-icon>
-                          <input type="text" class="ed-input" data-menubtn="${i}" data-mbfield="icon_on" value="${(btn.icon_on||"").replace(/"/g,"&quot;")}" placeholder="mdi:lightbulb" autocomplete="off" />
-                          <div class="suggestions" data-menubtn-iconon-sugg="${i}" hidden></div>
-                        </div>
-                      </div>
-                      <div>
-                        <div style="font-size:0.75em;opacity:0.6;margin-bottom:2px;">Label</div>
-                        <div class="field"><input type="text" class="ed-input" data-menubtn="${i}" data-mbfield="title" value="${(btn.title||"").replace(/"/g,"&quot;")}" placeholder="optional" /></div>
-                      </div>
-                      <div>
-                        <div style="font-size:0.75em;opacity:0.6;margin-bottom:2px;">Service</div>
-                        <div class="field"><input type="text" class="ed-input" data-menubtn="${i}" data-mbfield="service" value="${(btn.service||"").replace(/"/g,"&quot;")}" placeholder="e.g. light.toggle" /></div>
-                      </div>
-                      <div>
-                        <div style="font-size:0.75em;opacity:0.6;margin-bottom:2px;">State (on)</div>
-                        <div class="field"><input type="text" class="ed-input" data-menubtn="${i}" data-mbfield="state_on" value="${(btn.state_on||"").replace(/"/g,"&quot;")}" placeholder="e.g. open" /></div>
-                      </div>
-                    </div>
-                  </div>
-                `).join("")}
-              </div>
-            ` : "";
-          })()}
-          <div style="margin-top:8px;border:1px solid var(--ed-input-border);border-radius:var(--ed-radius-input,8px);padding:8px 10px;">
-            <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;">
-              <div style="grid-column:1/-1;">
-                <div style="font-size:0.75em;opacity:0.6;margin-bottom:2px;">Entity</div>
-                <div class="field">
-                  <input type="text" class="ed-input" id="menubtn-entity-input" placeholder="Search entity..." autocomplete="off" />
-                  <div class="suggestions" id="menubtn-entity-sugg" hidden></div>
-                </div>
-              </div>
-              <div>
-                <div style="font-size:0.75em;opacity:0.6;margin-bottom:2px;">Icon (off)</div>
-                <div class="field has-icon-preview">
-                  <ha-icon class="icon-preview" icon=""></ha-icon>
-                  <input type="text" class="ed-input" id="menubtn-icon-input" placeholder="mdi:lightbulb" autocomplete="off" />
-                  <div class="suggestions" id="menubtn-icon-sugg" hidden></div>
-                </div>
-              </div>
-              <div style="display:flex;align-items:flex-end;">
-                <button type="button" id="menubtn-add-btn" class="actionbtn" style="width:100%;justify-content:center;">+ Add</button>
-              </div>
-            </div>
-          </div>
-        </div>
-      `;
-
-      // ── PTZ: global toggle + position + per-camera enable/type cards.
-      // Body mirrors the v1 layout — same IDs/classes so the existing
-      // event wiring (live_ptz_enabled / live_ptz_position / .ptz-cam-*)
-      // applies without duplication.
-      const ptzBody = `
-        <div class="row-inline" style="margin-top:6px;">
-          <span>Enable PTZ overlay</span>
-          <label class="cgc-switch"><input type="checkbox" id="live_ptz_enabled" ${this._config.live_ptz_enabled ? "checked" : ""}><span class="cgc-track"></span></label>
-        </div>
-        <div class="desc" style="margin-top:6px;">Virtual joystick + zoom controls. Integration type is auto-detected per camera.</div>
-        ${this._config.live_ptz_enabled ? `
-        <div style="margin-top:10px;">
-          <div style="font-size:0.78em;opacity:0.75;margin-bottom:6px;">Position</div>
-          ${(() => {
-            const overlay = (this._config.controls_mode || "overlay") === "overlay";
-            const bp = String(this._config.bar_position || "top");
-            const blockedHalf = !overlay ? null : bp === "top" ? "top" : bp === "bottom" ? "bottom" : null;
-            const all = [
-              { val: "top-left", label: "Top-left" },
-              { val: "top-right", label: "Top-right" },
-              { val: "bottom-left", label: "Bottom-left" },
-              { val: "bottom-right", label: "Bottom-right" },
-            ];
-            const current = this._config.live_ptz_position || "bottom-left";
-            return `<select class="ed-input" id="live_ptz_position" style="width:100%;box-sizing:border-box;height:36px;min-height:36px;flex:none;">
-              ${all.map((o) => {
-                const disabled = !!(blockedHalf && o.val.startsWith(blockedHalf));
-                return `<option value="${o.val}" ${disabled ? "disabled" : ""} ${o.val === current ? "selected" : ""}>${o.label}${disabled ? " (blocked by pill bar)" : ""}</option>`;
-              }).join("")}
-            </select>`;
-          })()}
-        </div>
-
-        ${(() => {
-          const ptzMap = (this._config.live_ptz_cameras && typeof this._config.live_ptz_cameras === "object")
-            ? this._config.live_ptz_cameras
-            : {};
-          if (liveCameraEntities.length === 0) {
-            return `<div class="desc" style="margin-top:10px;font-style:italic;opacity:0.7;">Add at least one camera entity in Basics to configure PTZ.</div>`;
-          }
-          const hassForDetect = this._hass
-            ? { states: this._hass.states, services: this._hass.services }
-            : null;
-          const ptzCapable = liveCameraEntities.filter((entId) =>
-            ptzMap[entId] || (hassForDetect && detectPtzType(entId, hassForDetect))
-          );
-          const visibleCams = this._ptzShowAll ? liveCameraEntities : ptzCapable;
-          const showAllToggle = `
-            <div style="display:flex;align-items:center;gap:8px;margin-top:10px;font-size:0.78em;opacity:0.75;">
-              <label class="cgc-switch" style="transform:scale(0.85);transform-origin:left center;"><input type="checkbox" id="ptz-show-all" ${this._ptzShowAll ? "checked" : ""}><span class="cgc-track"></span></label>
-              <span>Show all cameras (manual selection for ONVIF / non-detected setups)</span>
-            </div>
-          `;
-          // Autocomplete pools for the manual per-button pickers: only the
-          // PTZ-relevant entities, so reboot/SD/siren buttons don't clutter.
-          const ptzAllEntities = this._hass?.states ? Object.keys(this._hass.states) : [];
-          const ptzButtonOpts = ptzAllEntities.filter((e) => /^button\..*_ptz_/.test(e)).sort();
-          const ptzSelectOpts = ptzAllEntities.filter((e) => /^select\..*_ptz_preset$/.test(e)).sort();
-          const ptzDatalists =
-            `<datalist id="ptz-button-list">${ptzButtonOpts.map((o) => `<option value="${o.replace(/"/g, "&quot;")}"></option>`).join("")}</datalist>` +
-            `<datalist id="ptz-select-list">${ptzSelectOpts.map((o) => `<option value="${o.replace(/"/g, "&quot;")}"></option>`).join("")}</datalist>`;
-          if (visibleCams.length === 0) {
-            return `<div class="desc" style="margin-top:10px;font-style:italic;opacity:0.7;">No PTZ-capable cameras detected. Add a camera that exposes PTZ button entities (EZVIZ, Reolink) or that supports frigate.ptz, and it'll show up here. Or flip the toggle below to pick a type manually.</div>${showAllToggle}`;
-          }
-          return ptzDatalists + `<div style="display:flex;flex-direction:column;gap:10px;margin-top:10px;">
-            ${visibleCams.map((entId) => {
-              const friendly = (entityDisplayName(this._hass, entId) || entId);
-              const cfgEntry = ptzMap[entId];
-              const enabled = !!cfgEntry;
-              return `
-                <div style="border:1px solid var(--ed-input-border);border-radius:var(--ed-radius-input,8px);padding:8px 10px;">
-                  <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
-                    <div style="min-width:0;flex:1;">
-                      <div style="font-weight:500;">${friendly.replace(/</g,"&lt;")}</div>
-                      <div style="font-size:0.72em;opacity:0.6;">${entId.replace(/</g,"&lt;")}</div>
-                    </div>
-                    <label class="cgc-switch"><input type="checkbox" class="ptz-cam-enable" data-ptz-cam="${entId.replace(/"/g,"&quot;")}" ${enabled ? "checked" : ""}><span class="cgc-track"></span></label>
-                  </div>
-                  ${enabled ? `
-                  <div style="display:flex;flex-direction:column;gap:6px;margin-top:8px;">
-                    <select class="ed-input ptz-cam-type" data-ptz-cam="${entId.replace(/"/g,"&quot;")}" style="width:100%;box-sizing:border-box;height:36px;min-height:36px;flex:none;">
-                      <option value="ezviz" ${(cfgEntry.type || "ezviz") === "ezviz" ? "selected" : ""}>EZVIZ — pulse</option>
-                      <option value="reolink" ${cfgEntry.type === "reolink" ? "selected" : ""}>Reolink — continuous</option>
-                      <option value="frigate" ${cfgEntry.type === "frigate" ? "selected" : ""}>Frigate — continuous</option>
-                      <option value="onvif" ${cfgEntry.type === "onvif" ? "selected" : ""}>ONVIF — continuous</option>
-                      <option value="service" ${cfgEntry.type === "service" ? "selected" : ""}>Manual service</option>
-                    </select>
-                    ${((cfgEntry.type || "ezviz") === "ezviz" || cfgEntry.type === "reolink") ? `
-                    <button type="button" class="actionbtn ptz-detect-btn" data-ptz-cam="${entId.replace(/"/g,"&quot;")}" style="align-self:flex-start;margin-top:2px;">Detect buttons</button>
-                    ${[["up","Up","mdi:arrow-up"],["down","Down","mdi:arrow-down"],["left","Left","mdi:arrow-left"],["right","Right","mdi:arrow-right"],["zoom_in","Zoom in","mdi:magnify-plus-outline"],["zoom_out","Zoom out","mdi:magnify-minus-outline"],["stop","Stop","mdi:stop"],["home","Home","mdi:home-outline"]].map(([bk,blbl,bicon]) => {
-                      const bval = (cfgEntry.buttons && typeof cfgEntry.buttons === "object" && typeof cfgEntry.buttons[bk] === "string") ? cfgEntry.buttons[bk] : "";
-                      const blist = bk === "home" ? "ptz-select-list" : "ptz-button-list";
-                      return `<div style="display:flex;align-items:center;gap:8px;" title="${blbl}">
-                        <ha-icon icon="${bicon}" aria-label="${blbl}" style="--mdc-icon-size:18px;width:18px;height:18px;flex:none;opacity:0.7;"></ha-icon>
-                        <input type="text" class="ed-input ptz-cam-button" data-ptz-cam="${entId.replace(/"/g,"&quot;")}" data-ptz-key="${bk}" list="${blist}" value="${bval.replace(/"/g,"&quot;")}" placeholder="auto" autocomplete="off" spellcheck="false" style="flex:1;min-width:0;font-size:0.82em;" />
-                      </div>`;
-                    }).join("")}
-                    <div class="desc" style="margin-top:2px;">Leave blank to auto-detect. Pick from the list — only PTZ buttons are suggested (Home picks a <code>select…_ptz_preset</code>).</div>
-                    ` : cfgEntry.type === "service" ? (() => {
-                      const escapeText = (value) => String(value ?? "")
-                        .replace(/&/g, "&amp;")
-                        .replace(/</g, "&lt;")
-                        .replace(/>/g, "&gt;");
-                      const escapeAttr = (value) => escapeText(value).replace(/"/g, "&quot;");
-                      const serviceData = [
-                        ["start_left", "Start left"], ["end_left", "End left"],
-                        ["start_right", "Start right"], ["end_right", "End right"],
-                        ["start_up", "Start up"], ["end_up", "End up"],
-                        ["start_down", "Start down"], ["end_down", "End down"],
-                        ["zoom_in", "Zoom in (optional)"], ["zoom_out", "Zoom out (optional)"],
-                        ["home", "Home (optional)"],
-                      ];
-                      return `
-                        <div>
-                          <div style="font-size:0.75em;opacity:0.65;margin-bottom:2px;">Home Assistant service</div>
-                          <input type="text" class="ed-input ptz-cam-service" data-ptz-cam="${entId.replace(/"/g,"&quot;")}" value="${escapeAttr(cfgEntry.service)}" placeholder="script.camera_ptz" autocomplete="off" spellcheck="false" style="width:100%;box-sizing:border-box;" />
-                        </div>
-                        ${serviceData.map(([key, label]) => {
-                          const value = cfgEntry[`data_${key}`];
-                          const json = value && typeof value === "object" ? JSON.stringify(value, null, 2) : "";
-                          return `<div>
-                            <div style="font-size:0.75em;opacity:0.65;margin-bottom:2px;">${label} service data (JSON)</div>
-                            <textarea class="ed-input ptz-cam-service-data" data-ptz-cam="${entId.replace(/"/g,"&quot;")}" data-ptz-key="data_${key}" placeholder='{"direction":"${key}"}' spellcheck="false" rows="2" style="width:100%;box-sizing:border-box;resize:vertical;font-family:monospace;font-size:0.78em;">${escapeText(json)}</textarea>
-                          </div>`;
-                        }).join("")}
-                        <div class="desc" style="margin-top:2px;">For continuous cameras, use the same <code>data_start_*</code> + <code>data_end_*</code> shape as <code>custom:webrtc-camera</code>. The end command runs when the joystick is released. Legacy one-shot <code>data_left</code>/<code>data_right</code>/<code>data_up</code>/<code>data_down</code> YAML remains supported.</div>
-                      `;
-                    })() : `<div class="desc" style="margin-top:2px;">Service-based type — no buttons needed.</div>`}
-                  </div>
-                  ` : ""}
-                </div>
-              `;
-            }).join("")}
-          </div>${showAllToggle}`;
-        })()}
-        ` : ``}
-      `;
-
-      // Live-tab header row: master "Enable live view" toggle on the
-      // left + the standard Expand-all link on the right. Keeps the
-      // master switch visible regardless of which collapsible the user
-      // has open.
-      const liveTabHeader = `
-        <div class="v2-tab-header">
-          <div class="v2-tab-header-toggle">
-            <span class="v2-tab-header-label">Enable live view</span>
-            <label class="cgc-switch"><input type="checkbox" id="liveenabled" ${liveEnabled ? "checked" : ""}><span class="cgc-track"></span></label>
-          </div>
-          <button type="button" class="v2-expand-all" data-v2-expand>Expand all</button>
-        </div>
-      `;
-
-      // If live preview is disabled, hide all collapsibles — the master
-      // toggle in the header is enough to re-enable them. No body to
-      // render below the header in that state.
-      if (!liveEnabled) {
-        return `
-          <div class="tabpanel" data-panel="live">
-            ${liveTabHeader}
-          </div>
-        `;
-      }
-
-      // Live-pill controls: per-pill on/off + reorder. Same sparse-overrides
-      // model as gallery_pills (catalog defaults live in LIVE_PILL_CATALOG).
-      const cfgLivePills =
-        this._config.live_pills && typeof this._config.live_pills === "object"
-          ? this._config.live_pills : {};
-      const hasLivePillOverrides = Object.keys(cfgLivePills).length > 0;
-      const liveControlsBody = `
-        ${chevronToggleRow(
-          "livechevrons",
-          "Left/right arrows over the live view to flip between cameras. Auto-hidden if only one camera is configured.",
-          c.live_chevrons_enabled !== false,
-        )}
-        <div class="row">
-          <div class="row-head">
-            <div>
-              <div class="lbl">Recover frozen streams</div>
-              <div class="desc">When the live picture stops moving for a few seconds, rebuild the stream automatically (up to 3 tries, then a "Try again" notice). Paused while the tab is hidden, in Picture-in-Picture, in native video fullscreen or during talkback.</div>
-            </div>
-            <div class="togrow">
-              <label class="cgc-switch"><input type="checkbox" id="liveautorecover" ${c.live_auto_recover !== false ? "checked" : ""}><span class="cgc-track"></span></label>
-            </div>
-          </div>
-        </div>
-        <div class="row">
-          <div class="desc">Drag <code>⠿</code> a control to where you want it: <strong>Row 1</strong> sits next to the camera name, <strong>Row 2</strong> is a second row below it, <strong>Menu</strong> is behind the ☰ button. The order in a box is the order on screen. Switch a built-in control off to hide it. Built-in controls can't go in the menu.</div>
-        </div>
-        <div class="ctl-zones" id="live-ctl-zones">
-          ${(() => {
-            const btns = Array.isArray(this._config.menu_buttons) ? this._config.menu_buttons : [];
-            const zones = liveControlZones(this._config.live_pills, btns);
-            const esc = (s) => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/"/g, "&quot;");
-            const itemHtml = (item) => {
-              const key = esc(itemKey(item));
-              if (item.kind === "pill") {
-                const entry = LIVE_PILL_CATALOG.find((e) => e.id === item.id);
-                if (!entry) return "";
-                const preview = entry.previewText
-                  ? `<span class="pill-dnd-preview-text">${esc(entry.previewText)}</span>`
-                  : entry.icon ? `<ha-icon icon="${entry.icon}" style="--mdc-icon-size:18px;width:18px;height:18px;display:inline-flex;"></ha-icon>` : "";
-                return `
-                  <div class="row pill-dnd-row ${item.enabled ? "" : "pill-dnd-disabled"}" data-ctl-key="${key}" draggable="true">
-                    <div class="pill-dnd-line">
-                      <span class="pill-drag-grip" title="Drag to move" aria-label="Drag to move">⠿</span>
-                      <span class="pill-dnd-icon" aria-hidden="true">${preview}</span>
-                      <div class="lbl pill-dnd-label">${esc(entry.label)}</div>
-                      <label class="cgc-switch"><input type="checkbox" id="live-pill-enable-${esc(entry.id)}" ${item.enabled ? "checked" : ""}><span class="cgc-track"></span></label>
-                    </div>
-                  </div>`;
-              }
-              const btn = btns[item.index];
-              if (!btn) return "";
-              const label = btn.title || entityDisplayName(this._hass, btn.entity) || btn.entity;
-              return `
-                <div class="row pill-dnd-row" data-ctl-key="${key}" draggable="true">
-                  <div class="pill-dnd-line">
-                    <span class="pill-drag-grip" title="Drag to move" aria-label="Drag to move">⠿</span>
-                    <span class="pill-dnd-icon" aria-hidden="true"><ha-icon icon="${esc(btn.icon)}" style="--mdc-icon-size:18px;width:18px;height:18px;display:inline-flex;"></ha-icon></span>
-                    <div class="lbl pill-dnd-label">${esc(label)}</div>
-                  </div>
-                </div>`;
-            };
-            const zone = (key, title, hint, items) => `
-              <div class="ctl-zone" data-ctl-zone="${key}">
-                <div class="ctl-zone-head"><span>${title}</span><span>${hint}</span></div>
-                ${items.length ? items.map(itemHtml).join("") : `<div class="ctl-zone-empty">Drag a control here</div>`}
-              </div>`;
-            return zone("row1", "Row 1", "next to the camera name", zones.row1)
-              + zone("row2", "Row 2", "below the first row", zones.row2)
-              + zone("menu", "Menu ☰", "behind the menu button", zones.menu);
-          })()}
-        </div>
-      `;
-
-      return `
-        <div class="tabpanel" data-panel="live">
-          ${liveTabHeader}
-          ${v2Collapsible("basics",   "Basics",        true,                 basicsBody,        "mdi:tune")}
-          ${v2Collapsible("streams",  "Streams",       hasStreamUrls,        streamsBody,       "mdi:link-variant")}
-          ${v2Collapsible("triggers", "Triggers",      hasTriggers,          triggersBody,      "mdi:doorbell-video")}
-          ${v2Collapsible("twoway",   "Two-way audio", hasMic,               twoWayBody,        "mdi:microphone-outline")}
-          ${v2Collapsible("ptz",      "PTZ",           hasPtz,               ptzBody,           "mdi:arrow-all")}
-          ${v2Collapsible("menu",     "Menu buttons",  hasMenuButtons,       menuButtonsBody,   "mdi:dots-horizontal")}
-          ${v2Collapsible("controls", "Controls",     hasLivePillOverrides, liveControlsBody,  "mdi:tune-vertical")}
-        </div>
-      `;
-    };
-
-    const buildThumbsTabV2 = () => {
-      const hasFilters = Array.isArray(c.object_filters) && c.object_filters.length > 0;
-      // In preview-only mode the entire thumb strip + its filters/toolbar
-      // are hidden — show them muted with a hint so users don't tweak
-      // settings that have no effect until preview-only is turned off.
-      const previewOnly = !!cleanMode;
-      const previewOnlyHint = previewOnly ? "Hidden while preview-only mode is on." : "";
-
-      // Toolbar visibility — per-button toggles. IDs match v1 editor's
-      // "Gallery toolbar" row so the existing event-wiring picks them up.
-      // Toolbar buttons — drag-en-drop reorder + on/off, same UX as the
-      // pill catalogs. Enabled state still lives in the existing show_*
-      // keys; order lives in toolbar_order (sparse, defaults from catalog).
-      const orderMap = (c.toolbar_order && typeof c.toolbar_order === "object") ? c.toolbar_order : {};
-      const toolbarRowsOrdered = [...TOOLBAR_CATALOG]
-        .map((entry) => ({
-          entry,
-          enabled: c[entry.showKey] !== false,
-          order: typeof orderMap[entry.id] === "number" ? orderMap[entry.id] : entry.defaultOrder,
-        }))
-        .sort((a, b) => {
-          if (a.enabled !== b.enabled) return a.enabled ? -1 : 1;
-          return (
-            a.order - b.order ||
-            TOOLBAR_CATALOG.findIndex((e) => e.id === a.entry.id) - TOOLBAR_CATALOG.findIndex((e) => e.id === b.entry.id)
-          );
-        });
-      const toolbarBody = `
-        <div class="row">
-          <div class="desc">Show or hide individual buttons in the gallery's top toolbar. Drag <code>⠿</code> to reorder. The date picker is always visible and sits at the start.</div>
-        </div>
-        <div class="pills-dnd-list" id="toolbar-dnd-list">
-          ${toolbarRowsOrdered
-            .map((row) => {
-              const entry = row.entry;
-              const enabled = row.enabled;
-              const idAttr = String(entry.id).replace(/"/g, "&quot;");
-              const labelEsc = String(entry.label).replace(/</g, "&lt;");
-              return `
-                <div class="row pill-dnd-row ${enabled ? "" : "pill-dnd-disabled"}" data-toolbar-row="${idAttr}" draggable="true">
-                  <div class="pill-dnd-line">
-                    <span class="pill-drag-grip" title="Drag to reorder" aria-label="Drag to reorder">⠿</span>
-                    <div class="lbl pill-dnd-label">${labelEsc}</div>
-                    <label class="cgc-switch"><input type="checkbox" id="toolbar-enable-${idAttr}" ${enabled ? "checked" : ""}><span class="cgc-track"></span></label>
-                  </div>
-                </div>
-              `;
-            })
-            .join("")}
-        </div>
-      `;
-
-      const filtersBody = `
-        <div class="row">
-          <div class="lbl">Object filters</div>
-          <div class="desc">Filter clips by what was detected in them. Tap a chip to enable; click the color box to set its colour.</div>
-          <div class="objmeta">
-            <div class="countpill">Selected ${selectedCount}/${MAX_VISIBLE_OBJECT_FILTERS}</div>
-          </div>
-
-          <div class="chip-grid">
-            ${AVAILABLE_OBJECT_FILTERS
-              .map((obj) => {
-                const isOn = objectFiltersArr.includes(obj);
-                const currentColor = objectColors[obj] || "";
-                const colorVal = currentColor && /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(currentColor) ? currentColor : "#ffffff";
-                return `
-                <button
-                  type="button"
-                  class="objchip ${isOn ? "on" : ""}"
-                  data-objchip="${obj}"
-                  title="${this._objectLabel(obj)}"
-                >
-                  <span class="objchip-icon" ${currentColor ? `style="color:${currentColor}"` : ""}>
-                    ${svgIcon(objectIcon(obj), 18)}
-                  </span>
-                  <span class="objchip-color">
-                    <input type="color" class="cgc-color" value="${colorVal}" style="${!currentColor ? "opacity:0.35" : ""}" data-filtercolor="${obj}">
-                  </span>
-                  <input type="checkbox" class="objchip-native-check" ${isOn ? "checked" : ""} tabindex="-1" aria-hidden="true" style="pointer-events:none;">
-                </button>
-              `;
-              })
-              .join("")}
-          </div>
-        </div>
-
-        <div class="row">
-          <div class="lbl">Custom filters</div>
-          <div class="desc">Add your own filter buttons (e.g. <code>parcel</code>, <code>mail-truck</code>). They match against detection labels found in clip filenames or sensor text.</div>
-
-          <div class="custom-filter-add">
-            <input type="text" class="ed-input" id="new-filter-name" placeholder="e.g. parcel" />
-            <input type="text" class="ed-input" id="new-filter-icon" placeholder="mdi:shape" />
-            <button class="actionbtn" id="add-filter-btn">
-              ${svgIcon('mdi:plus', 18)}
-              Add filter
-            </button>
-          </div>
-
-          <div class="custom-filter-list">
-            ${objectFiltersArr.filter(f => typeof f === 'object').map((f) => {
-              const name = Object.keys(f)[0];
-              const icon = f[name];
-              const currentColor = objectColors[name] || "";
-              const colorVal = currentColor && /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(currentColor) ? currentColor : "#ffffff";
-              return `
-                <div class="custom-item">
-                  <div class="custom-item-info">
-                    <ha-icon icon="${icon}" style="${currentColor ? "color:" + currentColor : ""}"></ha-icon>
-                    <span class="lbl">${this._objectLabel(name)}</span>
-                  </div>
-                  <div class="color-controls">
-                    <input type="color" class="cgc-color" value="${colorVal}" style="${!currentColor ? "opacity:0.35" : ""}" data-filtercolor="${name}">
-                    <button class="remove-btn" data-remove-index="${name}">
-                      ${svgIcon('mdi:delete-outline', 18)}
-                    </button>
-                  </div>
-                </div>
-              `;
-            }).join('')}
-          </div>
-        </div>
-      `;
-
-      const layoutBody = `
-        <div class="row">
-          <div class="lbl">Layout</div>
-          <div class="desc">Horizontal arranged the thumbnails horizontally; Vertical... well...</div>
-          <div class="segwrap">
-            <button class="seg ${thumbLayout === "horizontal" ? "on" : ""}" data-tlayout="horizontal">Horizontal</button>
-            <button class="seg ${thumbLayout === "vertical" ? "on" : ""}" data-tlayout="vertical">Vertical</button>
-          </div>
-        </div>
-
-        <div class="row ${thumbSizeMuted ? "muted" : ""}">
-          <div class="lbl">Size</div>
-          <div class="desc">Size of each thumbnail, in pixels.</div>
-          <div class="ed-input-row"><input type="number" class="ed-input" id="thumb" /><span class="ed-suffix">px</span></div>
-        </div>
-
-        <div class="row">
-          <div class="lbl">Maximum thumbnails</div>
-          <div class="desc">How many clips load into the thumbnail strip. Higher = more scrolling, slower first paint.</div>
-          <div class="ed-input-row"><input type="number" class="ed-input" id="maxmedia" /><span class="ed-suffix">items</span></div>
-        </div>
-
-        <div class="row">
-          <div class="lbl">Thumbnail bar position</div>
-          <div class="segwrap">
-            <button class="seg ${thumbBarPos === "top" ? "on" : ""}" data-tbpos="top">Top</button>
-            <button class="seg ${thumbBarPos === "bottom" ? "on" : ""}" data-tbpos="bottom">Bottom</button>
-            <button class="seg ${thumbBarPos === "hidden" ? "on" : ""}" data-tbpos="hidden">Hidden</button>
-          </div>
-        </div>
-
-        <div class="row">
-          <div class="lbl">Sort order</div>
-          <div class="desc">Order clips in the thumbnail strip.</div>
-          <div class="segwrap">
-            <button class="seg ${thumbSortOrder === "newest" ? "on" : ""}" data-tsort="newest">Newest first</button>
-            <button class="seg ${thumbSortOrder === "oldest" ? "on" : ""}" data-tsort="oldest">Oldest first</button>
-          </div>
-        </div>
-      `;
-
-      const videoFrameBody = `
-        <div class="row">
-          <div class="lbl">Video thumbnail frame</div>
-          <div class="desc">% of the video to capture as thumbnail (0 = first frame, 100 = last)</div>
-          <div class="barrow">
-            <div class="barrow-top">
-              <div class="pillval" id="thumbpctval">${thumbFramePct}%</div>
-            </div>
-            <input type="range" class="cgc-range" id="thumbpct" min="0" max="100" step="1">
-          </div>
-        </div>
-
-        <div class="row">
-          <div class="row-head">
-            <div>
-              <div class="lbl">Capture video thumbnails</div>
-              <div class="desc">Extract a frame from each video when no server thumbnail is available. Off saves bandwidth on slow connections.</div>
-            </div>
-            <div class="togrow">
-              <label class="cgc-switch"><input type="checkbox" id="capture-video-thumbnails" ${c.capture_video_thumbnails !== false ? "checked" : ""}><span class="cgc-track"></span></label>
-            </div>
-          </div>
-        </div>
-      `;
-
-      return `
-        <div class="tabpanel" data-panel="thumbs">
-          ${v2ExpandToggle}
-          ${v2Collapsible("thumb-layout", "Layout",      true,  layoutBody,     "mdi:view-grid-outline")}
-          ${v2Collapsible("toolbar",      "Toolbar",     false, toolbarBody,    "mdi:tune", { muted: previewOnly, mutedHint: previewOnlyHint })}
-          ${v2Collapsible("filters",      "Filters",     hasFilters && !previewOnly, filtersBody, "mdi:filter-outline", { muted: previewOnly, mutedHint: previewOnlyHint })}
-          ${v2Collapsible("video-frame",  "Video frame", false, videoFrameBody, "mdi:play-circle-outline")}
-        </div>
-      `;
-    };
-
-    const buildStylingTabV2 = () =>
-      buildStylingPanelHtml().replace(
-        '<div class="tabpanel" data-panel="styling">',
-        `<div class="tabpanel" data-panel="styling">${v2ExpandToggle}`
-      );
-
-    const buildAdvancedTabV2 = () => {
-      const parsingBody = `
-        <div class="row">
-          <div class="desc">
-            ${svgIcon('mdi:information-outline', 14)}
-            Pattern matched against your file paths. The detector covers both video and image files — extension is optional. Tokens: <code>YYYY</code> <code>MM</code> <code>DD</code> <code>HH</code> <code>mm</code> <code>ss</code>.
-          </div>
-          <div style="padding-top:8px;">
-            <input type="text" class="ed-input" id="pathfmt" placeholder="e.g. YYYY/MM/DD/HHmmss" />
-            <div class="row-actions" style="margin-top:8px;">
-              <button type="button" class="actionbtn" id="detect-pathfmt" title="Probe configured sources and suggest a format" ?disabled=${this._detectInFlight}>
-                ${svgIcon('mdi:magnify-scan', 18)}<span>${this._detectInFlight ? "Detecting…" : "Auto-detect format"}</span>
-              </button>
-            </div>
-            <div id="detect-pathfmt-status" class="hint">${this._renderDetectStatusText()}</div>
-            ${this._renderDetectScoreboard()}
-          </div>
-        </div>
-      `;
-
-      const deleteBody = `
-        <div class="row">
-          <div class="desc">Home Assistant service calls invoked when a clip is deleted. Required if you want the trash button to actually remove files.</div>
-        </div>
-        <div class="row ${mediaModeOn ? "row-disabled" : ""}">
-          <div class="lbl">File sensor <span style="font-weight:400;color:var(--ed-text2);font-size:0.85em;">— used in file-sensor / combined mode</span></div>
-          <div class="selectwrap" style="margin-top:4px;">
-            <select class="select ${deleteOk ? "" : "invalid"}" id="delservice" ${mediaModeOn ? "disabled" : ""}>
-              ${
-                deleteChoices.length
-                  ? `<option value=""></option>` +
-                    deleteChoices
-                      .map(
-                        (id) =>
-                          `<option value="${id}" ${
-                            id === deleteService ? "selected" : ""
-                          }>${id}</option>`
-                      )
-                      .join("")
-                  : `<option value="" selected>(no shell_command services found)</option>`
-              }
-            </select>
-            <span class="selarrow"></span>
-          </div>
-        </div>
-        ${hasFrigateConfig(c) ? `
-        <div class="row">
-          <div class="lbl">Frigate <span style="font-weight:400;color:var(--ed-text2);font-size:0.85em;">— used for Frigate clips</span></div>
-          <div class="selectwrap" style="margin-top:4px;">
-            <select class="select ${frigateDeleteOk ? "" : "invalid"}" id="frigate-delservice">
-              ${
-                frigateDeleteChoices.length
-                  ? `<option value="">(none — Frigate delete disabled)</option>` +
-                    frigateDeleteChoices
-                      .map(
-                        (id) =>
-                          `<option value="${id}" ${
-                            id === frigateDeleteService ? "selected" : ""
-                          }>${id}</option>`
-                      )
-                      .join("")
-                  : `<option value="" selected>(no rest_command services found — add one to configuration.yaml)</option>`
-              }
-            </select>
-            <span class="selarrow"></span>
-          </div>
-        </div>
-        ` : ``}
-      `;
-
-      const diagnosticsBody = `
-        <div class="row">
-          <div class="row-head">
-            <div>
-              <div class="lbl">Debug mode</div>
-              <div class="desc">Adds a small Debug badge on the live view; tapping it opens a diagnostics report (card version, HA info, runtime state). Handy when reporting bugs.</div>
-            </div>
-            <div class="togrow">
-              <label class="cgc-switch"><input type="checkbox" id="debug-enabled" ${this._config?.debug_enabled ? "checked" : ""}><span class="cgc-track"></span></label>
-            </div>
-          </div>
-        </div>
-      `;
-
-      const exportBody = `
-        <div class="row">
-          <div class="lbl">Copy YAML</div>
-          <div class="desc">Copy the card's current YAML config to the clipboard. Useful for sharing your setup, backing up, or moving the card between dashboards.</div>
-          <div class="row-actions">
-            <button type="button" class="actionbtn" id="yaml-export-btn">
-              ${svgIcon('mdi:content-copy', 18)}<span>Copy YAML</span>
-            </button>
-          </div>
-        </div>
-      `;
-
-      const hasPathFmt = !!(this._config && this._config.path_datetime_format);
-
-      return `
-        <div class="tabpanel" data-panel="advanced">
-          ${v2ExpandToggle}
-          ${v2Collapsible("parsing",     "Path parsing",     hasPathFmt, parsingBody,      "mdi:calendar-outline")}
-          ${v2Collapsible("delete",      "Delete services",  false,      deleteBody,       "mdi:delete-outline")}
-          ${v2Collapsible("diagnostics", "Diagnostics",      false,      diagnosticsBody,  "mdi:information-outline")}
-          ${v2Collapsible("export",      "Export YAML",      false,      exportBody,       "mdi:content-copy")}
-        </div>
-      `;
-    };
-
-    const buildV2PanelHtml = () => {
-      const tab = this._activeTab;
-      if (tab === "source")   return buildSourceTabV2();
-      if (tab === "gallery")  return buildGalleryTabV2();
-      if (tab === "live")     return buildLiveTabV2();
-      if (tab === "thumbs")   return buildThumbsTabV2();
-      if (tab === "styling")  return buildStylingTabV2();
-      if (tab === "advanced") return buildAdvancedTabV2();
-      return `<div class="tabpanel" data-panel="${tab}"></div>`;
-    };
-
-    const buildPanelHtml = () => buildV2PanelHtml();
-
-    if (!this._editorRendered) {
-    this.shadowRoot.innerHTML = `
-      <style>${EDITOR_CSS}</style>
-
-      <div class="wrap v2" style="${rootVars}">
-
-        <div class="tabs">
-          <div class="tabbar">
-            ${tabBtn("source", "Source", "mdi:database-outline")}
-            ${tabBtn("gallery", "Gallery", "mdi:image-outline")}
-            ${tabBtn("live", "Live", "mdi:video-outline")}
-            ${tabBtn("thumbs", "Thumbnails", "mdi:view-grid-outline")}
-            ${tabBtn("styling", "Styling", "mdi:palette-outline")}
-            ${tabBtn("advanced", "Advanced", "mdi:tune-vertical")}
-          </div>
-
-          ${buildPanelHtml()}
-
-        </div>
-      </div>
-
-      <div id="cgc-browser-slot">${mediaBrowserHtml}</div>
-    `;
-    this.shadowRoot.querySelectorAll("[data-tab]").forEach((btn) => {
-      btn.addEventListener("click", () => this._setActiveTab(btn.dataset.tab));
-    });
-    this._editorRendered = true;
-    } else {
-      // Partial update — avoid rebuilding the full shadow DOM
-      const panelHtml = buildPanelHtml();
-
-      // Update CSS vars on wrap
-      const wrapEl = this.shadowRoot.querySelector(".wrap");
-      if (wrapEl) wrapEl.setAttribute("style", rootVars);
-
-      // Update tab button active states
-      this.shadowRoot.querySelectorAll("[data-tab]").forEach((btn) => {
-        btn.classList.toggle("on", btn.dataset.tab === this._activeTab);
-      });
-
-      // Swap tab panel
-      const oldPanel = this.shadowRoot.querySelector(".tabpanel");
-      const tmp = document.createElement("div");
-      tmp.innerHTML = panelHtml;
-      const newPanel = tmp.firstElementChild;
-      // Preserve v2 collapsible open-state across re-renders. Without
-      // this, flipping a toggle inside Playback/Toolbar would re-render
-      // the tab and collapse the section back to its default state.
-      if (oldPanel && newPanel) {
-        oldPanel.querySelectorAll("details[data-v2-section]").forEach((oldS) => {
-          const id = oldS.getAttribute("data-v2-section");
-          const newS = newPanel.querySelector(`details[data-v2-section="${id}"]`);
-          if (!newS) return;
-          if (oldS.hasAttribute("open")) newS.setAttribute("open", "");
-          else newS.removeAttribute("open");
-        });
-      }
-      if (oldPanel && newPanel) {
-        oldPanel.replaceWith(newPanel);
-      } else if (!oldPanel && newPanel) {
-        this.shadowRoot.querySelector(".tabbar")?.insertAdjacentElement("afterend", newPanel);
-      }
-
-      // Update media browser slot
-      const browserSlot = this.shadowRoot.getElementById("cgc-browser-slot");
-      if (browserSlot) browserSlot.innerHTML = mediaBrowserHtml;
-
-    }
-
-    if (this._evtCtrl) this._evtCtrl.abort();
-    this._evtCtrl = new AbortController();
-    const _sig = { signal: this._evtCtrl.signal };
-
+  /** Open/close state of the collapsible sections and Expand all. Part of _render(). */
+  _wireSectionToggles({ _sig }) {
     // Sync user open/close gestures on v2 collapsibles back into
     // _v2OpenSections + localStorage so tab switches / page reloads
     // don't lose the state.
@@ -3750,9 +2302,10 @@ class CameraGalleryCardEditor extends HTMLElement {
         _sig
       );
     });
+  }
 
-    const $ = (id) => this.shadowRoot.getElementById(id);
-
+  /** Add, remove and colour object filters. Part of _render(). */
+  _wireObjectFilters({ _sig, $ }) {
         // 1. Find the elements
         const addBtn = $("add-filter-btn");
         const nameInput = $("new-filter-name");
@@ -3810,39 +2363,10 @@ class CameraGalleryCardEditor extends HTMLElement {
         this._set("object_colors", colors);
       });
     });
+  }
 
-    const entitiesEl = $("entities");
-    const mediaEl = $("mediasources");
-    const pathFmtEl = $("pathfmt");
-    const delserviceEl = $("delservice");
-
-    const thumbEl = $("thumb");
-    const maxmediaEl = $("maxmedia");
-    const thumbpctEl = $("thumbpct");
-    const thumbpctvalEl = $("thumbpctval");
-
-    const autoplayEl = $("autoplay");
-    const autoMutedEl = $("auto_muted");
-    const liveAutoMutedEl = $("live_auto_muted");
-
-    this._setControlValue(entitiesEl, entitiesText);
-    this._setControlValue(mediaEl, mediaSourcesText);
-    this._setControlValue(pathFmtEl, pathDatetimeFormat);
-    this._setControlValue(thumbEl, String(thumbSize));
-    this._setControlValue(maxmediaEl, String(maxMedia));
-    this._setControlValue(thumbpctEl, thumbFramePct);
-    if (autoplayEl) autoplayEl.checked = autoplay;
-    if (autoMutedEl) autoMutedEl.checked = autoMuted;
-    if (liveAutoMutedEl) liveAutoMutedEl.checked = liveAutoMuted;
-
-    if (delserviceEl) delserviceEl.value = deleteService;
-
-    this._applyFieldValidation("entities");
-    this._applyFieldValidation("mediasources");
-
-    this._bindColorControls(_sig);
-    this._bindWizardEvents(_sig);
-
+  /** Source, delete service, thumbnail and gallery fields. Part of _render(). */
+  _wireSourceAndGalleryFields({ _sig, $, pathFmtEl, delserviceEl, thumbEl, maxmediaEl }) {
     this.shadowRoot.querySelectorAll("[data-src]").forEach((btn) => {
       btn.addEventListener("click", () => {
         this._set("source_mode", btn.dataset.src);
@@ -4215,7 +2739,10 @@ class CameraGalleryCardEditor extends HTMLElement {
     $("gallerychevrons")?.addEventListener("change", (e) => {
       this._set("gallery_chevrons_enabled", e.target.checked ? undefined : false);
     });
+  }
 
+  /** Toolbar buttons, gallery and live pills, and their drag-to-reorder. Part of _render(). */
+  _wirePillsAndToolbar() {
     // Toolbar buttons — switches map to the underlying show_* keys (BC),
     // ordering writes into toolbar_order (sparse). Drag-and-drop wiring
     // lives further below alongside the gallery + live pill lists.
@@ -4345,7 +2872,10 @@ class CameraGalleryCardEditor extends HTMLElement {
         },
       });
     }
+  }
 
+  /** Live playback, streams, talkback and trigger options. Part of _render(). */
+  _wireLiveOptions({ _sig, $, autoplayEl, autoMutedEl, liveAutoMutedEl }) {
     autoplayEl?.addEventListener("change", (e) => {
       this._set("autoplay", !!e.target.checked);
     });
@@ -4574,8 +3104,10 @@ class CameraGalleryCardEditor extends HTMLElement {
       }
       this._scheduleRender();
     });
+  }
 
-
+  /** PTZ per camera. Part of _render(). */
+  _wirePtz({ $ }) {
     // ─── PTZ editor wiring ─────────────────────────────────────────
     //
     // Mutations of the per-camera map go through a helper that strips
@@ -4731,7 +3263,10 @@ class CameraGalleryCardEditor extends HTMLElement {
         _setPtzCameraEntry(camId, (cur) => _mergeButtons(cur, found));
       });
     });
+  }
 
+  /** Frigate URL, URL id, debug and YAML export. Part of _render(). */
+  _wireAdvanced({ $ }) {
     $("frigate_url")?.addEventListener("change", (e) => {
       const val = String(e.target.value || "").trim().replace(/\/+$/, "");
       if (val) this._set("frigate_url", val);
@@ -4757,7 +3292,10 @@ class CameraGalleryCardEditor extends HTMLElement {
     });
 
     $("yaml-export-btn")?.addEventListener("click", () => this._exportYamlConfig());
+  }
 
+  /** Live on/off, layout, fullscreen and grid options. Part of _render(). */
+  _wireLiveLayout({ $ }) {
     $("liveenabled")?.addEventListener("change", (e) => {
       const enabled = !!e.target.checked;
 
@@ -4862,8 +3400,10 @@ class CameraGalleryCardEditor extends HTMLElement {
           .forEach((s) => s.classList.toggle("on", s === btn));
       });
     });
+  }
 
-
+  /** Live camera list: add, remove, mic, triggers, rotation, crop. Part of _render(). */
+  _wireLiveCameras({ cameraEntities, _sig, $ }) {
     // Camera tag input for the live picker
     const livecamInput = $("livecam-input");
     const livecamSugg = $("livecam-suggestions");
@@ -5044,7 +3584,10 @@ class CameraGalleryCardEditor extends HTMLElement {
         this._scheduleRender();
       });
     });
+  }
 
+  /** Menu buttons and long-press thumbnail actions. Part of _render(). */
+  _wireMenuButtonsAndThumbActions({ _sig, $ }) {
     // Icon autocomplete helpers
     const COMMON_ICONS = ["mdi:lightbulb","mdi:lightbulb-outline","mdi:lightbulb-off","mdi:lightbulb-on","mdi:lamp","mdi:ceiling-light","mdi:floor-lamp","mdi:led-strip","mdi:string-lights","mdi:lock","mdi:lock-open","mdi:lock-outline","mdi:lock-open-outline","mdi:lock-smart","mdi:shield-home","mdi:shield","mdi:door-open","mdi:door-closed","mdi:window-open","mdi:window-closed","mdi:garage","mdi:garage-open","mdi:gate","mdi:gate-open","mdi:thermostat","mdi:thermometer","mdi:fan","mdi:fan-off","mdi:air-conditioner","mdi:radiator","mdi:snowflake","mdi:heat-wave","mdi:home","mdi:home-outline","mdi:home-away","mdi:sleep","mdi:run","mdi:power","mdi:power-off","mdi:toggle-switch","mdi:toggle-switch-off","mdi:electric-switch","mdi:outlet","mdi:television","mdi:television-off","mdi:play","mdi:pause","mdi:stop","mdi:volume-high","mdi:volume-off","mdi:music","mdi:speaker","mdi:camera","mdi:cctv","mdi:motion-sensor","mdi:motion-sensor-off","mdi:smoke-detector","mdi:bell","mdi:bell-off","mdi:alert","mdi:robot-vacuum","mdi:washing-machine","mdi:dishwasher","mdi:coffee","mdi:car","mdi:car-connected","mdi:ev-station","mdi:water","mdi:water-off","mdi:pool","mdi:sprinkler","mdi:blinds","mdi:blinds-open","mdi:curtains","mdi:curtains-closed","mdi:ceiling-fan","mdi:ceiling-fan-light","mdi:battery","mdi:battery-charging","mdi:wifi","mdi:bluetooth","mdi:account","mdi:account-outline","mdi:account-group","mdi:star","mdi:heart","mdi:check","mdi:close","mdi:plus","mdi:minus","mdi:pencil","mdi:delete","mdi:refresh","mdi:eye","mdi:eye-off","mdi:flash","mdi:flash-off","mdi:weather-sunny","mdi:weather-night","mdi:weather-cloudy","mdi:chart-line","mdi:information","mdi:cog","mdi:tools"];
 
@@ -5368,7 +3911,10 @@ class CameraGalleryCardEditor extends HTMLElement {
         el?.addEventListener("input", () => el.setCustomValidity(""), _sig)
       );
     }
+  }
 
+  /** Drag-to-reorder for the live camera chips. Part of _render(). */
+  _wireLiveCameraReorder() {
     // Drag-and-drop reorder for the live_camera_entities chips (mouse + touch)
     const dndContainer = this.shadowRoot.getElementById("livecam-tags-dnd");
     if (dndContainer) {
@@ -5420,8 +3966,10 @@ class CameraGalleryCardEditor extends HTMLElement {
         },
       });
     }
+  }
 
-
+  /** Thumbnail frame position slider. Part of _render(). */
+  _wireThumbFramePct({ thumbpctEl, thumbpctvalEl }) {
     const updateThumbPctVal = (v) => {
       if (thumbpctvalEl) thumbpctvalEl.textContent = `${v}%`;
     };
@@ -5438,7 +3986,10 @@ class CameraGalleryCardEditor extends HTMLElement {
         Number.isFinite(v) ? Math.round(v) : DEFAULT_THUMBNAIL_FRAME_PCT
       );
     });
+  }
 
+  /** The media folder browser. Part of _render(). */
+  _wireMediaBrowser({ $ }) {
     $("browser-backdrop")?.addEventListener("click", () => {
       this._closeMediaBrowser();
     });
@@ -5473,35 +4024,1684 @@ class CameraGalleryCardEditor extends HTMLElement {
         this._closeMediaBrowser();
       });
     });
+  }
 
-    try {
-      const fs = this._focusState;
-      if (fs && fs.id) {
-        const el = $(fs.id);
-        if (el && typeof el.focus === "function") {
-          if (
-            fs.value != null &&
-            typeof el.value === "string" &&
-            el.value !== fs.value
-          ) {
-            el.value = fs.value;
-          }
+  /** The media folder browser overlay. Part of _render(). */
+  _renderMediaBrowser() {
+    return this._mediaBrowserOpen
+      ? `
+        <div class="browser-backdrop" id="browser-backdrop"></div>
+        <div class="browser-modal" role="dialog" aria-modal="true" aria-label="Browse media folders">
+          <div class="browser-head">
+            <div class="browser-head-copy">
+              <div class="browser-title">Browse folders</div>
+              <div class="browser-path">${this._mediaBrowserPath || "—"}</div>
+            </div>
+            <button type="button" class="browser-iconbtn" id="browser-close" title="Close">
+              ${svgIcon('mdi:close', 18)}
+            </button>
+          </div>
 
-          el.focus({ preventScroll: true });
+          <div class="browser-toolbar">
+            <button
+              type="button"
+              class="browser-btn ${this._mediaBrowserHistory.length ? "" : "disabled"}"
+              id="browser-back"
+              ${this._mediaBrowserHistory.length ? "" : "disabled"}
+            >
+              ${svgIcon('mdi:arrow-left', 18)}
+              <span>Back</span>
+            </button>
 
-          if (
-            fs.start != null &&
-            fs.end != null &&
-            typeof el.setSelectionRange === "function"
-          ) {
-            el.setSelectionRange(fs.start, fs.end);
-          }
+            <button
+              type="button"
+              class="browser-btn primary"
+              id="browser-select-current"
+              ${this._mediaBrowserPath ? "" : "disabled"}
+            >
+              ${svgIcon('mdi:check', 18)}
+              <span>Use current folder</span>
+            </button>
+          </div>
+
+          <div class="browser-body">
+            ${
+              this._mediaBrowserLoading
+                ? `<div class="browser-empty">Loading folders…</div>`
+                : this._mediaBrowserItems.length
+                  ? `
+                    <div class="browser-list">
+                      ${this._mediaBrowserItems
+                        .map(
+                          (item) => `
+                            <div class="browser-item">
+                              <button
+                                type="button"
+                                class="browser-open"
+                                data-browser-open="${item.id.replace(/"/g, "&quot;")}"
+                                title="${item.id.replace(/"/g, "&quot;")}"
+                              >
+                                <span class="browser-open-icon">
+                                  ${svgIcon('mdi:folder-outline', 20)}
+                                </span>
+                                <span class="browser-open-copy">
+                                  <span class="browser-open-title">${item.title}</span>
+                                  <span class="browser-open-sub">${item.id}</span>
+                                </span>
+                              </button>
+
+                              <button
+                                type="button"
+                                class="browser-select"
+                                data-browser-select="${item.id.replace(/"/g, "&quot;")}"
+                                title="Select folder"
+                              >
+                                Select
+                              </button>
+                            </div>
+                          `
+                        )
+                        .join("")}
+                    </div>
+                  `
+                  : `<div class="browser-empty">No folders found here.</div>`
+            }
+          </div>
+        </div>
+      `
+      : ``;
+  }
+
+  /** The Styling tab. Part of _render(). */
+  _renderStylingTab() {
+    return `
+      <div class="tabpanel" data-panel="styling">
+        <div class="style-sections">
+          ${STYLE_SECTIONS.map((section) => `
+            <details
+              class="style-section"
+              id="style-section-${section.id}"
+              ${this._openStyleSections.has(section.id) ? "open" : ""}
+            >
+              <summary class="style-section-head">
+                ${svgIcon(section.icon, 18)}
+                <span>${section.label}</span>
+                <span class="style-chevron">${svgIcon('mdi:chevron-down', 18)}</span>
+              </summary>
+              <div class="style-section-body">
+                <div class="color-grid">
+                  ${section.controls.map((ctrl) => {
+                    if (ctrl.type === "color") {
+                      return `
+                        <div class="color-row">
+                          <div class="lbl">${ctrl.label}</div>
+                          <div class="color-controls">
+                            <div id="${ctrl.hostId}"></div>
+                            <label class="color-transparent">
+                              <input type="checkbox" data-transparent="${ctrl.variable}">
+                              Transparent
+                            </label>
+                            <button type="button" class="color-reset" data-reset="${ctrl.variable}" title="Reset to default">
+                              ${svgIcon('mdi:backup-restore', 16)}
+                            </button>
+                          </div>
+                        </div>
+                      `;
+                    }
+                    if (ctrl.type === "radius") {
+                      const raw = this._getStyleVariableValue(ctrl.variable);
+                      const val = raw ? parseInt(raw) : ctrl.default;
+                      const safeId = ctrl.variable.replace(/[^a-z0-9]/gi, "-");
+                      return `
+                        <div class="color-row">
+                          <div class="lbl">${ctrl.label}</div>
+                          <div class="color-controls">
+                            <input
+                              type="range"
+                              class="radius-range"
+                              data-radius="${ctrl.variable}"
+                              data-radius-mirror-id="radius-num-${safeId}"
+                              min="${ctrl.min}"
+                              max="${ctrl.max}"
+                              value="${val}"
+                            >
+                            <span class="radius-value-wrap" id="radius-val-${safeId}">
+                              <input
+                                type="number"
+                                class="radius-value-input"
+                                id="radius-num-${safeId}"
+                                data-radius-input="${ctrl.variable}"
+                                data-radius-default="${ctrl.default}"
+                                min="${ctrl.min}"
+                                max="${ctrl.max}"
+                                step="1"
+                                value="${val}"
+                              >
+                              <span class="radius-value-unit">px</span>
+                            </span>
+                            <button type="button" class="color-reset" data-reset="${ctrl.variable}" title="Reset to default">
+                              ${svgIcon('mdi:backup-restore', 16)}
+                            </button>
+                          </div>
+                        </div>
+                      `;
+                    }
+                    if (ctrl.type === "select") {
+                      const current = String(this._config?.[ctrl.configKey] || ctrl.options[0].value);
+                      const isDisabled = ctrl.disabledFn ? ctrl.disabledFn(this._config || {}) : false;
+                      const opts = ctrl.options.map((o) => `<option value="${o.value}" ${current === o.value ? "selected" : ""}>${o.label}</option>`).join("");
+                      return `
+                        <div class="color-row ${isDisabled ? "muted" : ""}">
+                          <div class="lbl">${ctrl.label}</div>
+                          <div class="selectwrap" style="min-width:120px">
+                            <select class="select" data-seg-key="${ctrl.configKey}" ${isDisabled ? "disabled" : ""}>${opts}</select>
+                            <span class="selarrow"></span>
+                          </div>
+                        </div>
+                      `;
+                    }
+                    if (ctrl.type === "slider") {
+                      const n = Number(this._config?.[ctrl.configKey]);
+                      const val = Number.isFinite(n) ? Math.min(ctrl.max, Math.max(ctrl.min, n)) : ctrl.default;
+                      return `
+                        <div class="color-row">
+                          <div class="lbl">${ctrl.label}</div>
+                          <div class="color-controls">
+                            <input
+                              type="range"
+                              class="radius-range"
+                              data-config-slider="${ctrl.configKey}"
+                              data-slider-val-id="${ctrl.valId}"
+                              data-slider-unit="${ctrl.unit}"
+                              data-slider-default="${ctrl.default}"
+                              data-slider-mirror-id="${ctrl.id}-num"
+                              id="${ctrl.id}"
+                              min="${ctrl.min}"
+                              max="${ctrl.max}"
+                              value="${val}"
+                            >
+                            <span class="radius-value-wrap" id="${ctrl.valId}" data-slider-unit="${ctrl.unit}">
+                              <input
+                                type="number"
+                                class="radius-value-input"
+                                id="${ctrl.id}-num"
+                                data-slider-input="${ctrl.configKey}"
+                                data-slider-target="${ctrl.id}"
+                                data-slider-default="${ctrl.default}"
+                                min="${ctrl.min}"
+                                max="${ctrl.max}"
+                                step="1"
+                                value="${val}"
+                              >
+                              <span class="radius-value-unit">${ctrl.unit}</span>
+                            </span>
+                            <button type="button" class="color-reset" data-slider-reset="${ctrl.configKey}" data-slider-default="${ctrl.default}" title="Reset to default">
+                              ${svgIcon('mdi:backup-restore', 16)}
+                            </button>
+                          </div>
+                        </div>
+                      `;
+                    }
+                    return "";
+                  }).join("")}
+                </div>
+              </div>
+            </details>
+          `).join("")}
+        </div>
+      </div>
+    `;
+  }
+
+  /** The Source tab. Part of _render(). */
+  _renderSourceTab({
+    startMode,
+    sensorModeOn,
+    mediaModeOn,
+    combinedModeOn,
+    invalidEntities,
+    mediaHasFile,
+    v2ExpandToggle,
+    v2Collapsible,
+  }) {
+    const viewBody = `
+        <div class="row">
+          <div class="lbl">Default view</div>
+          <div class="desc">Which screen the card opens on. <code>Gallery</code> shows recorded clips; <code>Live</code> shows the camera feed.</div>
+          <div class="segwrap">
+            <button class="seg ${startMode !== "live" ? "on" : ""}" data-startmode="gallery">Gallery</button>
+            <button class="seg ${startMode === "live" ? "on" : ""}" data-startmode="live">Live</button>
+          </div>
+        </div>
+        <div class="row">
+          <div class="lbl">Deep-link id <span style="font-weight:400;color:var(--ed-text2);font-size:0.85em;">(optional)</span></div>
+          <div class="desc">Opt-in id that names this card in a URL, for HA notification actions. When set, a link like <code>?cgc_id=porch&amp;cgc_camera=camera.porch_gate</code> opens straight into live view on that camera, or <code>?cgc_id=porch&amp;cgc_view=gallery</code> opens the gallery on the newest clip. Blank means the card ignores URL parameters entirely.</div>
+          <div class="field">
+            <input type="text" class="ed-input" id="url_id" placeholder="e.g. porch" autocomplete="off" value="${this._config.url_id || ""}" />
+          </div>
+        </div>
+      `;
+
+    const sourceBody = `
+        <div class="row">
+          <div class="lbl">Source mode</div>
+          <div class="desc">Where the card pulls clips from. <code>File sensor</code> reads from a sensor entity; <code>Media folders</code> walks Home Assistant's media-source tree; <code>Combined</code> merges both.</div>
+          <div class="segwrap">
+            <button class="seg ${sensorModeOn ? "on" : ""}" data-src="sensor">File sensor</button>
+            <button class="seg ${mediaModeOn ? "on" : ""}" data-src="media">Media folders</button>
+            <button class="seg ${combinedModeOn ? "on" : ""}" data-src="combined">Combined</button>
+          </div>
+        </div>
+
+        ${sensorModeOn ? `
+        <div class="row">
+          <div class="field" id="entities-field">
+            <textarea id="entities" rows="4" placeholder="Enter one sensor per line"></textarea>
+            <div class="suggestions" id="entities-suggestions" hidden></div>
+          </div>
+          ${invalidEntities.length ? `<div class="desc">⚠️ Invalid / missing sensor(s): <code>${invalidEntities.join("</code>, <code>")}</code></div>` : ``}
+          ${this._renderFilesWizard()}
+        </div>
+        ` : mediaModeOn ? `
+        <div class="row">
+          <div class="field" id="mediasources-field">
+            <textarea id="mediasources" rows="4" placeholder="Enter one folder per line, or browse and select folders"></textarea>
+            <div class="suggestions" id="mediasources-suggestions" hidden></div>
+          </div>
+          <div class="row-actions">
+            <button type="button" class="actionbtn" id="browse-media-folders">${svgIcon('mdi:folder-search-outline', 18)}<span>Browse</span></button>
+            <button type="button" class="actionbtn" id="clear-media-folders">${svgIcon('mdi:delete-outline', 18)}<span>Clear</span></button>
+          </div>
+          ${mediaHasFile ? `<div class="desc">⚠️ One of your entries looks like a file (extension). This field expects folders.</div>` : ``}
+        </div>
+        ` : `
+        <div class="row">
+          <div class="lbl">File sensors</div>
+          <div class="field" id="entities-field">
+            <textarea id="entities" rows="3" placeholder="Enter one sensor per line"></textarea>
+            <div class="suggestions" id="entities-suggestions" hidden></div>
+          </div>
+          ${invalidEntities.length ? `<div class="desc">⚠️ Invalid / missing sensor(s): <code>${invalidEntities.join("</code>, <code>")}</code></div>` : ``}
+        </div>
+        <div class="row">
+          <div class="lbl">Media folders</div>
+          <div class="field" id="mediasources-field">
+            <textarea id="mediasources" rows="3" placeholder="Enter one folder per line, or browse and select folders"></textarea>
+            <div class="suggestions" id="mediasources-suggestions" hidden></div>
+          </div>
+          <div class="row-actions">
+            <button type="button" class="actionbtn" id="browse-media-folders">${svgIcon('mdi:folder-search-outline', 18)}<span>Browse</span></button>
+            <button type="button" class="actionbtn" id="clear-media-folders">${svgIcon('mdi:delete-outline', 18)}<span>Clear</span></button>
+          </div>
+          ${mediaHasFile ? `<div class="desc">⚠️ One of your entries looks like a file (extension). This field expects folders.</div>` : ``}
+        </div>
+        `}
+      `;
+
+    const frigateBody = `
+        <div class="row">
+          <div class="lbl">Frigate URL <span style="font-weight:400;color:var(--ed-text2);font-size:0.85em;">(optional)</span></div>
+          <div class="desc">Direct URL to your Frigate API (e.g. <code>http://192.168.1.x:5000</code>). When set, clips load through Frigate's REST API — much faster than crawling Home Assistant's media tree folder by folder.</div>
+          <div class="field">
+            <input type="text" class="ed-input" id="frigate_url" placeholder="http://192.168.1.x:5000" autocomplete="off" value="${this._config.frigate_url || ""}" />
+          </div>
+        </div>
+        <div class="row">
+          <div class="row-head">
+            <div>
+              <div class="lbl">Bounding box on thumbs</div>
+              <div class="desc">Use Frigate's annotated snapshot for gallery thumbs instead of the plain thumbnail. Requires <code>snapshots.bounding_box: true</code> in your Frigate camera config.</div>
+            </div>
+            <div class="togrow">
+              <label class="cgc-switch"><input type="checkbox" id="frigate-thumb-bbox" ${this._config.frigate_thumb_bbox ? "checked" : ""}><span class="cgc-track"></span></label>
+            </div>
+          </div>
+        </div>
+        <div class="row">
+          <div class="row-head">
+            <div>
+              <div class="lbl">Cluster near-adjacent events</div>
+              <div class="desc">Collapse multiple Frigate events for the same camera + label within a short time window into one representative thumb. Tap the count badge in the gallery to expand the cluster inline.</div>
+            </div>
+            <div class="togrow">
+              <label class="cgc-switch"><input type="checkbox" id="frigate-event-cluster" ${this._config.frigate_event_cluster ? "checked" : ""}><span class="cgc-track"></span></label>
+            </div>
+          </div>
+        </div>
+        ${this._config.frigate_event_cluster ? `
+        <div class="row">
+          <div class="lbl">Cluster gap <span style="font-weight:400;color:var(--ed-text2);font-size:0.85em;">(seconds)</span></div>
+          <div class="desc">Events less than this many seconds apart get merged. Start with 30 — increase if you still see duplicate bezorger / cleaner / dog-loose thumbs.</div>
+          <div class="field">
+            <input type="number" class="ed-input" id="frigate-event-cluster-gap-sec" min="1" max="600" step="1" value="${this._config.frigate_event_cluster_gap_sec ?? 30}" />
+          </div>
+        </div>
+        ` : ""}
+      `;
+
+    const showFrigate = mediaModeOn || combinedModeOn;
+    const hasFrigateUrl = !!this._config.frigate_url;
+
+    return `
+        <div class="tabpanel" data-panel="source">
+          ${v2ExpandToggle}
+          ${v2Collapsible("view",   "View",   true, viewBody,   "mdi:image-outline")}
+          ${v2Collapsible("source", "Source", true, sourceBody, "mdi:database-outline")}
+          ${showFrigate ? v2Collapsible("frigate", "Frigate", hasFrigateUrl, frigateBody, "mdi:link-variant") : ""}
+        </div>
+      `;
+  }
+
+  /** The Gallery tab. Part of _render(). */
+  _renderGalleryTab({
+    objectFit,
+    previewPos,
+    cleanMode,
+    fullscreenZoom,
+    c,
+    chevronToggleRow,
+    persistentControls,
+    v2ExpandToggle,
+    v2Collapsible,
+  }) {
+    const displayBody = `
+        <div class="row">
+          <div class="lbl">Image fit</div>
+          <div class="desc"><code>Cover</code> fills the preview and may crop edges; <code>Contain</code> shows the whole frame with letterbox bars.</div>
+          <div class="segwrap">
+            <button class="seg ${objectFit === "cover" ? "on" : ""}" data-objfit="cover">Cover</button>
+            <button class="seg ${objectFit === "contain" ? "on" : ""}" data-objfit="contain">Contain</button>
+          </div>
+        </div>
+
+        <div class="row">
+          <div class="lbl">Preview position</div>
+          <div class="desc">Where the preview pane sits relative to the thumbnail strip.</div>
+          <div class="segwrap">
+            <button class="seg ${previewPos === "top" ? "on" : ""}" data-ppos="top">Top</button>
+            <button class="seg ${previewPos === "bottom" ? "on" : ""}" data-ppos="bottom">Bottom</button>
+          </div>
+        </div>
+
+        <div class="row">
+          <div class="row-head">
+            <div>
+              <div class="lbl">Preview-only mode</div>
+              <div class="desc">Only shows the preview window — toolbar, thumbnails and filters are hidden until the user taps back into the gallery.</div>
+            </div>
+            <div class="togrow">
+              <label class="cgc-switch"><input type="checkbox" id="cleanmode" ${cleanMode ? "checked" : ""}><span class="cgc-track"></span></label>
+            </div>
+          </div>
+        </div>
+
+        <div class="row">
+          <div class="row-head">
+            <div>
+              <div class="lbl">Fullscreen zoom</div>
+              <div class="desc">Enable pinch-to-zoom, pan, double-tap and mouse wheel zoom in the fullscreen image viewer.</div>
+            </div>
+            <div class="togrow">
+              <label class="cgc-switch"><input type="checkbox" id="fullscreenzoom" ${fullscreenZoom ? "checked" : ""}><span class="cgc-track"></span></label>
+            </div>
+          </div>
+        </div>
+      `;
+
+    const playbackBody = `
+        <div class="row">
+          <div class="subrows">
+            <div class="row-head">
+              <div>
+                <div class="lbl">Autoplay</div>
+                <div class="desc">Start playing a clip as soon as it's opened in the preview.</div>
+              </div>
+              <div class="togrow">
+                <label class="cgc-switch"><input type="checkbox" id="autoplay"><span class="cgc-track"></span></label>
+              </div>
+            </div>
+
+            <div class="row-head">
+              <div>
+                <div class="lbl">Start muted</div>
+                <div class="desc">Begin clips muted. Users can unmute via the player controls.</div>
+              </div>
+              <div class="togrow">
+                <label class="cgc-switch"><input type="checkbox" id="auto_muted"><span class="cgc-track"></span></label>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="row">
+          <div class="lbl">Clip fullscreen</div>
+          <div class="desc"><code>Card</code> opens clips in the card's own fullscreen viewer, with the arrows and your place in the clip. <code>Video</code> hands the clip to the browser's or phone's own player (AirPlay, picture-in-picture, system gestures).</div>
+          <div class="segwrap">
+            <button class="seg ${c.gallery_fullscreen === "video" ? "" : "on"}" data-galleryfs="overlay">Card</button>
+            <button class="seg ${c.gallery_fullscreen === "video" ? "on" : ""}" data-galleryfs="video">Video</button>
+          </div>
+        </div>
+      `;
+
+
+    // Pills — per-pill on/off + reorder via up/down arrows. Sparse
+    // overrides only in `gallery_pills`: pills not mentioned use catalog
+    // defaults (see `src/data/pill-catalog.ts`). The editor lists pills
+    // in their current render order so the arrows match the visual
+    // outcome.
+    const cfgGalleryPills =
+      c.gallery_pills && typeof c.gallery_pills === "object" ? c.gallery_pills : {};
+    const hasPillOverrides = Object.keys(cfgGalleryPills).length > 0;
+    const pillSettingsMap = resolvePillSettings(GALLERY_PILL_CATALOG, cfgGalleryPills);
+    // Show pills in effective render order. Disabled pills stay in the
+    // list (at their current order slot) so the user can re-enable
+    // them with a single click — without them disappearing into an
+    // "off" pool.
+    const pillRowsOrdered = [...GALLERY_PILL_CATALOG]
+      .map((entry) => ({ entry, s: pillSettingsMap.get(entry.id) }))
+      .sort((a, b) => {
+        // Disabled pills sink to the bottom so they're out of the way;
+        // within each group sort by effective order, then catalog order.
+        if (a.s.enabled !== b.s.enabled) return a.s.enabled ? -1 : 1;
+        return (
+          a.s.order - b.s.order ||
+          GALLERY_PILL_CATALOG.indexOf(a.entry) - GALLERY_PILL_CATALOG.indexOf(b.entry)
+        );
+      });
+
+    const pillsModeVal = c.controls_mode ?? "overlay";
+    const pillsBarPosVal = c.bar_position ?? "top";
+    const pillsAlignVal = c.gallery_pills_align || "center";
+    const pillsAlignDisabled = pillsModeVal === "fixed" || pillsBarPosVal === "hidden";
+    const pillsAlignDisabledReason =
+      pillsBarPosVal === "hidden"
+        ? " <em>No effect</em> — the pill row is hidden."
+        : pillsModeVal === "fixed"
+          ? " <em>Ignored in fixed mode</em> — pills always fill the bar."
+          : "";
+    const pillsBody = `
+        ${chevronToggleRow(
+        "gallerychevrons",
+        "Left/right arrows over the preview to walk through the filtered clip list. Auto-hidden when there's only one clip.",
+        c.gallery_chevrons_enabled !== false,
+      )}
+        <div class="row">
+          <div class="lbl">Mode</div>
+          <div class="desc"><code>Overlay</code> floats pills over the preview; <code>Fixed</code> reserves a strip and stretches them across.</div>
+          <div class="segwrap" style="margin-top:6px;">
+            <button class="seg ${pillsModeVal === "overlay" ? "on" : ""}" data-ctrlmode="overlay">Overlay</button>
+            <button class="seg ${pillsModeVal === "fixed" ? "on" : ""}" data-ctrlmode="fixed">Fixed</button>
+          </div>
+        </div>
+        <div class="row">
+          <div class="lbl">Position</div>
+          <div class="desc">Where the pill row sits relative to the preview. Pick <code>Hidden</code> to drop it entirely.</div>
+          <div class="segwrap" style="margin-top:6px;">
+            <button class="seg ${pillsBarPosVal === "top" ? "on" : ""}" data-pillsbarpos="top">Top</button>
+            <button class="seg ${pillsBarPosVal === "bottom" ? "on" : ""}" data-pillsbarpos="bottom">Bottom</button>
+            <button class="seg ${pillsBarPosVal === "hidden" ? "on" : ""}" data-pillsbarpos="hidden">Hidden</button>
+          </div>
+        </div>
+        <div class="row ${pillsAlignDisabled ? "muted" : ""}">
+          <div class="lbl">Alignment</div>
+          <div class="desc">Where the row of pills sits within the bar.${pillsAlignDisabledReason}</div>
+          <div class="segwrap" style="margin-top:6px;">
+            <button class="seg ${pillsAlignVal === "left" ? "on" : ""}" data-pillsalign="left" ${pillsAlignDisabled ? "disabled" : ""}>Left</button>
+            <button class="seg ${pillsAlignVal === "center" ? "on" : ""}" data-pillsalign="center" ${pillsAlignDisabled ? "disabled" : ""}>Center</button>
+            <button class="seg ${pillsAlignVal === "right" ? "on" : ""}" data-pillsalign="right" ${pillsAlignDisabled ? "disabled" : ""}>Right</button>
+          </div>
+        </div>
+        <div class="row ${c.controls_mode === "fixed" ? "muted" : ""}">
+          <div class="row-head">
+            <div>
+              <div class="lbl">Persistent controls</div>
+              <div class="desc">Keep the pill row on screen all the time instead of auto-hiding after a few seconds.${c.controls_mode === "fixed" ? " <em>Ignored in fixed mode</em> — the bar is always visible." : ""}</div>
+            </div>
+            <div class="togrow">
+              <label class="cgc-switch"><input type="checkbox" id="persistentcontrols" ${persistentControls ? "checked" : ""} ${c.controls_mode === "fixed" ? "disabled" : ""}><span class="cgc-track"></span></label>
+            </div>
+          </div>
+        </div>
+        <div class="pills-dnd-list" id="pills-dnd-list">
+          ${pillRowsOrdered
+          .map((row) => {
+            const entry = row.entry;
+            const enabled = row.s.enabled;
+            const idAttr = String(entry.id).replace(/"/g, "&quot;");
+            const labelEsc = String(entry.label).replace(/</g, "&lt;");
+            const previewMarkup = entry.previewText
+              ? `<span class="pill-dnd-preview-text">${String(entry.previewText).replace(/</g, "&lt;")}</span>`
+              : entry.icon
+                ? `<ha-icon icon="${entry.icon}" style="--mdc-icon-size:18px;width:18px;height:18px;display:inline-flex;align-items:center;justify-content:center;"></ha-icon>`
+                : "";
+            return `
+                <div class="row pill-dnd-row ${enabled ? "" : "pill-dnd-disabled"}" data-pill-row="${idAttr}" draggable="true">
+                  <div class="pill-dnd-line">
+                    <span class="pill-drag-grip" title="Drag to reorder" aria-label="Drag to reorder">⠿</span>
+                    <span class="pill-dnd-icon" aria-hidden="true">${previewMarkup}</span>
+                    <div class="lbl pill-dnd-label">${labelEsc}</div>
+                    <label class="cgc-switch"><input type="checkbox" id="pill-enable-${idAttr}" ${enabled ? "checked" : ""}><span class="cgc-track"></span></label>
+                  </div>
+                </div>
+              `;
+          })
+          .join("")}
+        </div>
+      `;
+
+    // ── Long-press actions (`thumb_actions`, #243)
+    const thumbActions = Array.isArray(this._config.thumb_actions) ? this._config.thumb_actions : [];
+    const escTa = (v) =>
+      String(v ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+    const taLabel = (txt) => `<div style="font-size:0.75em;opacity:0.6;margin-bottom:2px;">${txt}</div>`;
+    const thumbActionsBody = `
+        <div class="row">
+          <div class="desc">Extra entries in the long-press (right-click) menu of a thumbnail. Each one calls a Home Assistant action with details of the pressed item, for example a script that archives the clip. In <b>Data</b> you can use <code>{path}</code>, <code>{media_id}</code>, <code>{url}</code> and <code>{filename}</code>; they are filled in per item.</div>
+          ${thumbActions.length ? `
+            <div class="menubtn-list">
+              ${thumbActions.map((a, i) => `
+                <div class="menubtn-card">
+                  <div class="menubtn-card-header">
+                    <span style="flex:1;font-size:0.82em;opacity:0.65;">${escTa(a?.name || "Action " + (i + 1))}</span>
+                    <button type="button" class="livecam-tag-del" data-ta-del="${i}" title="Remove">×</button>
+                  </div>
+                  <div class="menubtn-fields">
+                    <div>
+                      ${taLabel("Name")}
+                      <div class="field"><input type="text" class="ed-input" data-ta="${i}" data-ta-field="name" value="${escTa(a?.name)}" placeholder="Archive" autocomplete="off" /></div>
+                    </div>
+                    <div>
+                      ${taLabel("Icon")}
+                      <div class="field">
+                        <input type="text" class="ed-input" data-ta="${i}" data-ta-field="icon" value="${escTa(a?.icon)}" placeholder="mdi:archive-arrow-down" autocomplete="off" />
+                        <div class="suggestions" data-ta-icon-sugg="${i}" hidden></div>
+                      </div>
+                    </div>
+                    <div style="grid-column:1/-1;">
+                      ${taLabel("Action")}
+                      <div class="field"><input type="text" class="ed-input" data-ta="${i}" data-ta-field="perform_action" value="${escTa(a?.perform_action)}" placeholder="script.archive_clip" autocomplete="off" spellcheck="false" /></div>
+                    </div>
+                    <div style="grid-column:1/-1;">
+                      ${taLabel("Data (JSON)")}
+                      <textarea class="ed-input" data-ta-data="${i}" rows="3" spellcheck="false" placeholder='{"path":"{path}"}' style="width:100%;box-sizing:border-box;resize:vertical;font-family:monospace;font-size:0.78em;">${escTa(a?.data && typeof a.data === "object" ? JSON.stringify(a.data, null, 2) : "")}</textarea>
+                    </div>
+                    <div style="grid-column:1/-1;display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:2px;">
+                      <span style="font-size:0.82em;">Ask for confirmation</span>
+                      <label class="cgc-switch"><input type="checkbox" data-ta-confirm="${i}" ${a?.confirmation ? "checked" : ""}><span class="cgc-track"></span></label>
+                    </div>
+                  </div>
+                </div>
+              `).join("")}
+            </div>
+          ` : ""}
+          <div style="margin-top:8px;border:1px solid var(--ed-input-border);border-radius:var(--ed-radius-input,8px);padding:8px 10px;">
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;">
+              <div>
+                ${taLabel("Name")}
+                <div class="field"><input type="text" class="ed-input" id="ta-add-name" placeholder="Archive" autocomplete="off" /></div>
+              </div>
+              <div>
+                ${taLabel("Action")}
+                <div class="field"><input type="text" class="ed-input" id="ta-add-action" placeholder="script.archive_clip" autocomplete="off" spellcheck="false" /></div>
+              </div>
+              <div style="grid-column:1/-1;display:flex;align-items:flex-end;">
+                <button type="button" id="ta-add-btn" class="actionbtn" style="width:100%;justify-content:center;">+ Add action</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      `;
+
+    return `
+        <div class="tabpanel" data-panel="gallery">
+          ${v2ExpandToggle}
+          ${v2Collapsible("display",  "Display",  true,  displayBody,  "mdi:image-outline")}
+          ${v2Collapsible("playback", "Playback", false, playbackBody, "mdi:play-circle-outline")}
+          ${v2Collapsible("controls", "Controls", hasPillOverrides, pillsBody, "mdi:tune-vertical")}
+          ${v2Collapsible("thumbactions", "Long-press actions", thumbActions.length > 0, thumbActionsBody, "mdi:dots-horizontal")}
+        </div>
+      `;
+  }
+
+  /** The Live tab. Part of _render(). */
+  _renderLiveTab({
+    liveEnabled,
+    cameraEntities,
+    liveCameraEntities,
+    liveLayout,
+    liveGridEmphasis,
+    liveFullscreen,
+    c,
+    chevronToggleRow,
+    v2Collapsible,
+    liveGridCols,
+  }) {
+    // Auto-open helpers — collapsibles default open if the user has already
+    // configured something inside them, so they don't have to hunt for it
+    // after the v1 → v2 switch.
+    // Use the canonical readers so unified-shape configs (#137) don't
+    // close their collapsibles on first render. Legacy callers stay
+    // covered via the same helpers' fallback paths.
+    const liveCamsArr = Array.isArray(this._config.live_cameras) ? this._config.live_cameras : [];
+    const hasStreamUrls =
+      (Array.isArray(this._config.live_stream_urls) && this._config.live_stream_urls.length > 0) ||
+      !!this._config.live_stream_url ||
+      liveCamsArr.some((lc) => lc && typeof lc.url === "string" && lc.url.trim());
+    const hasMic = hasAnyMicStream(this._config);
+    const hasMenuButtons = Array.isArray(this._config.menu_buttons) && this._config.menu_buttons.length > 0;
+    const hasPtz =
+      !!this._config.live_ptz_enabled ||
+      (this._config.live_ptz_cameras &&
+        typeof this._config.live_ptz_cameras === "object" &&
+        Object.keys(this._config.live_ptz_cameras).length > 0);
+
+    // ── Basics: live picker, layout, default cam, auto-muted, camera-name.
+    // The master "Enable live view" toggle has been promoted out of this
+    // body — it now lives on the tab header next to the Expand-all
+    // button so it stays visible no matter which collapsible is open.
+    const basicsBody = `
+
+        ${liveEnabled ? `
+          ${cameraEntities.length > 1 ? `
+          <div class="row">
+            <div class="lbl">Cameras in picker</div>
+            <div class="desc">Cameras in the live-view picker. Drag the <code>⠿</code> handle to reorder, tap a row to expand. Setting a <strong>mic stream</strong> for a camera enables the talk button on that camera's live view (toggle / push-to-talk mode + audio settings live under <strong>Two-way audio</strong> below). The first camera is selected by default unless you set another one below.</div>
+            ${(() => {
+            const se = Array.isArray(this._config.live_stream_urls) && this._config.live_stream_urls.length > 0
+              ? this._config.live_stream_urls.filter(e => e?.url)
+              : (this._config.live_stream_url ? [{ url: this._config.live_stream_url, name: this._config.live_stream_name || "Stream" }] : []);
+            return se.length > 0 ? `
+                <div class="livecam-tags">
+                  ${se.map((e, i) => `<div class="livecam-tag"><span style="opacity:0.5;font-size:10px;text-transform:uppercase;letter-spacing:0.05em;">stream ${se.length > 1 ? i+1 : ""}</span><span style="margin-left:4px;">${e.name || "Stream"}</span></div>`).join("")}
+                </div>` : ``;
+          })()}
+            ${liveCameraEntities.length > 0 ? `
+            <div class="livecam-rows" id="livecam-tags-dnd">
+              ${liveCameraEntities.map((id) => {
+              const name = (entityDisplayName(this._hass, id) || id);
+              const mic = String(micStreamForCamera(id, this._config) || "");
+              const isOpen = this._livecamRowOpen?.has(id) ? "open" : "";
+              return `
+                  <div class="livecam-row ${isOpen}" data-dragcam="${id}" draggable="true">
+                    <div class="livecam-rowhead" data-livecam-toggle="${id}">
+                      <span class="livecam-rowgrip">⠿</span>
+                      <span class="livecam-rowname">${name}<span class="livecam-rowent">${id}</span></span>
+                      <span class="livecam-rowmic ${mic ? "" : "none"}">${mic ? mic : "no mic"}</span>
+                      <span class="livecam-chevron">›</span>
+                    </div>
+                    <div class="livecam-rowbody">
+                      <div class="livecam-fieldrow">
+                        <label>Mic stream</label>
+                        <input type="text" class="ed-input livecam-mic-input" data-mic-cam="${id}" value="${mic.replace(/"/g, "&quot;")}" placeholder="go2rtc stream (empty = no mic)" autocomplete="off" />
+                      </div>
+                      <div class="livecam-fieldrow">
+                        <label>Triggers</label>
+                        <input type="text" class="ed-input livecam-trig-input" data-trig-cam="${id}" value="${(() => {
+                        const entry = this._liveCameraEntry(id);
+                        return (Array.isArray(entry?.triggers) ? entry.triggers : []).join(", ").replace(/"/g, "&quot;");
+                      })()}" placeholder="binary_sensor.motion, event.doorbell" autocomplete="off" />
+                      </div>
+                      <div class="livecam-fieldrow">
+                        <label>Rotation</label>
+                        <div class="segwrap">
+                          ${(() => {
+                          const entry = this._liveCameraEntry(id);
+                          const rot = normalizeRotation(entry?.rotation);
+                          return [0, 90, 180, 270]
+                            .map((r) => `<button type="button" class="seg ${rot === r ? "on" : ""}" data-rotcam="${id}" data-rot="${r}">${r}°</button>`)
+                            .join("");
+                        })()}
+                        </div>
+                      </div>
+                      ${this._renderLivecamCropInline(id)}
+                      <div class="livecam-actions">
+                        <button type="button" class="livecam-row-del" data-delcam="${id}">${svgIcon('mdi:delete-outline', 14)}<span>Remove camera</span></button>
+                      </div>
+                    </div>
+                  </div>
+                `;
+            }).join("")}
+            </div>
+            ` : ``}
+            <div class="field" style="margin-top:6px;">
+              <input type="text" class="ed-input" id="livecam-input" placeholder="Search cameras..." autocomplete="off" />
+              <div class="suggestions" id="livecam-suggestions" hidden></div>
+            </div>
+          </div>
+          ` : ``}
+
+          ${liveCameraEntities.length > 1 ? `
+          <div class="row">
+            <div class="lbl">Live layout</div>
+            <div class="desc"><code>Single</code> shows one camera at a time. <code>Grid</code> tiles all of them — tap a tile to focus.</div>
+            <div class="segwrap">
+              <button class="seg ${liveLayout === "single" ? "on" : ""}" data-livelayout="single">Single</button>
+              <button class="seg ${liveLayout === "grid" ? "on" : ""}" data-livelayout="grid">Grid</button>
+            </div>
+            ${liveLayout === "grid" ? `
+            <div class="lbl" style="margin-top:10px;">Grid columns</div>
+            <div class="desc"><code>Auto</code> shapes the grid to the number of cameras and fills every cell. Pin a number to force a fixed column count.</div>
+            <div class="segwrap">
+              ${[0, 1, 2, 3, 4].map((n) => `
+                <button class="seg ${liveGridCols === n ? "on" : ""}" data-gridcols="${n}">${n === 0 ? "Auto" : n}</button>
+              `).join("")}
+            </div>
+            <div class="lbl" style="margin-top:10px;">Larger tiles</div>
+            <div class="desc">Where the bigger tiles land when a row has fewer cameras than the rest. <code>Bottom</code> puts the short row last. <code>Top</code> puts it first. <code>Hero</code> gives camera 1 a full row to itself.</div>
+            <div class="segwrap">
+              <button class="seg ${liveGridEmphasis === "bottom" ? "on" : ""}" data-gridemphasis="bottom">Bottom</button>
+              <button class="seg ${liveGridEmphasis === "top" ? "on" : ""}" data-gridemphasis="top">Top</button>
+              <button class="seg ${liveGridEmphasis === "hero" ? "on" : ""}" data-gridemphasis="hero">Hero</button>
+            </div>
+            ` : ``}
+          </div>
+          ` : ``}
+
+          <div class="row">
+            <div class="lbl">Fullscreen</div>
+            <div class="desc"><code>Card</code> keeps the pills, PTZ and zoom on screen. <code>Video</code> hands the stream to the browser's own player. Grid layout always uses <code>Card</code>.</div>
+            <div class="segwrap">
+              <button class="seg ${liveFullscreen === "card" ? "on" : ""}" data-livefs="card">Card</button>
+              <button class="seg ${liveFullscreen === "video" ? "on" : ""}" data-livefs="video">Video</button>
+            </div>
+          </div>
+
+          <div class="row">
+            <div class="row-head">
+              <div>
+                <div class="lbl">Start muted</div>
+                <div class="desc">Begin live streams muted on tab switch. Users can unmute per camera.</div>
+              </div>
+              <div class="togrow">
+                <label class="cgc-switch"><input type="checkbox" id="live_auto_muted"><span class="cgc-track"></span></label>
+              </div>
+            </div>
+            <div class="row-head">
+              <div>
+                <div class="lbl">Show camera name</div>
+                <div class="desc">Show the camera's name on the live preview — as a pill in single view, and as a label on each tile in grid view.</div>
+              </div>
+              <div class="togrow">
+                <label class="cgc-switch"><input type="checkbox" id="showcameratitle" ${c.show_camera_title !== false && c.live_grid_labels !== false ? "checked" : ""}><span class="cgc-track"></span></label>
+              </div>
+            </div>
+          </div>
+        ` : ``}
+      `;
+
+    // ── Streams collapsible
+    const streamsBody = `
+        <div class="row">
+          <div class="desc">Add RTSP / HLS / RTMP stream URLs as extra entries in the picker. Useful for cameras that don't have a Home Assistant entity.</div>
+          <div id="stream-urls-list">
+            ${(() => {
+            const entries = (() => {
+              if (Array.isArray(this._config.live_stream_urls) && this._config.live_stream_urls.length > 0)
+                return this._config.live_stream_urls;
+              if (this._config.live_stream_url)
+                return [{ url: this._config.live_stream_url, name: this._config.live_stream_name || "" }];
+              return [];
+            })();
+            return entries.map((e, i) => `
+                <div class="stream-url-row" data-si="${i}" style="display:flex;flex-direction:column;gap:4px;padding:8px 0 8px 0;border-bottom:1px solid var(--divider-color,#e0e0e0);">
+                  <div style="display:flex;gap:6px;align-items:center;">
+                    <input type="text" class="ed-input stream-url-input" data-si="${i}" placeholder="rtsp://192.168.1.x:554/stream" autocomplete="off" value="${(e.url || "").replace(/"/g, "&quot;")}" style="flex:1;" />
+                    <button type="button" class="livecam-tag-del stream-url-del" data-si="${i}" style="flex-shrink:0;">×</button>
+                  </div>
+                  <input type="text" class="ed-input stream-name-input" data-si="${i}" placeholder="Name (e.g. Front door)" autocomplete="off" value="${(e.name || "").replace(/"/g, "&quot;")}" />
+                </div>
+              `).join("");
+          })()}
+          </div>
+          <button type="button" id="stream-url-add" class="cgc-ed-btn" style="margin-top:8px;">+ Add stream URL</button>
+        </div>
+      `;
+
+    // ── Two-way audio collapsible
+    const lt = this._config.live_triggers || {};
+    const hasTriggers =
+      !!this._config.live_triggers ||
+      (Array.isArray(this._config.live_cameras) &&
+        this._config.live_cameras.some((lc) => Array.isArray(lc?.triggers) && lc.triggers.length > 0));
+    const ltReturn = lt.return_to || "previous";
+    const triggersBody = `
+        <div class="row">
+          <div class="desc">Switch to a camera's live view when something happens there, then go back. Pick the entities per camera under <strong>Basics → Cameras in picker</strong>: expand a camera and fill in <em>Triggers</em> (motion or occupancy sensors, a doorbell <code>event</code>, any entity that turns <code>on</code>). Only works while the dashboard is open; the card cannot wake a sleeping screen.</div>
+        </div>
+        <div class="row">
+          <div class="row-head">
+            <div>
+              <div class="lbl">Frigate events</div>
+              <div class="desc">A new Frigate event switches to <code>camera.&lt;frigate camera name&gt;</code>, when that camera is in the live list.</div>
+            </div>
+            <div class="togrow">
+              <label class="cgc-switch"><input type="checkbox" id="live-trig-frigate" ${lt.frigate ? "checked" : ""}><span class="cgc-track"></span></label>
+            </div>
+          </div>
+          ${lt.frigate ? `
+          <div class="field" style="margin-top:8px;">
+            <input type="text" class="ed-input" id="live-trig-frigate-labels" placeholder="Only these labels, e.g. person, car (empty = all)" autocomplete="off" value="${(Array.isArray(lt.frigate_labels) ? lt.frigate_labels : []).join(", ").replace(/"/g, "&quot;")}" />
+          </div>` : ""}
+        </div>
+        <div class="row">
+          <div class="lbl">Stay on the camera (seconds)</div>
+          <div class="desc">How long after the last trigger the card goes back. A tap on the card in the meantime keeps it where it is.</div>
+          <div class="field">
+            <input type="number" class="ed-input" id="live-trig-hold" min="5" max="3600" step="1" value="${lt.hold_seconds ?? 30}" />
+          </div>
+        </div>
+        <div class="row">
+          <div class="lbl">Cooldown per camera (seconds)</div>
+          <div class="desc">Ignore repeat triggers for the same camera within this time.</div>
+          <div class="field">
+            <input type="number" class="ed-input" id="live-trig-cooldown" min="0" max="3600" step="1" value="${lt.cooldown_seconds ?? 10}" />
+          </div>
+        </div>
+        <div class="row">
+          <div class="lbl">Afterwards</div>
+          <div class="desc"><code>Previous</code> returns to the view it came from. <code>Gallery</code> always goes to the gallery. <code>Stay</code> keeps showing the camera.</div>
+          <div class="segwrap">
+            <button class="seg ${ltReturn === "previous" ? "on" : ""}" data-livetrigreturn="previous">Previous</button>
+            <button class="seg ${ltReturn === "gallery" ? "on" : ""}" data-livetrigreturn="gallery">Gallery</button>
+            <button class="seg ${ltReturn === "stay" ? "on" : ""}" data-livetrigreturn="stay">Stay</button>
+          </div>
+        </div>
+      `;
+    const twoWayBody = `
+        <div class="row">
+          <div class="desc">Global settings for talkback. Per-camera mic streams are configured in the <strong>Cameras</strong> section above — expand a camera and fill in its <em>Mic stream</em> (the go2rtc stream name under <code>streams:</code> in <code>go2rtc.yaml</code>) to enable the talk button on that camera.</div>
+          <div class="desc" style="margin-top:4px;font-size:0.78em;opacity:0.7;">Needs: <a href="https://github.com/AlexxIT/WebRTC" target="_blank" rel="noopener">WebRTC Camera</a> HACS integration · camera with audio backchannel · HTTPS or localhost.</div>
+          ${(() => {
+          const comps = this._hass?.config?.components;
+          const hasWebrtc = Array.isArray(comps) && comps.includes("webrtc");
+          if (hasWebrtc || !hasAnyMicStream(this._config)) return ``;
+          return `<div class="cgc-inline-warn">${svgIcon('mdi:alert-outline', 14)}<span>WebRTC Camera integration not detected — install it via HACS for the mic to work.</span></div>`;
+        })()}
+          ${(() => {
+          const legacy = String(this._config.live_go2rtc_stream ?? "").trim();
+          if (!legacy) return ``;
+          return `<div class="desc" style="margin-top:8px;">
+              <strong>Legacy single-stream config detected:</strong> <code>live_go2rtc_stream: ${legacy.replace(/</g,"&lt;")}</code> is set in your YAML. It still works (applies to whichever camera is active) and you don't need to change anything. Setting a per-camera mic stream in the Cameras section above switches to the per-camera map — once you do, the legacy key is ignored.
+            </div>`;
+        })()}
+        </div>
+        <div class="row">
+          <div class="row-head">
+            <div>
+              <div class="lbl">Home Assistant two-way audio</div>
+              <div class="desc">Use Home Assistant's own talk support for cameras without a mic stream above. Needs Home Assistant 2026.11 with <strong>Settings → System → Labs → Two-way audio</strong> on, a camera whose integration supports it (for example Reolink over RTSP, or Matter) and HTTPS. The talk button only appears on cameras that support it.</div>
+            </div>
+            <div class="togrow">
+              <label class="cgc-switch"><input type="checkbox" id="live-native-talk" ${this._config.live_native_talk !== false ? "checked" : ""}><span class="cgc-track"></span></label>
+            </div>
+          </div>
+        </div>
+        ${hasAnyMicStream(this._config) || this._config.live_native_talk !== false ? `
+        <div class="row">
+          <div class="lbl">Interaction</div>
+          <div class="desc"><code>Toggle</code> latches the mic on/off with one tap. <code>Push-to-talk</code> holds the mic open only while pressed.</div>
+          <div class="segwrap">
+            <button class="seg ${(this._config.live_mic_mode || "toggle") === "toggle" ? "on" : ""}" data-livemicmode="toggle">Toggle</button>
+            <button class="seg ${this._config.live_mic_mode === "ptt" ? "on" : ""}" data-livemicmode="ptt">Push-to-talk</button>
+          </div>
+        </div>
+        <div class="row">
+          ${(() => {
+          const shape = this._config.live_mic_shape === "button" ? "button" : "bar";
+          const pos = this._config.live_mic_button_position || "center";
+          const segShape = (val, label) =>
+            `<button class="seg ${shape === val ? "on" : ""}" data-livemicshape="${val}">${label}</button>`;
+          const segPos = (val, label) =>
+            `<button class="seg ${pos === val ? "on" : ""}" data-livemicbtnpos="${val}">${label}</button>`;
+          return `
+            <div class="lbl">Shape</div>
+            <div class="desc"><code>Bar</code> spans the full preview width. <code>Button</code> shows a compact round mic button.</div>
+            <div class="segwrap">
+              ${segShape("bar",    "Bar")}
+              ${segShape("button", "Button")}
+            </div>
+            ${shape === "button" ? `
+            <div style="margin-top:14px;">
+              <div class="lbl" style="margin-bottom:8px;">Button position</div>
+              <div class="segwrap">
+                ${segPos("left",   "Left")}
+                ${segPos("center", "Center")}
+                ${segPos("right",  "Right")}
+              </div>
+            </div>
+            ` : ``}`;
+        })()}
+        </div>
+        <div class="row">
+          ${(() => {
+          const mp = this._config.live_mic_position || "overlay";
+          const seg = (val, label) =>
+            `<button class="seg ${mp === val ? "on" : ""}" data-livemicpos="${val}">${label}</button>`;
+          return `
+            <div class="lbl">Position</div>
+            <div class="desc"><code>Over video</code> floats the talk control on the live picture. <code>Below</code> and <code>Above</code> give it its own row, so it never covers the camera view.</div>
+            <div class="segwrap">
+              ${seg("overlay", "Over video")}
+              ${seg("below",   "Below")}
+              ${seg("above",   "Above")}
+            </div>`;
+        })()}
+        </div>
+        <div class="row">
+          <div class="lbl">Audio processing</div>
+          <div class="desc">Browser-level mic processing applied before the audio reaches your camera.</div>
+          ${(() => {
+          const ap = this._config.live_mic_audio_processing || {};
+          const ec = ap.echo_cancellation !== false;
+          const ns = ap.noise_suppression !== false;
+          const agc = ap.auto_gain_control !== false;
+          return `
+            <div style="display:flex;flex-direction:column;gap:10px;margin-top:6px;">
+              <div class="row-inline"><span>Echo cancellation</span><label class="cgc-switch"><input type="checkbox" id="live-mic-ec" ${ec ? "checked" : ""}><span class="cgc-track"></span></label></div>
+              <div class="row-inline"><span>Noise suppression</span><label class="cgc-switch"><input type="checkbox" id="live-mic-ns" ${ns ? "checked" : ""}><span class="cgc-track"></span></label></div>
+              <div class="row-inline"><span>Auto gain control</span><label class="cgc-switch"><input type="checkbox" id="live-mic-agc" ${agc ? "checked" : ""}><span class="cgc-track"></span></label></div>
+            </div>`;
+        })()}
+        </div>
+        <div class="row">
+          ${(() => {
+          const enabled = this._config.live_mic_waveform_enabled !== false;
+          const sens = this._config.live_mic_waveform_sensitivity || "medium";
+          const seg = (val, label) =>
+            `<button class="seg ${sens === val ? "on" : ""}" data-wfsens="${val}">${label}</button>`;
+          return `
+            <div class="lbl">Waveform visualizer</div>
+            <div class="desc">Frequency-bars overlay on the talkback bar while the mic is live.</div>
+            <div style="display:flex;flex-direction:column;gap:10px;margin-top:6px;">
+              <div class="row-inline">
+                <span>Enabled</span>
+                <label class="cgc-switch"><input type="checkbox" id="live-mic-wf-enabled" ${enabled ? "checked" : ""}><span class="cgc-track"></span></label>
+              </div>
+              ${enabled ? `
+              <div style="display:flex;flex-direction:column;gap:6px;">
+                <span>Sensitivity</span>
+                <div class="segwrap">
+                  ${seg("low",    "Low")}
+                  ${seg("medium", "Medium")}
+                  ${seg("high",   "High")}
+                </div>
+              </div>
+              ` : ``}
+            </div>`;
+        })()}
+        </div>
+        ` : ``}
+      `;
+
+    // ── Menu buttons collapsible
+    const menuButtonsBody = `
+        <div class="row">
+          <div class="desc">Custom buttons in the live view — handy for toggling lights, sirens or running scripts without leaving the camera. Buttons sit in the hamburger menu, or directly among the live controls when "Show among live controls" is on. A button on an <code>input_select</code> or <code>select</code> entity opens a list of its options.</div>
+          ${(() => {
+          const menuButtons = Array.isArray(this._config.menu_buttons) ? this._config.menu_buttons : [];
+          return menuButtons.length ? `
+              <div class="menubtn-list">
+                ${menuButtons.map((btn, i) => `
+                  <div class="menubtn-card">
+                    <div class="menubtn-card-header">
+                      <span style="flex:1;font-size:0.82em;opacity:0.65;">${(btn.title || btn.entity || "Button " + (i + 1)).replace(/</g,"&lt;")}</span>
+                      <button type="button" class="livecam-tag-del" data-delmenubutton="${i}">×</button>
+                    </div>
+                    <div class="menubtn-fields">
+                      <div style="grid-column:1/-1;">
+                        <div style="font-size:0.75em;opacity:0.6;margin-bottom:2px;">Entity</div>
+                        <div class="field">
+                          <input type="text" class="ed-input" data-menubtn-entity="${i}" placeholder="entity_id" value="${(btn.entity||"").replace(/"/g,"&quot;")}" autocomplete="off" />
+                          <div class="suggestions" data-menubtn-entity-sugg="${i}" hidden></div>
+                        </div>
+                      </div>
+                      <div>
+                        <div style="font-size:0.75em;opacity:0.6;margin-bottom:2px;">Icon (off)</div>
+                        <div class="field has-icon-preview">
+                          <ha-icon class="icon-preview" icon="${(btn.icon||"").replace(/"/g,"&quot;")}"></ha-icon>
+                          <input type="text" class="ed-input" data-menubtn="${i}" data-mbfield="icon" value="${(btn.icon||"").replace(/"/g,"&quot;")}" placeholder="mdi:lightbulb" autocomplete="off" />
+                          <div class="suggestions" data-menubtn-icon-sugg="${i}" hidden></div>
+                        </div>
+                      </div>
+                      <div>
+                        <div style="font-size:0.75em;opacity:0.6;margin-bottom:2px;">Icon (on)</div>
+                        <div class="field has-icon-preview">
+                          <ha-icon class="icon-preview" icon="${(btn.icon_on||"").replace(/"/g,"&quot;")}"></ha-icon>
+                          <input type="text" class="ed-input" data-menubtn="${i}" data-mbfield="icon_on" value="${(btn.icon_on||"").replace(/"/g,"&quot;")}" placeholder="mdi:lightbulb" autocomplete="off" />
+                          <div class="suggestions" data-menubtn-iconon-sugg="${i}" hidden></div>
+                        </div>
+                      </div>
+                      <div>
+                        <div style="font-size:0.75em;opacity:0.6;margin-bottom:2px;">Label</div>
+                        <div class="field"><input type="text" class="ed-input" data-menubtn="${i}" data-mbfield="title" value="${(btn.title||"").replace(/"/g,"&quot;")}" placeholder="optional" /></div>
+                      </div>
+                      <div>
+                        <div style="font-size:0.75em;opacity:0.6;margin-bottom:2px;">Service</div>
+                        <div class="field"><input type="text" class="ed-input" data-menubtn="${i}" data-mbfield="service" value="${(btn.service||"").replace(/"/g,"&quot;")}" placeholder="e.g. light.toggle" /></div>
+                      </div>
+                      <div>
+                        <div style="font-size:0.75em;opacity:0.6;margin-bottom:2px;">State (on)</div>
+                        <div class="field"><input type="text" class="ed-input" data-menubtn="${i}" data-mbfield="state_on" value="${(btn.state_on||"").replace(/"/g,"&quot;")}" placeholder="e.g. open" /></div>
+                      </div>
+                    </div>
+                  </div>
+                `).join("")}
+              </div>
+            ` : "";
+        })()}
+          <div style="margin-top:8px;border:1px solid var(--ed-input-border);border-radius:var(--ed-radius-input,8px);padding:8px 10px;">
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;">
+              <div style="grid-column:1/-1;">
+                <div style="font-size:0.75em;opacity:0.6;margin-bottom:2px;">Entity</div>
+                <div class="field">
+                  <input type="text" class="ed-input" id="menubtn-entity-input" placeholder="Search entity..." autocomplete="off" />
+                  <div class="suggestions" id="menubtn-entity-sugg" hidden></div>
+                </div>
+              </div>
+              <div>
+                <div style="font-size:0.75em;opacity:0.6;margin-bottom:2px;">Icon (off)</div>
+                <div class="field has-icon-preview">
+                  <ha-icon class="icon-preview" icon=""></ha-icon>
+                  <input type="text" class="ed-input" id="menubtn-icon-input" placeholder="mdi:lightbulb" autocomplete="off" />
+                  <div class="suggestions" id="menubtn-icon-sugg" hidden></div>
+                </div>
+              </div>
+              <div style="display:flex;align-items:flex-end;">
+                <button type="button" id="menubtn-add-btn" class="actionbtn" style="width:100%;justify-content:center;">+ Add</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      `;
+
+    // ── PTZ: global toggle + position + per-camera enable/type cards.
+    // Body mirrors the v1 layout — same IDs/classes so the existing
+    // event wiring (live_ptz_enabled / live_ptz_position / .ptz-cam-*)
+    // applies without duplication.
+    const ptzBody = `
+        <div class="row-inline" style="margin-top:6px;">
+          <span>Enable PTZ overlay</span>
+          <label class="cgc-switch"><input type="checkbox" id="live_ptz_enabled" ${this._config.live_ptz_enabled ? "checked" : ""}><span class="cgc-track"></span></label>
+        </div>
+        <div class="desc" style="margin-top:6px;">Virtual joystick + zoom controls. Integration type is auto-detected per camera.</div>
+        ${this._config.live_ptz_enabled ? `
+        <div style="margin-top:10px;">
+          <div style="font-size:0.78em;opacity:0.75;margin-bottom:6px;">Position</div>
+          ${(() => {
+          const overlay = (this._config.controls_mode || "overlay") === "overlay";
+          const bp = String(this._config.bar_position || "top");
+          const blockedHalf = !overlay ? null : bp === "top" ? "top" : bp === "bottom" ? "bottom" : null;
+          const all = [
+            { val: "top-left", label: "Top-left" },
+            { val: "top-right", label: "Top-right" },
+            { val: "bottom-left", label: "Bottom-left" },
+            { val: "bottom-right", label: "Bottom-right" },
+          ];
+          const current = this._config.live_ptz_position || "bottom-left";
+          return `<select class="ed-input" id="live_ptz_position" style="width:100%;box-sizing:border-box;height:36px;min-height:36px;flex:none;">
+              ${all.map((o) => {
+              const disabled = !!(blockedHalf && o.val.startsWith(blockedHalf));
+              return `<option value="${o.val}" ${disabled ? "disabled" : ""} ${o.val === current ? "selected" : ""}>${o.label}${disabled ? " (blocked by pill bar)" : ""}</option>`;
+            }).join("")}
+            </select>`;
+        })()}
+        </div>
+
+        ${(() => {
+        const ptzMap = (this._config.live_ptz_cameras && typeof this._config.live_ptz_cameras === "object")
+          ? this._config.live_ptz_cameras
+          : {};
+        if (liveCameraEntities.length === 0) {
+          return `<div class="desc" style="margin-top:10px;font-style:italic;opacity:0.7;">Add at least one camera entity in Basics to configure PTZ.</div>`;
         }
-      }
-    } catch (_) {}
+        const hassForDetect = this._hass
+          ? { states: this._hass.states, services: this._hass.services }
+          : null;
+        const ptzCapable = liveCameraEntities.filter((entId) =>
+          ptzMap[entId] || (hassForDetect && detectPtzType(entId, hassForDetect))
+        );
+        const visibleCams = this._ptzShowAll ? liveCameraEntities : ptzCapable;
+        const showAllToggle = `
+            <div style="display:flex;align-items:center;gap:8px;margin-top:10px;font-size:0.78em;opacity:0.75;">
+              <label class="cgc-switch" style="transform:scale(0.85);transform-origin:left center;"><input type="checkbox" id="ptz-show-all" ${this._ptzShowAll ? "checked" : ""}><span class="cgc-track"></span></label>
+              <span>Show all cameras (manual selection for ONVIF / non-detected setups)</span>
+            </div>
+          `;
+        // Autocomplete pools for the manual per-button pickers: only the
+        // PTZ-relevant entities, so reboot/SD/siren buttons don't clutter.
+        const ptzAllEntities = this._hass?.states ? Object.keys(this._hass.states) : [];
+        const ptzButtonOpts = ptzAllEntities.filter((e) => /^button\..*_ptz_/.test(e)).sort();
+        const ptzSelectOpts = ptzAllEntities.filter((e) => /^select\..*_ptz_preset$/.test(e)).sort();
+        const ptzDatalists =
+          `<datalist id="ptz-button-list">${ptzButtonOpts.map((o) => `<option value="${o.replace(/"/g, "&quot;")}"></option>`).join("")}</datalist>` +
+          `<datalist id="ptz-select-list">${ptzSelectOpts.map((o) => `<option value="${o.replace(/"/g, "&quot;")}"></option>`).join("")}</datalist>`;
+        if (visibleCams.length === 0) {
+          return `<div class="desc" style="margin-top:10px;font-style:italic;opacity:0.7;">No PTZ-capable cameras detected. Add a camera that exposes PTZ button entities (EZVIZ, Reolink) or that supports frigate.ptz, and it'll show up here. Or flip the toggle below to pick a type manually.</div>${showAllToggle}`;
+        }
+        return ptzDatalists + `<div style="display:flex;flex-direction:column;gap:10px;margin-top:10px;">
+            ${visibleCams.map((entId) => {
+            const friendly = (entityDisplayName(this._hass, entId) || entId);
+            const cfgEntry = ptzMap[entId];
+            const enabled = !!cfgEntry;
+            return `
+                <div style="border:1px solid var(--ed-input-border);border-radius:var(--ed-radius-input,8px);padding:8px 10px;">
+                  <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+                    <div style="min-width:0;flex:1;">
+                      <div style="font-weight:500;">${friendly.replace(/</g,"&lt;")}</div>
+                      <div style="font-size:0.72em;opacity:0.6;">${entId.replace(/</g,"&lt;")}</div>
+                    </div>
+                    <label class="cgc-switch"><input type="checkbox" class="ptz-cam-enable" data-ptz-cam="${entId.replace(/"/g,"&quot;")}" ${enabled ? "checked" : ""}><span class="cgc-track"></span></label>
+                  </div>
+                  ${enabled ? `
+                  <div style="display:flex;flex-direction:column;gap:6px;margin-top:8px;">
+                    <select class="ed-input ptz-cam-type" data-ptz-cam="${entId.replace(/"/g,"&quot;")}" style="width:100%;box-sizing:border-box;height:36px;min-height:36px;flex:none;">
+                      <option value="ezviz" ${(cfgEntry.type || "ezviz") === "ezviz" ? "selected" : ""}>EZVIZ — pulse</option>
+                      <option value="reolink" ${cfgEntry.type === "reolink" ? "selected" : ""}>Reolink — continuous</option>
+                      <option value="frigate" ${cfgEntry.type === "frigate" ? "selected" : ""}>Frigate — continuous</option>
+                      <option value="onvif" ${cfgEntry.type === "onvif" ? "selected" : ""}>ONVIF — continuous</option>
+                      <option value="service" ${cfgEntry.type === "service" ? "selected" : ""}>Manual service</option>
+                    </select>
+                    ${((cfgEntry.type || "ezviz") === "ezviz" || cfgEntry.type === "reolink") ? `
+                    <button type="button" class="actionbtn ptz-detect-btn" data-ptz-cam="${entId.replace(/"/g,"&quot;")}" style="align-self:flex-start;margin-top:2px;">Detect buttons</button>
+                    ${[["up","Up","mdi:arrow-up"],["down","Down","mdi:arrow-down"],["left","Left","mdi:arrow-left"],["right","Right","mdi:arrow-right"],["zoom_in","Zoom in","mdi:magnify-plus-outline"],["zoom_out","Zoom out","mdi:magnify-minus-outline"],["stop","Stop","mdi:stop"],["home","Home","mdi:home-outline"]].map(([bk,blbl,bicon]) => {
+                    const bval = (cfgEntry.buttons && typeof cfgEntry.buttons === "object" && typeof cfgEntry.buttons[bk] === "string") ? cfgEntry.buttons[bk] : "";
+                    const blist = bk === "home" ? "ptz-select-list" : "ptz-button-list";
+                    return `<div style="display:flex;align-items:center;gap:8px;" title="${blbl}">
+                        <ha-icon icon="${bicon}" aria-label="${blbl}" style="--mdc-icon-size:18px;width:18px;height:18px;flex:none;opacity:0.7;"></ha-icon>
+                        <input type="text" class="ed-input ptz-cam-button" data-ptz-cam="${entId.replace(/"/g,"&quot;")}" data-ptz-key="${bk}" list="${blist}" value="${bval.replace(/"/g,"&quot;")}" placeholder="auto" autocomplete="off" spellcheck="false" style="flex:1;min-width:0;font-size:0.82em;" />
+                      </div>`;
+                  }).join("")}
+                    <div class="desc" style="margin-top:2px;">Leave blank to auto-detect. Pick from the list — only PTZ buttons are suggested (Home picks a <code>select…_ptz_preset</code>).</div>
+                    ` : cfgEntry.type === "service" ? (() => {
+                    const escapeText = (value) => String(value ?? "")
+                      .replace(/&/g, "&amp;")
+                      .replace(/</g, "&lt;")
+                      .replace(/>/g, "&gt;");
+                    const escapeAttr = (value) => escapeText(value).replace(/"/g, "&quot;");
+                    const serviceData = [
+                      ["start_left", "Start left"], ["end_left", "End left"],
+                      ["start_right", "Start right"], ["end_right", "End right"],
+                      ["start_up", "Start up"], ["end_up", "End up"],
+                      ["start_down", "Start down"], ["end_down", "End down"],
+                      ["zoom_in", "Zoom in (optional)"], ["zoom_out", "Zoom out (optional)"],
+                      ["home", "Home (optional)"],
+                    ];
+                    return `
+                        <div>
+                          <div style="font-size:0.75em;opacity:0.65;margin-bottom:2px;">Home Assistant service</div>
+                          <input type="text" class="ed-input ptz-cam-service" data-ptz-cam="${entId.replace(/"/g,"&quot;")}" value="${escapeAttr(cfgEntry.service)}" placeholder="script.camera_ptz" autocomplete="off" spellcheck="false" style="width:100%;box-sizing:border-box;" />
+                        </div>
+                        ${serviceData.map(([key, label]) => {
+                        const value = cfgEntry[`data_${key}`];
+                        const json = value && typeof value === "object" ? JSON.stringify(value, null, 2) : "";
+                        return `<div>
+                            <div style="font-size:0.75em;opacity:0.65;margin-bottom:2px;">${label} service data (JSON)</div>
+                            <textarea class="ed-input ptz-cam-service-data" data-ptz-cam="${entId.replace(/"/g,"&quot;")}" data-ptz-key="data_${key}" placeholder='{"direction":"${key}"}' spellcheck="false" rows="2" style="width:100%;box-sizing:border-box;resize:vertical;font-family:monospace;font-size:0.78em;">${escapeText(json)}</textarea>
+                          </div>`;
+                      }).join("")}
+                        <div class="desc" style="margin-top:2px;">For continuous cameras, use the same <code>data_start_*</code> + <code>data_end_*</code> shape as <code>custom:webrtc-camera</code>. The end command runs when the joystick is released. Legacy one-shot <code>data_left</code>/<code>data_right</code>/<code>data_up</code>/<code>data_down</code> YAML remains supported.</div>
+                      `;
+                  })() : `<div class="desc" style="margin-top:2px;">Service-based type — no buttons needed.</div>`}
+                  </div>
+                  ` : ""}
+                </div>
+              `;
+          }).join("")}
+          </div>${showAllToggle}`;
+      })()}
+        ` : ``}
+      `;
 
-    this._renderSuggestions("entities");
-    this._renderSuggestions("mediasources");
+    // Live-tab header row: master "Enable live view" toggle on the
+    // left + the standard Expand-all link on the right. Keeps the
+    // master switch visible regardless of which collapsible the user
+    // has open.
+    const liveTabHeader = `
+        <div class="v2-tab-header">
+          <div class="v2-tab-header-toggle">
+            <span class="v2-tab-header-label">Enable live view</span>
+            <label class="cgc-switch"><input type="checkbox" id="liveenabled" ${liveEnabled ? "checked" : ""}><span class="cgc-track"></span></label>
+          </div>
+          <button type="button" class="v2-expand-all" data-v2-expand>Expand all</button>
+        </div>
+      `;
+
+    // If live preview is disabled, hide all collapsibles — the master
+    // toggle in the header is enough to re-enable them. No body to
+    // render below the header in that state.
+    if (!liveEnabled) {
+      return `
+          <div class="tabpanel" data-panel="live">
+            ${liveTabHeader}
+          </div>
+        `;
+    }
+
+    // Live-pill controls: per-pill on/off + reorder. Same sparse-overrides
+    // model as gallery_pills (catalog defaults live in LIVE_PILL_CATALOG).
+    const cfgLivePills =
+      this._config.live_pills && typeof this._config.live_pills === "object"
+        ? this._config.live_pills : {};
+    const hasLivePillOverrides = Object.keys(cfgLivePills).length > 0;
+    const liveControlsBody = `
+        ${chevronToggleRow(
+        "livechevrons",
+        "Left/right arrows over the live view to flip between cameras. Auto-hidden if only one camera is configured.",
+        c.live_chevrons_enabled !== false,
+      )}
+        <div class="row">
+          <div class="row-head">
+            <div>
+              <div class="lbl">Recover frozen streams</div>
+              <div class="desc">When the live picture stops moving for a few seconds, rebuild the stream automatically (up to 3 tries, then a "Try again" notice). Paused while the tab is hidden, in Picture-in-Picture, in native video fullscreen or during talkback.</div>
+            </div>
+            <div class="togrow">
+              <label class="cgc-switch"><input type="checkbox" id="liveautorecover" ${c.live_auto_recover !== false ? "checked" : ""}><span class="cgc-track"></span></label>
+            </div>
+          </div>
+        </div>
+        <div class="row">
+          <div class="desc">Drag <code>⠿</code> a control to where you want it: <strong>Row 1</strong> sits next to the camera name, <strong>Row 2</strong> is a second row below it, <strong>Menu</strong> is behind the ☰ button. The order in a box is the order on screen. Switch a built-in control off to hide it. Built-in controls can't go in the menu.</div>
+        </div>
+        <div class="ctl-zones" id="live-ctl-zones">
+          ${(() => {
+          const btns = Array.isArray(this._config.menu_buttons) ? this._config.menu_buttons : [];
+          const zones = liveControlZones(this._config.live_pills, btns);
+          const esc = (s) => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/"/g, "&quot;");
+          const itemHtml = (item) => {
+            const key = esc(itemKey(item));
+            if (item.kind === "pill") {
+              const entry = LIVE_PILL_CATALOG.find((e) => e.id === item.id);
+              if (!entry) return "";
+              const preview = entry.previewText
+                ? `<span class="pill-dnd-preview-text">${esc(entry.previewText)}</span>`
+                : entry.icon ? `<ha-icon icon="${entry.icon}" style="--mdc-icon-size:18px;width:18px;height:18px;display:inline-flex;"></ha-icon>` : "";
+              return `
+                  <div class="row pill-dnd-row ${item.enabled ? "" : "pill-dnd-disabled"}" data-ctl-key="${key}" draggable="true">
+                    <div class="pill-dnd-line">
+                      <span class="pill-drag-grip" title="Drag to move" aria-label="Drag to move">⠿</span>
+                      <span class="pill-dnd-icon" aria-hidden="true">${preview}</span>
+                      <div class="lbl pill-dnd-label">${esc(entry.label)}</div>
+                      <label class="cgc-switch"><input type="checkbox" id="live-pill-enable-${esc(entry.id)}" ${item.enabled ? "checked" : ""}><span class="cgc-track"></span></label>
+                    </div>
+                  </div>`;
+            }
+            const btn = btns[item.index];
+            if (!btn) return "";
+            const label = btn.title || entityDisplayName(this._hass, btn.entity) || btn.entity;
+            return `
+                <div class="row pill-dnd-row" data-ctl-key="${key}" draggable="true">
+                  <div class="pill-dnd-line">
+                    <span class="pill-drag-grip" title="Drag to move" aria-label="Drag to move">⠿</span>
+                    <span class="pill-dnd-icon" aria-hidden="true"><ha-icon icon="${esc(btn.icon)}" style="--mdc-icon-size:18px;width:18px;height:18px;display:inline-flex;"></ha-icon></span>
+                    <div class="lbl pill-dnd-label">${esc(label)}</div>
+                  </div>
+                </div>`;
+          };
+          const zone = (key, title, hint, items) => `
+              <div class="ctl-zone" data-ctl-zone="${key}">
+                <div class="ctl-zone-head"><span>${title}</span><span>${hint}</span></div>
+                ${items.length ? items.map(itemHtml).join("") : `<div class="ctl-zone-empty">Drag a control here</div>`}
+              </div>`;
+          return zone("row1", "Row 1", "next to the camera name", zones.row1)
+            + zone("row2", "Row 2", "below the first row", zones.row2)
+            + zone("menu", "Menu ☰", "behind the menu button", zones.menu);
+        })()}
+        </div>
+      `;
+
+    return `
+        <div class="tabpanel" data-panel="live">
+          ${liveTabHeader}
+          ${v2Collapsible("basics",   "Basics",        true,                 basicsBody,        "mdi:tune")}
+          ${v2Collapsible("streams",  "Streams",       hasStreamUrls,        streamsBody,       "mdi:link-variant")}
+          ${v2Collapsible("triggers", "Triggers",      hasTriggers,          triggersBody,      "mdi:doorbell-video")}
+          ${v2Collapsible("twoway",   "Two-way audio", hasMic,               twoWayBody,        "mdi:microphone-outline")}
+          ${v2Collapsible("ptz",      "PTZ",           hasPtz,               ptzBody,           "mdi:arrow-all")}
+          ${v2Collapsible("menu",     "Menu buttons",  hasMenuButtons,       menuButtonsBody,   "mdi:dots-horizontal")}
+          ${v2Collapsible("controls", "Controls",     hasLivePillOverrides, liveControlsBody,  "mdi:tune-vertical")}
+        </div>
+      `;
+  }
+
+  /** The Thumbnails tab. Part of _render(). */
+  _renderThumbsTab({
+    c,
+    cleanMode,
+    selectedCount,
+    objectFiltersArr,
+    thumbLayout,
+    thumbSizeMuted,
+    thumbBarPos,
+    thumbSortOrder,
+    thumbFramePct,
+    v2ExpandToggle,
+    v2Collapsible,
+    objectColors,
+  }) {
+    const hasFilters = Array.isArray(c.object_filters) && c.object_filters.length > 0;
+    // In preview-only mode the entire thumb strip + its filters/toolbar
+    // are hidden — show them muted with a hint so users don't tweak
+    // settings that have no effect until preview-only is turned off.
+    const previewOnly = !!cleanMode;
+    const previewOnlyHint = previewOnly ? "Hidden while preview-only mode is on." : "";
+
+    // Toolbar visibility — per-button toggles. IDs match v1 editor's
+    // "Gallery toolbar" row so the existing event-wiring picks them up.
+    // Toolbar buttons — drag-en-drop reorder + on/off, same UX as the
+    // pill catalogs. Enabled state still lives in the existing show_*
+    // keys; order lives in toolbar_order (sparse, defaults from catalog).
+    const orderMap = (c.toolbar_order && typeof c.toolbar_order === "object") ? c.toolbar_order : {};
+    const toolbarRowsOrdered = [...TOOLBAR_CATALOG]
+      .map((entry) => ({
+        entry,
+        enabled: c[entry.showKey] !== false,
+        order: typeof orderMap[entry.id] === "number" ? orderMap[entry.id] : entry.defaultOrder,
+      }))
+      .sort((a, b) => {
+        if (a.enabled !== b.enabled) return a.enabled ? -1 : 1;
+        return (
+          a.order - b.order ||
+          TOOLBAR_CATALOG.findIndex((e) => e.id === a.entry.id) - TOOLBAR_CATALOG.findIndex((e) => e.id === b.entry.id)
+        );
+      });
+    const toolbarBody = `
+        <div class="row">
+          <div class="desc">Show or hide individual buttons in the gallery's top toolbar. Drag <code>⠿</code> to reorder. The date picker is always visible and sits at the start.</div>
+        </div>
+        <div class="pills-dnd-list" id="toolbar-dnd-list">
+          ${toolbarRowsOrdered
+          .map((row) => {
+            const entry = row.entry;
+            const enabled = row.enabled;
+            const idAttr = String(entry.id).replace(/"/g, "&quot;");
+            const labelEsc = String(entry.label).replace(/</g, "&lt;");
+            return `
+                <div class="row pill-dnd-row ${enabled ? "" : "pill-dnd-disabled"}" data-toolbar-row="${idAttr}" draggable="true">
+                  <div class="pill-dnd-line">
+                    <span class="pill-drag-grip" title="Drag to reorder" aria-label="Drag to reorder">⠿</span>
+                    <div class="lbl pill-dnd-label">${labelEsc}</div>
+                    <label class="cgc-switch"><input type="checkbox" id="toolbar-enable-${idAttr}" ${enabled ? "checked" : ""}><span class="cgc-track"></span></label>
+                  </div>
+                </div>
+              `;
+          })
+          .join("")}
+        </div>
+      `;
+
+    const filtersBody = `
+        <div class="row">
+          <div class="lbl">Object filters</div>
+          <div class="desc">Filter clips by what was detected in them. Tap a chip to enable; click the color box to set its colour.</div>
+          <div class="objmeta">
+            <div class="countpill">Selected ${selectedCount}/${MAX_VISIBLE_OBJECT_FILTERS}</div>
+          </div>
+
+          <div class="chip-grid">
+            ${AVAILABLE_OBJECT_FILTERS
+            .map((obj) => {
+              const isOn = objectFiltersArr.includes(obj);
+              const currentColor = objectColors[obj] || "";
+              const colorVal = currentColor && /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(currentColor) ? currentColor : "#ffffff";
+              return `
+                <button
+                  type="button"
+                  class="objchip ${isOn ? "on" : ""}"
+                  data-objchip="${obj}"
+                  title="${this._objectLabel(obj)}"
+                >
+                  <span class="objchip-icon" ${currentColor ? `style="color:${currentColor}"` : ""}>
+                    ${svgIcon(objectIcon(obj), 18)}
+                  </span>
+                  <span class="objchip-color">
+                    <input type="color" class="cgc-color" value="${colorVal}" style="${!currentColor ? "opacity:0.35" : ""}" data-filtercolor="${obj}">
+                  </span>
+                  <input type="checkbox" class="objchip-native-check" ${isOn ? "checked" : ""} tabindex="-1" aria-hidden="true" style="pointer-events:none;">
+                </button>
+              `;
+            })
+            .join("")}
+          </div>
+        </div>
+
+        <div class="row">
+          <div class="lbl">Custom filters</div>
+          <div class="desc">Add your own filter buttons (e.g. <code>parcel</code>, <code>mail-truck</code>). They match against detection labels found in clip filenames or sensor text.</div>
+
+          <div class="custom-filter-add">
+            <input type="text" class="ed-input" id="new-filter-name" placeholder="e.g. parcel" />
+            <input type="text" class="ed-input" id="new-filter-icon" placeholder="mdi:shape" />
+            <button class="actionbtn" id="add-filter-btn">
+              ${svgIcon('mdi:plus', 18)}
+              Add filter
+            </button>
+          </div>
+
+          <div class="custom-filter-list">
+            ${objectFiltersArr.filter(f => typeof f === 'object').map((f) => {
+            const name = Object.keys(f)[0];
+            const icon = f[name];
+            const currentColor = objectColors[name] || "";
+            const colorVal = currentColor && /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(currentColor) ? currentColor : "#ffffff";
+            return `
+                <div class="custom-item">
+                  <div class="custom-item-info">
+                    <ha-icon icon="${icon}" style="${currentColor ? "color:" + currentColor : ""}"></ha-icon>
+                    <span class="lbl">${this._objectLabel(name)}</span>
+                  </div>
+                  <div class="color-controls">
+                    <input type="color" class="cgc-color" value="${colorVal}" style="${!currentColor ? "opacity:0.35" : ""}" data-filtercolor="${name}">
+                    <button class="remove-btn" data-remove-index="${name}">
+                      ${svgIcon('mdi:delete-outline', 18)}
+                    </button>
+                  </div>
+                </div>
+              `;
+          }).join('')}
+          </div>
+        </div>
+      `;
+
+    const layoutBody = `
+        <div class="row">
+          <div class="lbl">Layout</div>
+          <div class="desc">Horizontal arranged the thumbnails horizontally; Vertical... well...</div>
+          <div class="segwrap">
+            <button class="seg ${thumbLayout === "horizontal" ? "on" : ""}" data-tlayout="horizontal">Horizontal</button>
+            <button class="seg ${thumbLayout === "vertical" ? "on" : ""}" data-tlayout="vertical">Vertical</button>
+          </div>
+        </div>
+
+        <div class="row ${thumbSizeMuted ? "muted" : ""}">
+          <div class="lbl">Size</div>
+          <div class="desc">Size of each thumbnail, in pixels.</div>
+          <div class="ed-input-row"><input type="number" class="ed-input" id="thumb" /><span class="ed-suffix">px</span></div>
+        </div>
+
+        <div class="row">
+          <div class="lbl">Maximum thumbnails</div>
+          <div class="desc">How many clips load into the thumbnail strip. Higher = more scrolling, slower first paint.</div>
+          <div class="ed-input-row"><input type="number" class="ed-input" id="maxmedia" /><span class="ed-suffix">items</span></div>
+        </div>
+
+        <div class="row">
+          <div class="lbl">Thumbnail bar position</div>
+          <div class="segwrap">
+            <button class="seg ${thumbBarPos === "top" ? "on" : ""}" data-tbpos="top">Top</button>
+            <button class="seg ${thumbBarPos === "bottom" ? "on" : ""}" data-tbpos="bottom">Bottom</button>
+            <button class="seg ${thumbBarPos === "hidden" ? "on" : ""}" data-tbpos="hidden">Hidden</button>
+          </div>
+        </div>
+
+        <div class="row">
+          <div class="lbl">Sort order</div>
+          <div class="desc">Order clips in the thumbnail strip.</div>
+          <div class="segwrap">
+            <button class="seg ${thumbSortOrder === "newest" ? "on" : ""}" data-tsort="newest">Newest first</button>
+            <button class="seg ${thumbSortOrder === "oldest" ? "on" : ""}" data-tsort="oldest">Oldest first</button>
+          </div>
+        </div>
+      `;
+
+    const videoFrameBody = `
+        <div class="row">
+          <div class="lbl">Video thumbnail frame</div>
+          <div class="desc">% of the video to capture as thumbnail (0 = first frame, 100 = last)</div>
+          <div class="barrow">
+            <div class="barrow-top">
+              <div class="pillval" id="thumbpctval">${thumbFramePct}%</div>
+            </div>
+            <input type="range" class="cgc-range" id="thumbpct" min="0" max="100" step="1">
+          </div>
+        </div>
+
+        <div class="row">
+          <div class="row-head">
+            <div>
+              <div class="lbl">Capture video thumbnails</div>
+              <div class="desc">Extract a frame from each video when no server thumbnail is available. Off saves bandwidth on slow connections.</div>
+            </div>
+            <div class="togrow">
+              <label class="cgc-switch"><input type="checkbox" id="capture-video-thumbnails" ${c.capture_video_thumbnails !== false ? "checked" : ""}><span class="cgc-track"></span></label>
+            </div>
+          </div>
+        </div>
+      `;
+
+    return `
+        <div class="tabpanel" data-panel="thumbs">
+          ${v2ExpandToggle}
+          ${v2Collapsible("thumb-layout", "Layout",      true,  layoutBody,     "mdi:view-grid-outline")}
+          ${v2Collapsible("toolbar",      "Toolbar",     false, toolbarBody,    "mdi:tune", { muted: previewOnly, mutedHint: previewOnlyHint })}
+          ${v2Collapsible("filters",      "Filters",     hasFilters && !previewOnly, filtersBody, "mdi:filter-outline", { muted: previewOnly, mutedHint: previewOnlyHint })}
+          ${v2Collapsible("video-frame",  "Video frame", false, videoFrameBody, "mdi:play-circle-outline")}
+        </div>
+      `;
+  }
+
+  /** The Advanced tab. Part of _render(). */
+  _renderAdvancedTab({
+    mediaModeOn,
+    deleteOk,
+    deleteChoices,
+    c,
+    frigateDeleteOk,
+    frigateDeleteChoices,
+    v2ExpandToggle,
+    v2Collapsible,
+    deleteService,
+    frigateDeleteService,
+  }) {
+    const parsingBody = `
+        <div class="row">
+          <div class="desc">
+            ${svgIcon('mdi:information-outline', 14)}
+            Pattern matched against your file paths. The detector covers both video and image files — extension is optional. Tokens: <code>YYYY</code> <code>MM</code> <code>DD</code> <code>HH</code> <code>mm</code> <code>ss</code>.
+          </div>
+          <div style="padding-top:8px;">
+            <input type="text" class="ed-input" id="pathfmt" placeholder="e.g. YYYY/MM/DD/HHmmss" />
+            <div class="row-actions" style="margin-top:8px;">
+              <button type="button" class="actionbtn" id="detect-pathfmt" title="Probe configured sources and suggest a format" ?disabled=${this._detectInFlight}>
+                ${svgIcon('mdi:magnify-scan', 18)}<span>${this._detectInFlight ? "Detecting…" : "Auto-detect format"}</span>
+              </button>
+            </div>
+            <div id="detect-pathfmt-status" class="hint">${this._renderDetectStatusText()}</div>
+            ${this._renderDetectScoreboard()}
+          </div>
+        </div>
+      `;
+
+    const deleteBody = `
+        <div class="row">
+          <div class="desc">Home Assistant service calls invoked when a clip is deleted. Required if you want the trash button to actually remove files.</div>
+        </div>
+        <div class="row ${mediaModeOn ? "row-disabled" : ""}">
+          <div class="lbl">File sensor <span style="font-weight:400;color:var(--ed-text2);font-size:0.85em;">— used in file-sensor / combined mode</span></div>
+          <div class="selectwrap" style="margin-top:4px;">
+            <select class="select ${deleteOk ? "" : "invalid"}" id="delservice" ${mediaModeOn ? "disabled" : ""}>
+              ${
+              deleteChoices.length
+                ? `<option value=""></option>` +
+                  deleteChoices
+                    .map(
+                      (id) =>
+                        `<option value="${id}" ${
+                          id === deleteService ? "selected" : ""
+                        }>${id}</option>`
+                    )
+                    .join("")
+                : `<option value="" selected>(no shell_command services found)</option>`
+            }
+            </select>
+            <span class="selarrow"></span>
+          </div>
+        </div>
+        ${hasFrigateConfig(c) ? `
+        <div class="row">
+          <div class="lbl">Frigate <span style="font-weight:400;color:var(--ed-text2);font-size:0.85em;">— used for Frigate clips</span></div>
+          <div class="selectwrap" style="margin-top:4px;">
+            <select class="select ${frigateDeleteOk ? "" : "invalid"}" id="frigate-delservice">
+              ${
+              frigateDeleteChoices.length
+                ? `<option value="">(none — Frigate delete disabled)</option>` +
+                  frigateDeleteChoices
+                    .map(
+                      (id) =>
+                        `<option value="${id}" ${
+                          id === frigateDeleteService ? "selected" : ""
+                        }>${id}</option>`
+                    )
+                    .join("")
+                : `<option value="" selected>(no rest_command services found — add one to configuration.yaml)</option>`
+            }
+            </select>
+            <span class="selarrow"></span>
+          </div>
+        </div>
+        ` : ``}
+      `;
+
+    const diagnosticsBody = `
+        <div class="row">
+          <div class="row-head">
+            <div>
+              <div class="lbl">Debug mode</div>
+              <div class="desc">Adds a small Debug badge on the live view; tapping it opens a diagnostics report (card version, HA info, runtime state). Handy when reporting bugs.</div>
+            </div>
+            <div class="togrow">
+              <label class="cgc-switch"><input type="checkbox" id="debug-enabled" ${this._config?.debug_enabled ? "checked" : ""}><span class="cgc-track"></span></label>
+            </div>
+          </div>
+        </div>
+      `;
+
+    const exportBody = `
+        <div class="row">
+          <div class="lbl">Copy YAML</div>
+          <div class="desc">Copy the card's current YAML config to the clipboard. Useful for sharing your setup, backing up, or moving the card between dashboards.</div>
+          <div class="row-actions">
+            <button type="button" class="actionbtn" id="yaml-export-btn">
+              ${svgIcon('mdi:content-copy', 18)}<span>Copy YAML</span>
+            </button>
+          </div>
+        </div>
+      `;
+
+    const hasPathFmt = !!(this._config && this._config.path_datetime_format);
+
+    return `
+        <div class="tabpanel" data-panel="advanced">
+          ${v2ExpandToggle}
+          ${v2Collapsible("parsing",     "Path parsing",     hasPathFmt, parsingBody,      "mdi:calendar-outline")}
+          ${v2Collapsible("delete",      "Delete services",  false,      deleteBody,       "mdi:delete-outline")}
+          ${v2Collapsible("diagnostics", "Diagnostics",      false,      diagnosticsBody,  "mdi:information-outline")}
+          ${v2Collapsible("export",      "Export YAML",      false,      exportBody,       "mdi:content-copy")}
+        </div>
+      `;
   }
 
   _renderSuggestions(id) {
