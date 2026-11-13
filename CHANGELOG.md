@@ -1,5 +1,40 @@
 # Changelog
 
+## [3.4.0](https://github.com/TheScubaDiver/camera-gallery-card/compare/v3.3.0...v3.4.0) (2026-11-13)
+
+
+### Features
+
+* **editor:** use the HA entity picker for menu buttons, icon from the entity ([#290](https://github.com/TheScubaDiver/camera-gallery-card/issues/290)) ([fa2ffd0](https://github.com/TheScubaDiver/camera-gallery-card/commit/fa2ffd02cf1daf5cb06e669e00d45426f866d33d))
+* **live:** option to put the talkback control below or above the video ([#284](https://github.com/TheScubaDiver/camera-gallery-card/issues/284)) ([7327abc](https://github.com/TheScubaDiver/camera-gallery-card/commit/7327abcdd8ae4a8b460e32562037a6d2795a8868))
+* **live:** order and a second row for the live controls, menu buttons included ([#292](https://github.com/TheScubaDiver/camera-gallery-card/issues/292)) ([bc22803](https://github.com/TheScubaDiver/camera-gallery-card/commit/bc22803efcbcfb1374901b20514f6086eb5acd0f))
+* **live:** recover frozen live streams automatically ([#278](https://github.com/TheScubaDiver/camera-gallery-card/issues/278)) ([2503902](https://github.com/TheScubaDiver/camera-gallery-card/commit/2503902af1d2e85ba0ed2ba20a690c5d993d7cf5))
+* **live:** rotate a camera's live picture per camera ([#282](https://github.com/TheScubaDiver/camera-gallery-card/issues/282)) ([d8eecae](https://github.com/TheScubaDiver/camera-gallery-card/commit/d8eecae15bb03076815674f0bfe9d021981ce4e2))
+* **live:** switch to a camera when its triggers fire ([#281](https://github.com/TheScubaDiver/camera-gallery-card/issues/281)) ([478e5c1](https://github.com/TheScubaDiver/camera-gallery-card/commit/478e5c11a27253035a616118e9960345181edd9d))
+
+
+### Bug Fixes
+
+* card size in the sections view ([#298](https://github.com/TheScubaDiver/camera-gallery-card/issues/298)) ([a8f3c98](https://github.com/TheScubaDiver/camera-gallery-card/commit/a8f3c9819a277f2df289b4d09feea960fc325290))
+* **editor:** drop the menu button tag in the live controls list ([#293](https://github.com/TheScubaDiver/camera-gallery-card/issues/293)) ([7071282](https://github.com/TheScubaDiver/camera-gallery-card/commit/707128285505224b78a5b117d95d890ae5260b09))
+* **live:** apply the crop of stream-URL cameras ([#297](https://github.com/TheScubaDiver/camera-gallery-card/issues/297)) ([2789574](https://github.com/TheScubaDiver/camera-gallery-card/commit/27895740f135d81fdd04e5ac3b2980bc50998800))
+* **live:** camera picker works on an offline camera ([#294](https://github.com/TheScubaDiver/camera-gallery-card/issues/294)) ([0d6e9e9](https://github.com/TheScubaDiver/camera-gallery-card/commit/0d6e9e91a7d640637e0efd0c24f5750c9dc5c4f0))
+* **live:** size the live view to MJPEG cameras' aspect ratio ([#291](https://github.com/TheScubaDiver/camera-gallery-card/issues/291)) ([e75cf44](https://github.com/TheScubaDiver/camera-gallery-card/commit/e75cf44f45ef8e4347306ab6c03170a4211dae22))
+
+
+### Documentation
+
+* bring README in line with the current card ([#280](https://github.com/TheScubaDiver/camera-gallery-card/issues/280)) ([788f2e7](https://github.com/TheScubaDiver/camera-gallery-card/commit/788f2e78c475acaea3c767b4f9a161b08292ccdd))
+* split the README into a short start page and docs pages ([#285](https://github.com/TheScubaDiver/camera-gallery-card/issues/285)) ([52bb4af](https://github.com/TheScubaDiver/camera-gallery-card/commit/52bb4aff03c1396a82124f532484f24a1fa44c8f))
+
+
+### Code Refactoring
+
+* **card:** split render() into one method per block ([#299](https://github.com/TheScubaDiver/camera-gallery-card/issues/299)) ([10d22ad](https://github.com/TheScubaDiver/camera-gallery-card/commit/10d22ad7692d44f75605f3570764c593b3b56c22))
+* **editor:** one shared drag-to-reorder helper ([#296](https://github.com/TheScubaDiver/camera-gallery-card/issues/296)) ([0091e24](https://github.com/TheScubaDiver/camera-gallery-card/commit/0091e24b5ff440d2b4bc4778f79681bc50fa84e7))
+* **editor:** split _render() into tab renderers and wiring methods ([#300](https://github.com/TheScubaDiver/camera-gallery-card/issues/300)) ([230246e](https://github.com/TheScubaDiver/camera-gallery-card/commit/230246e2b5d10a148fc5c33b171946d95aab1092))
+* split index.js into card, editor, icons and key order ([#295](https://github.com/TheScubaDiver/camera-gallery-card/issues/295)) ([b5a0061](https://github.com/TheScubaDiver/camera-gallery-card/commit/b5a00612df9e835b5c5c0e4cc51e8a1a39762d7d))
+
 ## [3.3.0](https://github.com/TheScubaDiver/camera-gallery-card/compare/v3.2.0...v3.3.0) (2026-11-12)
 
 
