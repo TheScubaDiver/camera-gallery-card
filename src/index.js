@@ -104,6 +104,7 @@ import {
 } from "./data/pill-catalog";
 import { MIC_NOTIFICATION_ID, WebRtcMicClient } from "./data/webrtc-mic";
 import { syncLiveAudio } from "./data/live-audio";
+import { mediaAspect } from "./data/live-aspect";
 import { isTalkbackRow, talkbackPosition, talkbackRowJustify } from "./data/talkback-layout";
 import { StreamWatchdog } from "./data/stream-watchdog";
 import {
@@ -2164,6 +2165,30 @@ class CameraGalleryCard extends LitElement {
     return search(host);
   }
 
+  // The element that shows the live picture: a <video> for streams, or the
+  // <img> Home Assistant uses for MJPEG cameras (#289).
+  _findLiveMedia() {
+    const video = this._findLiveVideo();
+    if (video) return video;
+    const host = this.renderRoot?.querySelector("#live-card-host");
+    if (!host) return null;
+    const search = (root) => {
+      const img = root.querySelector("img");
+      if (img) return img;
+      for (const el of root.querySelectorAll("*")) {
+        if (el.shadowRoot) {
+          const found = search(el.shadowRoot);
+          if (found) return found;
+        }
+      }
+      return null;
+    };
+    return search(host);
+  }
+
+  // Size the live pane to the picture's own aspect ratio once it is known.
+  // Video reports it at loadedmetadata; an MJPEG image only after its first
+  // frame, so keep checking for a while (#289).
   _setupAutoAspectRatio() {
     if (this._autoAspectObs) {
       clearInterval(this._autoAspectObs);
@@ -2171,33 +2196,32 @@ class CameraGalleryCard extends LitElement {
     }
     this._autoAspectVideo = null;
 
-    const applyRatio = (video) => {
-      const w = video.videoWidth;
-      const h = video.videoHeight;
-      if (!w || !h) return;
-      const next = `${w}/${h}`;
-      if (next === this._aspectRatio) return;
-      this._aspectRatio = next;
-      this.requestUpdate();
+    const applyRatio = (el) => {
+      const next = mediaAspect(el);
+      if (!next) return false;
+      if (next !== this._aspectRatio) {
+        this._aspectRatio = next;
+        this.requestUpdate();
+      }
+      return true;
     };
 
     const tryBind = () => {
-      const video = this._findLiveVideo();
-      if (!video || video === this._autoAspectVideo) return !!video;
-      this._autoAspectVideo = video;
-      if (video.videoWidth && video.videoHeight) {
-        applyRatio(video);
-      } else {
-        video.addEventListener('loadedmetadata', () => applyRatio(video), { once: true });
+      const el = this._findLiveMedia();
+      if (!el) return false;
+      if (applyRatio(el)) return true;
+      if (el !== this._autoAspectVideo) {
+        this._autoAspectVideo = el;
+        el.addEventListener(el.localName === "video" ? "loadedmetadata" : "load", () => applyRatio(el), { once: true });
       }
-      return true;
+      return false;
     };
 
     if (!tryBind()) {
       let elapsed = 0;
       this._autoAspectObs = setInterval(() => {
         elapsed += 500;
-        if (tryBind() || elapsed >= 10000) {
+        if (tryBind() || elapsed >= 15000) {
           clearInterval(this._autoAspectObs);
           this._autoAspectObs = null;
         }
