@@ -6,7 +6,17 @@ import globals from "globals";
 
 export default [
   {
-    ignores: ["dist/**", "node_modules/**", "dev/**"],
+    // Also skip the local, git-ignored leftovers (see .gitignore), so
+    // `npm run lint` only checks the project's own files.
+    ignores: [
+      "dist/**",
+      "node_modules/**",
+      "dev/**",
+      "coverage/**",
+      "test-media/**",
+      "**/*.backup*.js",
+      "apple-music-search-card.js",
+    ],
   },
   js.configs.recommended,
   ...tseslint.configs.recommended,

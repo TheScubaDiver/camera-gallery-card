@@ -53,7 +53,6 @@ const UI_ONLY_KEYS = new Set<ConfigKey>([
   "live_enabled",
   "object_filters",
   "clean_mode",
-  "preview_close_on_tap",
   "preview_position",
   "pill_size",
   "row_gap",

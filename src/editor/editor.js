@@ -1500,8 +1500,7 @@ class CameraGalleryCardEditor extends HTMLElement {
       // user has already typed.
       if (result.format && !String(this._config?.path_datetime_format ?? "").trim()) {
         const next = { ...this._config, path_datetime_format: result.format };
-        this._config = this._stripAlwaysTrueKeys(next);
-        this._fire();
+        this._commit(next);
       }
     } catch (e) {
       console.warn("path-format detect failed:", e);
@@ -2387,8 +2386,7 @@ class CameraGalleryCardEditor extends HTMLElement {
       delete next.media_sources;
       delete next.media_source;
 
-      this._config = this._stripAlwaysTrueKeys(next);
-      this._fire();
+      this._commit(next);
       this._applyFieldValidation("mediasources");
       this._scheduleRender();
     });
@@ -2472,9 +2470,7 @@ class CameraGalleryCardEditor extends HTMLElement {
         const next = { ...this._config };
         delete next.delete_service;
         delete next.preview_close_on_tap;
-        this._config = this._stripAlwaysTrueKeys(next);
-        this._fire();
-        this._scheduleRender();
+        this._commit(next, { render: true });
         return;
       }
 
@@ -2489,9 +2485,7 @@ class CameraGalleryCardEditor extends HTMLElement {
       if (!v) {
         const next = { ...this._config };
         delete next.frigate_delete_service;
-        this._config = this._stripAlwaysTrueKeys(next);
-        this._fire();
-        this._scheduleRender();
+        this._commit(next, { render: true });
         return;
       }
       this._set("frigate_delete_service", v);
@@ -2720,9 +2714,7 @@ class CameraGalleryCardEditor extends HTMLElement {
         next.show_camera_title = false;
         next.live_grid_labels = false;
       }
-      this._config = this._stripAlwaysTrueKeys(next);
-      this._fire();
-      this._scheduleRender();
+      this._commit(next, { render: true });
     });
 
     $("livechevrons")?.addEventListener("change", (e) => {
@@ -2779,9 +2771,7 @@ class CameraGalleryCardEditor extends HTMLElement {
           // center is the default — drop the key so YAML stays clean
           const next = { ...this._config };
           delete next.gallery_pills_align;
-          this._config = this._stripAlwaysTrueKeys(next);
-          this._fire();
-          this._scheduleRender();
+          this._commit(next, { render: true });
         } else if (val === "left" || val === "right") {
           this._set("gallery_pills_align", val);
         }
@@ -2794,9 +2784,7 @@ class CameraGalleryCardEditor extends HTMLElement {
           // top is the default — drop the key so YAML stays clean
           const next = { ...this._config };
           delete next.bar_position;
-          this._config = this._stripAlwaysTrueKeys(next);
-          this._fire();
-          this._scheduleRender();
+          this._commit(next, { render: true });
         } else if (val === "bottom" || val === "hidden") {
           this._set("bar_position", val);
         }
@@ -2866,9 +2854,7 @@ class CameraGalleryCardEditor extends HTMLElement {
           else delete next.live_pills;
           if (out.menu_buttons.length) next.menu_buttons = out.menu_buttons;
           else delete next.menu_buttons;
-          this._config = this._stripAlwaysTrueKeys(next);
-          this._fire();
-          this._scheduleRender();
+          this._commit(next, { render: true });
         },
       });
     }
@@ -2917,8 +2903,7 @@ class CameraGalleryCardEditor extends HTMLElement {
       } else {
         delete next.live_stream_urls;
       }
-      this._config = this._stripAlwaysTrueKeys(next);
-      this._fire();
+      this._commit(next);
     };
 
     const _addStreamRow = (url = "", name = "") => {
@@ -2966,7 +2951,7 @@ class CameraGalleryCardEditor extends HTMLElement {
     $("live_go2rtc_url")?.addEventListener("change", (e) => {
       const val = String(e.target.value || "").trim();
       if (val) this._set("live_go2rtc_url", val);
-      else { const n = { ...this._config }; delete n.live_go2rtc_url; this._config = this._stripAlwaysTrueKeys(n); this._fire(); }
+      else { const n = { ...this._config }; delete n.live_go2rtc_url; this._commit(n); }
     });
 
     // Mic interaction mode (toggle vs push-to-talk). Default "toggle"
@@ -2979,8 +2964,7 @@ class CameraGalleryCardEditor extends HTMLElement {
         } else {
           const n = { ...this._config };
           delete n.live_mic_mode;
-          this._config = this._stripAlwaysTrueKeys(n);
-          this._fire();
+          this._commit(n);
         }
         this._scheduleRender();
       });
@@ -2998,8 +2982,7 @@ class CameraGalleryCardEditor extends HTMLElement {
           const n = { ...this._config };
           delete n.live_mic_shape;
           delete n.live_mic_button_position;
-          this._config = this._stripAlwaysTrueKeys(n);
-          this._fire();
+          this._commit(n);
         }
         this._scheduleRender();
       });
@@ -3013,8 +2996,7 @@ class CameraGalleryCardEditor extends HTMLElement {
         } else {
           const n = { ...this._config };
           delete n.live_mic_position;
-          this._config = this._stripAlwaysTrueKeys(n);
-          this._fire();
+          this._commit(n);
         }
         this._scheduleRender();
       });
@@ -3025,8 +3007,7 @@ class CameraGalleryCardEditor extends HTMLElement {
         if (pos === "center") {
           const n = { ...this._config };
           delete n.live_mic_button_position;
-          this._config = this._stripAlwaysTrueKeys(n);
-          this._fire();
+          this._commit(n);
         } else {
           this._set("live_mic_button_position", pos);
         }
@@ -3049,8 +3030,7 @@ class CameraGalleryCardEditor extends HTMLElement {
       } else {
         n.live_mic_audio_processing = ap;
       }
-      this._config = this._stripAlwaysTrueKeys(n);
-      this._fire();
+      this._commit(n);
     };
     $("live-mic-ec")?.addEventListener("change", (e) => _setMicAp("echo_cancellation", !!e.target.checked));
     $("live-mic-ns")?.addEventListener("change", (e) => _setMicAp("noise_suppression", !!e.target.checked));
@@ -3128,9 +3108,7 @@ class CameraGalleryCardEditor extends HTMLElement {
       }
       if (Object.keys(map).length > 0) n.live_ptz_cameras = map;
       else delete n.live_ptz_cameras;
-      this._config = this._stripAlwaysTrueKeys(n);
-      this._fire();
-      this._scheduleRender();
+      this._commit(n, { render: true });
     };
 
     $("ptz-show-all")?.addEventListener("change", (e) => {
@@ -3150,8 +3128,7 @@ class CameraGalleryCardEditor extends HTMLElement {
       } else {
         const next = { ...this._config };
         delete next.live_ptz_enabled;
-        this._config = this._stripAlwaysTrueKeys(next);
-        this._fire();
+        this._commit(next);
       }
       this._scheduleRender();
     });
@@ -3270,13 +3247,13 @@ class CameraGalleryCardEditor extends HTMLElement {
     $("frigate_url")?.addEventListener("change", (e) => {
       const val = String(e.target.value || "").trim().replace(/\/+$/, "");
       if (val) this._set("frigate_url", val);
-      else { const n = { ...this._config }; delete n.frigate_url; this._config = this._stripAlwaysTrueKeys(n); this._fire(); }
+      else { const n = { ...this._config }; delete n.frigate_url; this._commit(n); }
     });
 
     $("url_id")?.addEventListener("change", (e) => {
       const val = String(e.target.value || "").trim();
       if (val) this._set("url_id", val);
-      else { const n = { ...this._config }; delete n.url_id; this._config = this._stripAlwaysTrueKeys(n); this._fire(); }
+      else { const n = { ...this._config }; delete n.url_id; this._commit(n); }
     });
 
     $("debug-enabled")?.addEventListener("change", (e) => {
@@ -3286,8 +3263,7 @@ class CameraGalleryCardEditor extends HTMLElement {
       } else {
         const next = { ...this._config };
         delete next.debug_enabled;
-        this._config = this._stripAlwaysTrueKeys(next);
-        this._fire();
+        this._commit(next);
       }
     });
 
@@ -3309,9 +3285,7 @@ class CameraGalleryCardEditor extends HTMLElement {
       delete next.live_enabled;
       delete next.live_provider;
 
-      this._config = this._stripAlwaysTrueKeys(next);
-      this._fire();
-      this._scheduleRender();
+      this._commit(next, { render: true });
     });
 
     this.shadowRoot.querySelectorAll(".seg[data-livelayout]").forEach((btn) => {
@@ -3321,9 +3295,7 @@ class CameraGalleryCardEditor extends HTMLElement {
           // Default — drop the key from YAML so the config stays minimal.
           const next = { ...this._config };
           delete next.live_layout;
-          this._config = this._stripAlwaysTrueKeys(next);
-          this._fire();
-          this._scheduleRender();
+          this._commit(next, { render: true });
         } else {
           this._set("live_layout", val);
         }
@@ -3339,8 +3311,7 @@ class CameraGalleryCardEditor extends HTMLElement {
           // Overlay is the default — drop the key so the YAML stays minimal.
           const next = { ...this._config };
           delete next.gallery_fullscreen;
-          this._config = this._stripAlwaysTrueKeys(next);
-          this._fire();
+          this._commit(next);
         }
         btn.closest(".segwrap")?.querySelectorAll(".seg").forEach((s) => s.classList.toggle("on", s === btn));
       });
@@ -3352,8 +3323,7 @@ class CameraGalleryCardEditor extends HTMLElement {
         if (val === "card") {
           const next = { ...this._config };
           delete next.live_fullscreen;
-          this._config = this._stripAlwaysTrueKeys(next);
-          this._fire();
+          this._commit(next);
         } else {
           this._set("live_fullscreen", val);
         }
@@ -3368,8 +3338,7 @@ class CameraGalleryCardEditor extends HTMLElement {
           // Auto is the default — drop the key so the YAML stays minimal.
           const next = { ...this._config };
           delete next.live_grid_columns;
-          this._config = this._stripAlwaysTrueKeys(next);
-          this._fire();
+          this._commit(next);
         } else {
           this._set("live_grid_columns", val);
         }
@@ -3389,8 +3358,7 @@ class CameraGalleryCardEditor extends HTMLElement {
           // Bottom is the default — drop the key so the YAML stays minimal.
           const next = { ...this._config };
           delete next.live_grid_emphasis;
-          this._config = this._stripAlwaysTrueKeys(next);
-          this._fire();
+          this._commit(next);
         } else {
           this._set("live_grid_emphasis", val);
         }
@@ -3439,8 +3407,7 @@ class CameraGalleryCardEditor extends HTMLElement {
               ...this._config,
               live_cameras: [...liveCams, { entity: id, name: "" }],
             };
-            this._config = this._stripAlwaysTrueKeys(next);
-            this._fire();
+            this._commit(next);
           }
         } else {
           const current = Array.isArray(this._config.live_camera_entities)
@@ -3564,9 +3531,7 @@ class CameraGalleryCardEditor extends HTMLElement {
           const next = { ...this._config };
           if (filtered.length === 0) delete next.live_cameras;
           else next.live_cameras = filtered;
-          this._config = this._stripAlwaysTrueKeys(next);
-          this._fire();
-          this._scheduleRender();
+          this._commit(next, { render: true });
           return;
         }
         const current = Array.isArray(this._config.live_camera_entities)
@@ -3937,9 +3902,7 @@ class CameraGalleryCardEditor extends HTMLElement {
           const [moved] = arr.splice(fromIdx, 1);
           arr.splice(toIdx, 0, moved);
           const next = { ...this._config, live_cameras: arr };
-          this._config = this._stripAlwaysTrueKeys(next);
-          this._fire();
-          this._scheduleRender();
+          this._commit(next, { render: true });
           return;
         }
         const current = Array.isArray(this._config.live_camera_entities)
@@ -5791,9 +5754,7 @@ class CameraGalleryCardEditor extends HTMLElement {
       // default true — drop the key so YAML stays clean.
       const next = { ...(this._config ?? {}) };
       delete next[entry.showKey];
-      this._config = this._stripAlwaysTrueKeys(next);
-      this._fire();
-      this._scheduleRender();
+      this._commit(next, { render: true });
     } else {
       this._set(entry.showKey, false);
     }
@@ -5833,9 +5794,7 @@ class CameraGalleryCardEditor extends HTMLElement {
     const next = { ...this._config };
     if (Object.keys(nextMap).length === 0) delete next.toolbar_order;
     else next.toolbar_order = nextMap;
-    this._config = this._stripAlwaysTrueKeys(next);
-    this._fire();
-    this._scheduleRender();
+    this._commit(next, { render: true });
   }
 
   // Live-pill overrides: same shape as gallery but writes to `live_pills`
@@ -5859,9 +5818,7 @@ class CameraGalleryCardEditor extends HTMLElement {
     const next = { ...this._config };
     if (Object.keys(map).length === 0) delete next.live_pills;
     else next.live_pills = map;
-    this._config = this._stripAlwaysTrueKeys(next);
-    this._fire();
-    this._scheduleRender();
+    this._commit(next, { render: true });
   }
 
   // Gallery-pill overrides: write enabled+position into config, drop the
@@ -5912,9 +5869,7 @@ class CameraGalleryCardEditor extends HTMLElement {
     const next = { ...this._config };
     if (Object.keys(cfgMap).length === 0) delete next.gallery_pills;
     else next.gallery_pills = cfgMap;
-    this._config = this._stripAlwaysTrueKeys(next);
-    this._fire();
-    this._scheduleRender();
+    this._commit(next, { render: true });
   }
 
   _commitGalleryPillEntry(map, id, entry) {
@@ -5926,9 +5881,7 @@ class CameraGalleryCardEditor extends HTMLElement {
     const next = { ...this._config };
     if (Object.keys(map).length === 0) delete next.gallery_pills;
     else next.gallery_pills = map;
-    this._config = this._stripAlwaysTrueKeys(next);
-    this._fire();
-    this._scheduleRender();
+    this._commit(next, { render: true });
   }
 
   // Merge a patch into `live_triggers`, dropping values that equal the
@@ -5942,8 +5895,7 @@ class CameraGalleryCardEditor extends HTMLElement {
     const next = { ...this._config };
     if (Object.keys(merged).length) next.live_triggers = merged;
     else delete next.live_triggers;
-    this._config = this._stripAlwaysTrueKeys(next);
-    this._fire();
+    this._commit(next);
   }
 
   _set(key, value) {
@@ -6142,6 +6094,17 @@ class CameraGalleryCardEditor extends HTMLElement {
   }
 
 
+  /**
+   * Save a new config: drop keys that only repeat a default, tell HA about
+   * the change, and re-render when asked (not while the user is typing in a
+   * field, so it keeps its focus).
+   */
+  _commit(next, { render = false } = {}) {
+    this._config = this._stripAlwaysTrueKeys(next);
+    this._fire();
+    if (render) this._scheduleRender();
+  }
+
   /** The `live_cameras` entry of an entity camera, or undefined. */
   _liveCameraEntry(id) {
     const cams = Array.isArray(this._config?.live_cameras) ? this._config.live_cameras : [];
@@ -6167,9 +6130,7 @@ class CameraGalleryCardEditor extends HTMLElement {
       else entry[key] = value;
     }
     cams[idx] = entry;
-    this._config = this._stripAlwaysTrueKeys({ ...this._config, live_cameras: cams });
-    this._fire();
-    if (render) this._scheduleRender();
+    this._commit({ ...this._config, live_cameras: cams }, { render });
   }
 
   _stripAlwaysTrueKeys(cfg) {
@@ -6218,9 +6179,7 @@ class CameraGalleryCardEditor extends HTMLElement {
     if (nextArr.length) next.object_filters = nextArr;
     else delete next.object_filters;
 
-    this._config = this._stripAlwaysTrueKeys(next);
-    this._fire();
-    this._scheduleRender();
+    this._commit(next, { render: true });
   }
 
   async _updateSuggestions(id) {
