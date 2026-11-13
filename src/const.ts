@@ -370,6 +370,7 @@ export const TAP_ACTIONS = [
   "call-service",
   "navigate",
   "url",
+  "assist",
   "fullscreen",
   "snapshot",
   "refresh",

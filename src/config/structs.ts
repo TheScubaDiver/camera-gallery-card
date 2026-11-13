@@ -411,8 +411,9 @@ const livePillEntry = object({
   row: optional(enums([1, 2])),
 });
 
-const menuButton = object({
-  entity: nonEmptyString,
+const menuButtonFields = object({
+  // Optional when the button has a `tap_action` (a shortcut button, #302).
+  entity: optional(nonEmptyString),
   icon: nonEmptyString,
   icon_on: optional(string()),
   color_on: optional(string()),
@@ -427,7 +428,16 @@ const menuButton = object({
   // `placement: controls`. See data/live-controls-layout.ts.
   order: optional(integer()),
   row: optional(enums([1, 2])),
+  // What a tap does instead of toggling or calling `service` on the entity:
+  // HA action syntax, e.g. `navigate` for a shortcut button (#302).
+  tap_action: optional(tapAction),
 });
+// A button needs something to act on: an entity, a tap action, or both.
+const menuButton = refine(
+  menuButtonFields,
+  "menu_button_entity_or_tap_action",
+  (v) => !!v.entity || !!v.tap_action || "a menu button needs an `entity` or a `tap_action`"
+);
 
 /**
  * Canonical `CameraGalleryCardConfig` shape.

@@ -156,7 +156,7 @@ live_cameras:
 
 ## Tap actions
 
-What happens when you tap the live picture. Uses standard Home Assistant action syntax: `more-info`, `toggle`, `perform-action`, `navigate`, `url` and `none`, with `confirmation`, `target` and `data` where they apply. The card also has its own `fullscreen`, `snapshot` and `refresh`.
+What happens when you tap the live picture. Uses standard Home Assistant action syntax: `more-info`, `toggle`, `perform-action`, `navigate`, `url`, `assist` (opens Home Assistant's Assist dialog) and `none`, with `confirmation`, `target` and `data` where they apply. The card also has its own `fullscreen`, `snapshot` and `refresh`.
 
 **For the whole card**, `tap_action` sets what a tap on the single-camera live view does:
 
@@ -208,7 +208,7 @@ menu_buttons:
 
 | Key                      | Description                                                                                                                                                                                               |
 | ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `entity`                 | Entity the button acts on (required)                                                                                                                                                                      |
+| `entity`                 | Entity the button acts on. Optional when the button has a `tap_action`                                                                                                                                    |
 | `icon` / `icon_on`       | Icon, and the icon while the entity is "on"                                                                                                                                                               |
 | `color_on` / `color_off` | Button background while on / off                                                                                                                                                                          |
 | `title`                  | Label (default: the entity's friendly name)                                                                                                                                                               |
@@ -217,6 +217,7 @@ menu_buttons:
 | `placement`              | `menu` (default) puts the button in the hamburger menu. `controls` shows it directly among the live control pills                                                                                         |
 | `order`                  | Position among the live controls, sorted together with the built-in pills (`mute` is 10, `picker` 15, `pip` 20, `fullscreen` 30, `snapshot` 35, `refresh` 40). Without it the button goes after the pills |
 | `row`                    | `2` puts the button on a second row of live controls. See [Rows and order of the live controls](#rows-and-order-of-the-live-controls)                                                                     |
+| `tap_action`             | What a tap does instead of the defaults below, in Home Assistant action syntax. See [Shortcut buttons](#shortcut-buttons)                                                                                 |
 
 What a tap does:
 
@@ -224,8 +225,37 @@ What a tap does:
 - **Automations** are triggered, and **scripts** are run.
 - **Everything else** is toggled.
 - A `service`, when set, always wins over these defaults.
+- A `tap_action`, when set, wins over all of the above.
 
 In the editor you create buttons under **Live → Menu buttons**, and choose where each one shows under **Live → Controls**.
+
+### Shortcut buttons
+
+Give a button a `tap_action` and it works like Home Assistant's shortcut card, right among the live controls: open another dashboard, start Assist, or run an action. It does not need an entity:
+
+```yaml
+menu_buttons:
+  - icon: mdi:cctv
+    title: Driveway
+    placement: controls
+    tap_action:
+      action: navigate
+      navigation_path: /security/driveway
+  - icon: mdi:microphone
+    title: Assist
+    tap_action:
+      action: assist
+  - icon: mdi:gate
+    title: Open gate
+    tap_action:
+      action: perform-action
+      perform_action: cover.open_cover
+      target:
+        entity_id: cover.gate
+      confirmation: true
+```
+
+The actions are the same as for [tap actions](#tap-actions). A button without an entity has no on/off state, so `icon_on`, `color_on` and `state_on` don't apply. With an entity, `more-info` and `toggle` act on that entity. Shortcut buttons are set in YAML; the editor shows them in the list and keeps their `tap_action` when you change other options.
 
 ### Rows and order of the live controls
 

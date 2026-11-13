@@ -97,6 +97,8 @@ export interface MenuButtonInput {
   state_on?: string;
   /** `controls` = render among the live control pills (#215); absent = menu. */
   placement?: string;
+  /** HA action fired on tap instead of the entity's toggle/service (#302). */
+  tap_action?: Record<string, unknown>;
 }
 
 /**

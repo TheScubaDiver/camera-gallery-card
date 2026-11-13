@@ -5187,6 +5187,14 @@ class CameraGalleryCard extends LitElement {
           detail: { replace: !!cfg.navigation_replace },
         }));
         return true;
+      case "assist":
+        // Home Assistant opens its own Assist dialog for this action.
+        this.dispatchEvent(new CustomEvent("hass-action", {
+          bubbles: true,
+          composed: true,
+          detail: { config: { tap_action: cfg }, action: "tap" },
+        }));
+        return true;
       case "url":
         // Refuse script-bearing schemes; http(s) and relative paths only.
         if (!cfg.url_path || /^\s*(javascript|data|vbscript):/i.test(cfg.url_path)) return false;
@@ -5240,9 +5248,19 @@ class CameraGalleryCard extends LitElement {
     };
   }
 
-  /** Tap on a menu button: call its service, or open its option list (#215). */
+  /**
+   * Tap on a menu button: run its tap action (#302), call its service, or
+   * open its option list (#215).
+   */
   _onMenuButtonTap(btn) {
     const tap = menuButtonTap(btn, this._hass?.states?.[btn.entity]);
+    if (tap.kind === "none") return;
+    if (tap.kind === "action") {
+      if (this._hamburgerOpen) this._closeLiveMenu();
+      // The button's own entity is the default target (more-info, toggle).
+      this._executeTapAction(tap.action, btn.entity || "");
+      return;
+    }
     if (tap.kind === "select") {
       const alreadyOpen = this._hamburgerOpen && this._menuSelectEntity === btn.entity;
       if (alreadyOpen) {

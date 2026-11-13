@@ -14,8 +14,15 @@ export const MENU_BUTTON_PLACEMENTS = ["menu", "controls"] as const;
 export type MenuButtonPlacement = (typeof MENU_BUTTON_PLACEMENTS)[number];
 
 /** One `menu_buttons` entry, as validated by `structs.ts`. */
+/** HA action config (`action` plus action-specific keys). */
+export interface MenuButtonAction {
+  action: string;
+  [key: string]: unknown;
+}
+
 export interface MenuButtonConfig {
-  entity: string;
+  /** Optional for shortcut buttons that only have a `tap_action` (#302). */
+  entity?: string | undefined;
   icon: string;
   icon_on?: string | undefined;
   color_on?: string | undefined;
@@ -24,6 +31,7 @@ export interface MenuButtonConfig {
   service?: string | undefined;
   state_on?: string | undefined;
   placement?: MenuButtonPlacement | undefined;
+  tap_action?: MenuButtonAction | undefined;
 }
 
 /** A service call ready for `hass.callService`. */
@@ -35,7 +43,10 @@ export interface MenuButtonCall {
 
 /** What tapping a button does. */
 export type MenuButtonTap =
-  { kind: "call"; call: MenuButtonCall } | { kind: "select"; options: string[]; current: string };
+  | { kind: "call"; call: MenuButtonCall }
+  | { kind: "select"; options: string[]; current: string }
+  | { kind: "action"; action: MenuButtonAction }
+  | { kind: "none" };
 
 /** States that count as "on" when the button has no `state_on`. */
 const ON_STATES = new Set([
@@ -90,10 +101,14 @@ export function isMenuButtonOn(
  * trigger, scripts run, and everything else toggles.
  */
 export function menuButtonTap(
-  btn: Pick<MenuButtonConfig, "entity" | "service">,
+  btn: Pick<MenuButtonConfig, "entity" | "service" | "tap_action">,
   state: HassEntity | null | undefined
 ): MenuButtonTap {
+  // A tap action wins over the entity's own behaviour (#302).
+  const ta = btn.tap_action;
+  if (ta && typeof ta.action === "string" && ta.action) return { kind: "action", action: ta };
   const entity_id = btn.entity;
+  if (!entity_id) return { kind: "none" };
   const svc = String(btn.service ?? "").trim();
   if (svc.includes(".")) {
     const [domain, service] = svc.split(".");
@@ -135,6 +150,7 @@ export function menuButtonLabel(
   hass?: EntityNameSource | null
 ): string {
   if (btn.title) return btn.title;
+  if (!btn.entity) return "";
   const states = state ? { [btn.entity]: state } : undefined;
   return (
     entityDisplayName({ states, formatEntityName: hass?.formatEntityName }, btn.entity) ||
