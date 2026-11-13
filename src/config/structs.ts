@@ -400,6 +400,15 @@ const ptzCamera = type({
 });
 
 /** Menu button entry — same strictness rationale as `liveStreamUrlEntry`. */
+/** Live pill override: like galleryPillEntry, plus which row it sits in (#286). */
+const livePillEntry = object({
+  enabled: defaulted(boolean(), true),
+  // Optional, not defaulted: a missing order means "catalog default", and a
+  // defaulted 0 would sort an entry that only sets `row` to the front.
+  order: optional(integer()),
+  row: optional(enums([1, 2])),
+});
+
 const menuButton = object({
   entity: nonEmptyString,
   icon: nonEmptyString,
@@ -412,6 +421,10 @@ const menuButton = object({
   // `controls` renders the button directly among the live control pills
   // instead of inside the hamburger menu (#215). Absent = menu.
   placement: optional(enums(MENU_BUTTON_PLACEMENTS)),
+  // Position among the live controls and which row (#286). Only used with
+  // `placement: controls`. See data/live-controls-layout.ts.
+  order: optional(integer()),
+  row: optional(enums([1, 2])),
 });
 
 /**
@@ -496,7 +509,7 @@ export const cameraGalleryCardConfigStruct = type({
   // Layout is fixed: camera-name stays left, action pills stay right —
   // no alignment knob (intentionally). Drop the key entirely if the user
   // hasn't touched any pill.
-  live_pills: defaulted(record(string(), galleryPillEntry), {}),
+  live_pills: defaulted(record(string(), livePillEntry), {}),
 
   // ─── Playback ──────────────────────────────────────────────
   autoplay: defaulted(boolean(), DEFAULT_AUTOPLAY),
