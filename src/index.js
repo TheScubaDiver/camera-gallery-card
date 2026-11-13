@@ -10759,7 +10759,7 @@ class CameraGalleryCardEditor extends HTMLElement {
                   <div class="pill-dnd-line">
                     <span class="pill-drag-grip" title="Drag to move" aria-label="Drag to move">⠿</span>
                     <span class="pill-dnd-icon" aria-hidden="true"><ha-icon icon="${esc(btn.icon)}" style="--mdc-icon-size:18px;width:18px;height:18px;display:inline-flex;"></ha-icon></span>
-                    <div class="lbl pill-dnd-label">${esc(label)}<span class="ctl-tag">menu button</span></div>
+                    <div class="lbl pill-dnd-label">${esc(label)}</div>
                   </div>
                 </div>`;
             };
@@ -11983,7 +11983,6 @@ class CameraGalleryCardEditor extends HTMLElement {
         .ctl-zone-head { display: flex; justify-content: space-between; gap: 8px; font-size: 11px; color: var(--ed-text2); padding: 0 2px; }
         .ctl-zone-head span:first-child { font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; }
         .ctl-zone-empty { font-size: 12px; color: var(--ed-text2); text-align: center; padding: 8px 0; }
-        .ctl-tag { font-size: 10px; font-weight: 600; margin-left: 6px; padding: 0 6px; border-radius: 999px; border: 1px solid currentColor; opacity: 0.7; }
         .pill-dnd-row { cursor: default; transition: opacity 0.15s, box-shadow 0.15s; }
         .pill-dnd-row.pill-dnd-dragging { opacity: 0.4; }
         .pill-dnd-row.pill-dnd-over { box-shadow: 0 -2px 0 0 var(--primary-color, #03a9f4); }
