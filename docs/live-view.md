@@ -131,7 +131,7 @@ live_cameras:
 
 ## Live menu buttons
 
-`menu_buttons` adds action buttons to the live view. You can add them in the editor (Live tab → Menu buttons) or in YAML.
+`menu_buttons` adds action buttons to the live view. You can add them in the editor (Live tab → Menu buttons) or in YAML. In the editor you pick the entity with Home Assistant's own entity picker, and the icon is filled in from that entity when the icon field is still empty. You can change it afterwards.
 
 ```yaml
 menu_buttons:
