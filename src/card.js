@@ -6491,22 +6491,7 @@ class CameraGalleryCard extends LitElement {
     // The live overlay pills sit inside `#live-card-host` and stay either way.
     const showGalleryControls = !liveOnlyView && (!this.config?.clean_mode || (!this._previewOpen && !isLive));
 
-    const rootVars = `
-      --cgc-card-radius:10px;
-      --cgc-bar-opacity:${this.config.bar_opacity};
-      --cgc-talkback-opacity:${this.config.talkback_opacity ?? this.config.bar_opacity};
-      --cgc-chevron-opacity:${this.config.chevron_opacity ?? this.config.bar_opacity};
-      --cgc-thumb-row-h:${this.config.thumb_size}px;
-      --cgc-thumb-empty-h:${this.config.thumb_size}px;
-      --cgc-thumb-off-opacity:${this.config.thumb_off_opacity};
-      --cgc-topbar-margin:${STYLE.topbar_margin};
-      --cgc-topbar-padding:${STYLE.topbar_padding};
-      --cgc-thumbs-max-h:${(this.config.card_height ?? 0) > 0 ? this.config.card_height + "px" : "320px"};
-      --cgc-object-fit:${this.config.object_fit || "cover"};
-      --cgc-pill-size:${this.config.pill_size}px;
-      --cgc-row-gap:${this.config.row_gap}px;
-      ${this.config.style_variables || ""}
-    `;
+    const rootVars = this._renderRootVars();
 
     const fixedMode = this.config.controls_mode === "fixed";
 
@@ -6538,7 +6523,178 @@ class CameraGalleryCard extends LitElement {
     // wrapper here would nest two `.gallery-pills` elements and the
     // inner would inherit opacity:0 (no `.visible` class), hiding the
     // pills completely.
-    const galleryPillsRow = html`
+    const galleryPillsRow = this._renderGalleryPillsRow({ previewGated, galleryPillIds, galleryPillCtx });
+    const livePillsLeft = this._renderLivePillsLeft({ previewGated });
+    // Rows 1 and 2 and the hamburger menu (#286): built-in pills and
+    // `placement: controls` menu buttons sorted together per row.
+    const allMenuButtons = Array.isArray(this.config.menu_buttons) ? this.config.menu_buttons : [];
+    const controlZones = liveControlZones(this.config?.live_pills, allMenuButtons);
+    const panelMenuButtons = controlZones.menu.map((i) => allMenuButtons[i.index]).filter(Boolean);
+    const renderControl = (item) =>
+      item.kind === "pill"
+        ? item.enabled ? this._renderLivePillById(item.id) : null
+        : this._renderControlMenuButton(allMenuButtons[item.index]);
+    const liveRow2Controls = controlZones.row2.map(renderControl).filter((tpl) => tpl != null);
+    const livePillsRight = this._renderLivePillsRight({ controlZones, renderControl, panelMenuButtons });
+    const selectBtn = this._menuSelectEntity
+      ? (this.config.menu_buttons ?? []).find((b) => b.entity === this._menuSelectEntity)
+      : null;
+    const selectTap = selectBtn ? menuButtonTap(selectBtn, this._hass?.states?.[selectBtn.entity]) : null;
+    const hamburgerPanel = this._renderHamburgerPanel({ selectTap, panelMenuButtons, selectBtn });
+
+    const previewBlock = this._renderPreviewBlock({
+      showPreviewSection,
+      isLive,
+      noResultsForFilter,
+      selectedHasUrl,
+      selectedIsVideo,
+      selectedUrl,
+      filtered,
+      idx,
+      fixedMode,
+      tsPosClass,
+      galleryPillsRow,
+      livePillsLeft,
+      livePillsRight,
+      liveRow2Controls,
+      hamburgerPanel,
+      galleryPillSettings,
+    });
+
+    const showLiveRow2Fixed = isLive && !isGridLayout(this.config, this._liveLayoutOverride) && liveRow2Controls.length;
+    const controlsFixedBlock = this._renderControlsFixedBlock({
+      fixedMode,
+      showPreviewSection,
+      isLive,
+      livePillsLeft,
+      livePillsRight,
+      tsPosClass,
+      galleryPillsRow,
+      showLiveRow2Fixed,
+      liveRow2Controls,
+    });
+
+    // Talkback in its own row below/above the preview (#257). Only when there
+    // is a talk source for the active camera, so no empty row takes a gap.
+    const micPos = talkbackPosition(this.config?.live_mic_position);
+    const talkCam = isLive && !isGridLayout(this.config, this._liveLayoutOverride) ? this._getEffectiveLiveCamera() : "";
+    const talkbackRow = showPreviewSection && isTalkbackRow(micPos) && talkCam && this._talkSourceFor(talkCam)
+      ? html`<div class="talkback-row" style="display:flex;justify-content:${talkbackRowJustify(this.config?.live_mic_shape === "button" ? "button" : "bar", this.config?.live_mic_button_position)};">${this._renderMicTalkbackBar(true)}</div>`
+      : html``;
+    const talkbackAbove = micPos === "above" ? talkbackRow : html``;
+    const talkbackBelow = micPos === "below" ? talkbackRow : html``;
+
+    const objectFiltersBlock = this._renderObjectFiltersBlock({ visibleObjectFilters });
+
+    const thumbsBlock = this._renderThumbsBlock({
+      noResultsForFilter,
+      canDelete,
+      isVerticalThumbs,
+      thumbs,
+      galleryLoading,
+      idx,
+      isLive,
+      usingMediaSource,
+      thumbRatio,
+    });
+
+    const toolbarBlock = this._renderToolbar({
+      showGalleryControls,
+      useDatePicker,
+      currentForNav,
+      canPrev,
+      canNext,
+      days,
+      isToday,
+      showTypeFilter,
+      isLive,
+      showLiveToggle,
+      newestDay,
+    });
+    const imgFsBlock = this._renderImageFullscreen({ selectedUrl, selectedIsVideo, filtered, idx });
+    return html`
+      <div class="root" style="${rootVars}">
+        <div class="panel" style="width:${PREVIEW_WIDTH}; margin:0 auto;">
+          ${!previewAtBottom && showPreviewSection
+            ? html`${talkbackAbove}${previewBlock}${controlsFixedBlock}${talkbackBelow}${showGalleryControls && !fixedMode ? html`<div class="divider"></div>` : html``}`
+            : html``}
+
+          ${toolbarBlock}
+          ${showGalleryControls ? html`
+            ${visibleObjectFilters.length
+              ? html`
+                  <div class="divider"></div>
+                  ${objectFiltersBlock}
+                `
+              : html``}
+
+            ${thumbsBlock}
+          ` : html``}
+
+          ${previewAtBottom && showPreviewSection
+            ? html`${showGalleryControls && !fixedMode ? html`<div class="divider"></div>` : html``}${talkbackAbove}${previewBlock}${controlsFixedBlock}${talkbackBelow}`
+            : html``}
+        </div>
+
+        ${this._showBulkHint && this._selectMode
+          ? html`
+              <div class="bulk-floating-hint">
+                Select thumbnails to delete
+              </div>
+            `
+          : html``}
+
+        ${this._errorToast
+          ? html`
+              <div
+                class="cgc-error-toast"
+                @click=${() => this._dismissErrorToast()}
+                role="alert"
+              >
+                <ha-icon icon="mdi:alert-circle-outline"></ha-icon>
+                <div class="cgc-error-toast-text">
+                  <div class="cgc-error-toast-title">${this._errorToast.title}</div>
+                  <div class="cgc-error-toast-msg">${this._errorToast.message}</div>
+                </div>
+              </div>
+            `
+          : html``}
+
+        ${this._renderDatePicker()}
+
+        ${this._renderThumbActionSheet()}
+
+        ${this._renderDebugModal()}
+
+        ${imgFsBlock}
+
+      </div>
+    `;
+  }
+
+  /** CSS variables on the card root. Part of render(). */
+  _renderRootVars() {
+    return `
+      --cgc-card-radius:10px;
+      --cgc-bar-opacity:${this.config.bar_opacity};
+      --cgc-talkback-opacity:${this.config.talkback_opacity ?? this.config.bar_opacity};
+      --cgc-chevron-opacity:${this.config.chevron_opacity ?? this.config.bar_opacity};
+      --cgc-thumb-row-h:${this.config.thumb_size}px;
+      --cgc-thumb-empty-h:${this.config.thumb_size}px;
+      --cgc-thumb-off-opacity:${this.config.thumb_off_opacity};
+      --cgc-topbar-margin:${STYLE.topbar_margin};
+      --cgc-topbar-padding:${STYLE.topbar_padding};
+      --cgc-thumbs-max-h:${(this.config.card_height ?? 0) > 0 ? this.config.card_height + "px" : "320px"};
+      --cgc-object-fit:${this.config.object_fit || "cover"};
+      --cgc-pill-size:${this.config.pill_size}px;
+      --cgc-row-gap:${this.config.row_gap}px;
+      ${this.config.style_variables || ""}
+    `;
+  }
+
+  /** The gallery overlay pills (back/close first). Part of render(). */
+  _renderGalleryPillsRow({ previewGated, galleryPillIds, galleryPillCtx }) {
+    return html`
       ${previewGated
         ? html`
             <button
@@ -6559,7 +6715,11 @@ class CameraGalleryCard extends LitElement {
         .map((id) => this._renderGalleryPillById(id, galleryPillCtx))
         .filter((tpl) => tpl != null)}
     `;
-    const livePillsLeft = html`
+  }
+
+  /** Live controls on the left of row 1. Part of render(). */
+  _renderLivePillsLeft({ previewGated }) {
+    return html`
       <div class="live-pills-left">
         ${previewGated ? html`
           <button class="gallery-pill live-pill-btn" @pointerdown=${(e) => e.stopPropagation()} @click=${(e) => { e.stopPropagation(); this._setViewMode("media"); this._previewOpen = false; this.requestUpdate(); }}>
@@ -6569,17 +6729,11 @@ class CameraGalleryCard extends LitElement {
         ${this.config.show_camera_title !== false && this.config.controls_mode !== "fixed" ? html`<div class="gallery-pill gallery-pill--wide gallery-pill--info"><span>${this._friendlyCameraName(this._getEffectiveLiveCamera())}</span></div>` : html``}
       </div>
     `;
-    // Rows 1 and 2 and the hamburger menu (#286): built-in pills and
-    // `placement: controls` menu buttons sorted together per row.
-    const allMenuButtons = Array.isArray(this.config.menu_buttons) ? this.config.menu_buttons : [];
-    const controlZones = liveControlZones(this.config?.live_pills, allMenuButtons);
-    const panelMenuButtons = controlZones.menu.map((i) => allMenuButtons[i.index]).filter(Boolean);
-    const renderControl = (item) =>
-      item.kind === "pill"
-        ? item.enabled ? this._renderLivePillById(item.id) : null
-        : this._renderControlMenuButton(allMenuButtons[item.index]);
-    const liveRow2Controls = controlZones.row2.map(renderControl).filter((tpl) => tpl != null);
-    const livePillsRight = html`
+  }
+
+  /** Live controls on the right of row 1, plus the hamburger. Part of render(). */
+  _renderLivePillsRight({ controlZones, renderControl, panelMenuButtons }) {
+    return html`
       <div class="live-pills-right">
         ${this.config?.live_layout === "grid" && this._liveLayoutOverride === "single" ? html`
           <button class="gallery-pill live-pill-btn" title="Back to grid" @pointerdown=${(e) => e.stopPropagation()} @click=${(e) => { e.stopPropagation(); this._returnToGrid(); }}>
@@ -6612,11 +6766,11 @@ class CameraGalleryCard extends LitElement {
         ` : html``}
       </div>
     `;
-    const selectBtn = this._menuSelectEntity
-      ? (this.config.menu_buttons ?? []).find((b) => b.entity === this._menuSelectEntity)
-      : null;
-    const selectTap = selectBtn ? menuButtonTap(selectBtn, this._hass?.states?.[selectBtn.entity]) : null;
-    const hamburgerPanel = this._hamburgerOpen && (selectTap?.kind === "select" || panelMenuButtons.length) ? html`
+  }
+
+  /** The hamburger menu panel. Part of render(). */
+  _renderHamburgerPanel({ selectTap, panelMenuButtons, selectBtn }) {
+    return this._hamburgerOpen && (selectTap?.kind === "select" || panelMenuButtons.length) ? html`
       <div class="live-menu-backdrop" @pointerdown=${(e) => e.stopPropagation()} @click=${() => this._closeLiveMenu()}></div>
       <div class="live-menu-panel" @pointerdown=${(e) => e.stopPropagation()}>
         ${selectTap?.kind === "select"
@@ -6649,8 +6803,28 @@ class CameraGalleryCard extends LitElement {
             })}
       </div>
     ` : html``;
+  }
 
-    const previewBlock = showPreviewSection
+  /** The preview pane. Part of render(). */
+  _renderPreviewBlock({
+    showPreviewSection,
+    isLive,
+    noResultsForFilter,
+    selectedHasUrl,
+    selectedIsVideo,
+    selectedUrl,
+    filtered,
+    idx,
+    fixedMode,
+    tsPosClass,
+    galleryPillsRow,
+    livePillsLeft,
+    livePillsRight,
+    liveRow2Controls,
+    hamburgerPanel,
+    galleryPillSettings,
+  }) {
+    return showPreviewSection
       ? html`
           <div
             class="preview${isLive && this._getLiveRotationStyle() ? " cgc-rot-pane" : ""}"
@@ -6776,9 +6950,21 @@ class CameraGalleryCard extends LitElement {
           </div>
         `
       : html``;
+  }
 
-    const showLiveRow2Fixed = isLive && !isGridLayout(this.config, this._liveLayoutOverride) && liveRow2Controls.length;
-    const controlsFixedBlock = fixedMode && showPreviewSection ? html`
+  /** The controls bar when controls_mode is fixed. Part of render(). */
+  _renderControlsFixedBlock({
+    fixedMode,
+    showPreviewSection,
+    isLive,
+    livePillsLeft,
+    livePillsRight,
+    tsPosClass,
+    galleryPillsRow,
+    showLiveRow2Fixed,
+    liveRow2Controls,
+  }) {
+    return fixedMode && showPreviewSection ? html`
       <div class="controls-bar-fixed">
         ${isLive && !isGridLayout(this.config, this._liveLayoutOverride) ? html`
           <div class="live-controls-main live-controls-main--fixed">
@@ -6796,18 +6982,11 @@ class CameraGalleryCard extends LitElement {
         </div>
       ` : html``}
     ` : html``;
+  }
 
-    // Talkback in its own row below/above the preview (#257). Only when there
-    // is a talk source for the active camera, so no empty row takes a gap.
-    const micPos = talkbackPosition(this.config?.live_mic_position);
-    const talkCam = isLive && !isGridLayout(this.config, this._liveLayoutOverride) ? this._getEffectiveLiveCamera() : "";
-    const talkbackRow = showPreviewSection && isTalkbackRow(micPos) && talkCam && this._talkSourceFor(talkCam)
-      ? html`<div class="talkback-row" style="display:flex;justify-content:${talkbackRowJustify(this.config?.live_mic_shape === "button" ? "button" : "bar", this.config?.live_mic_button_position)};">${this._renderMicTalkbackBar(true)}</div>`
-      : html``;
-    const talkbackAbove = micPos === "above" ? talkbackRow : html``;
-    const talkbackBelow = micPos === "below" ? talkbackRow : html``;
-
-    const objectFiltersBlock = visibleObjectFilters.length
+  /** The object filter chips. Part of render(). */
+  _renderObjectFiltersBlock({ visibleObjectFilters }) {
+    return visibleObjectFilters.length
       ? html`
           <div class="objfilters" role="group" aria-label="Object filters">
             ${visibleObjectFilters.map((filterValue) => {
@@ -6832,8 +7011,21 @@ class CameraGalleryCard extends LitElement {
           </div>
         `
       : html``;
+  }
 
-    const thumbsBlock = html`
+  /** The thumbnail strip. Part of render(). */
+  _renderThumbsBlock({
+    noResultsForFilter,
+    canDelete,
+    isVerticalThumbs,
+    thumbs,
+    galleryLoading,
+    idx,
+    isLive,
+    usingMediaSource,
+    thumbRatio,
+  }) {
+    return html`
       <div class="timeline ${noResultsForFilter ? "timeline-empty" : ""}">
         ${this._selectMode && (this._selectedSet?.size ?? 0)
           ? html`
@@ -7139,210 +7331,172 @@ class CameraGalleryCard extends LitElement {
         </div>
       </div>
     `;
+  }
 
-    return html`
-      <div class="root" style="${rootVars}">
-        <div class="panel" style="width:${PREVIEW_WIDTH}; margin:0 auto;">
-          ${!previewAtBottom && showPreviewSection
-            ? html`${talkbackAbove}${previewBlock}${controlsFixedBlock}${talkbackBelow}${showGalleryControls && !fixedMode ? html`<div class="divider"></div>` : html``}`
-            : html``}
-
-          ${showGalleryControls ? (() => {
-            // Order from `toolbar_order` config; default to catalog order.
-            // Enabled state stays in the existing `show_*` keys.
-            const orderMap = (this.config?.toolbar_order && typeof this.config.toolbar_order === "object")
-              ? this.config.toolbar_order : {};
-            const toolbarIds = [...TOOLBAR_CATALOG]
-              .map((e) => ({ id: e.id, order: typeof orderMap[e.id] === "number" ? orderMap[e.id] : e.defaultOrder }))
-              .sort((a, b) => a.order - b.order || TOOLBAR_CATALOG.findIndex(c => c.id === a.id) - TOOLBAR_CATALOG.findIndex(c => c.id === b.id))
-              .map((x) => x.id);
-            const datepillBlock = useDatePicker ? html`
-              <div class="datepill has-filters" role="group" aria-label="Day navigation">
-                <div class="dateinfo datepick" @click=${() => this._openDatePicker(days)} title="Select date">
-                  <span class="txt">${currentForNav ? formatDay(currentForNav, this._hass?.locale) : "—"}</span>
-                </div>
-              </div>
-            ` : html`
-              <div class="datepill" role="group" aria-label="Day navigation">
-                <button class="iconbtn" ?disabled=${!canPrev} @click=${() => this._stepDay(+1, days, currentForNav)} aria-label="Previous day" title="Previous day">
-                  <ha-icon icon="mdi:chevron-left"></ha-icon>
-                </button>
-                <div class="dateinfo" title="Selected day">
-                  <span class="txt">${currentForNav ? formatDay(currentForNav, this._hass?.locale) : "—"}</span>
-                </div>
-                <button class="iconbtn" ?disabled=${!canNext} @click=${() => this._stepDay(-1, days, currentForNav)} aria-label="Next day" title="Next day">
-                  <ha-icon icon="mdi:chevron-right"></ha-icon>
-                </button>
-              </div>
-            `;
-            const renderToolbarBtn = (id) => {
-              switch (id) {
-                case "today":
-                  if (this.config?.show_today === false) return null;
-                  return html`
-                    <div class="seg" role="tablist" aria-label="Filter">
-                      <button
-                        class="segbtn ${isToday ? "on" : ""}"
-                        @click=${() => {
-                          this._selectedDay = newestDay;
-                          this._selectedIndex = 0;
-                          this._pendingScrollToI = null;
-                          this._forceThumbReset = true;
-                          this._exitSelectMode();
-                          if (this.config?.clean_mode) this._previewOpen = false;
-                          if (this._isLiveActive()) this._setViewMode("media");
-                          this.requestUpdate();
-                        }}
-                        title="Today"
-                        role="tab"
-                        aria-selected=${isToday}
-                      >
-                        <span>Today</span>
-                      </button>
-                    </div>
-                  `;
-                case "media_filter":
-                  if (!(showTypeFilter && this.config?.show_media_filter !== false)) return null;
-                  return html`
-                    <div class="seg" style="${isLive ? "opacity:0.35;pointer-events:none" : ""}">
-                      <button class="segbtn ${this._filterVideo ? "on" : ""}" @click=${() => this._toggleFilterVideo()} title="Videos" style="border-radius:10px 0 0 10px">
-                        <ha-icon icon="mdi:video" style="--mdc-icon-size:16px"></ha-icon>
-                      </button>
-                      <button class="segbtn ${this._filterImage ? "on" : ""}" @click=${() => this._toggleFilterImage()} title="Photos" style="border-radius:0 10px 10px 0">
-                        <ha-icon icon="mdi:image" style="--mdc-icon-size:16px"></ha-icon>
-                      </button>
-                    </div>
-                  `;
-                case "favorite":
-                  if (this.config?.show_favorite === false) return null;
-                  return html`
-                    <div class="seg">
-                      <button class="segbtn ${this._filterFavorites ? "on" : ""}" @click=${() => this._toggleFilterFavorites()} title="Favorites" style="border-radius:10px">
-                        <ha-icon icon="mdi:star" style="--mdc-icon-size:16px"></ha-icon>
-                      </button>
-                    </div>
-                  `;
-                case "live":
-                  if (!(showLiveToggle && this.config?.show_live !== false)) return null;
-                  return html`
-                    <div class="seg">
-                      <button
-                        class="segbtn livebtn ${isLive ? "on" : ""}"
-                        title="${isLive ? "Close live" : "Open live"}"
-                        @click=${(e) => {
-                          e.preventDefault();
-                          e.stopPropagation();
-                          this._toggleLiveMode();
-                        }}
-                      >
-                        <span>LIVE</span>
-                      </button>
-                    </div>
-                  `;
-                default:
-                  return null;
-              }
-            };
-            // Datepill anchored after the first enabled toolbar button if
-            // any, otherwise renders first. Preserves the original layout
-            // (Today + Datepill at the left) when defaults are in play.
-            const rendered = toolbarIds.map((id) => ({ id, tpl: renderToolbarBtn(id) })).filter((x) => x.tpl != null);
-            const firstIdx = rendered.length > 0 ? 0 : -1;
-            return html`
-              <div class="topbar">
-                ${firstIdx >= 0 ? rendered[firstIdx].tpl : html``}
-                ${datepillBlock}
-                ${rendered.slice(firstIdx + 1).map((x) => x.tpl)}
-              </div>
-            `;
-          })() : html``}
-          ${showGalleryControls ? html`
-            ${visibleObjectFilters.length
-              ? html`
-                  <div class="divider"></div>
-                  ${objectFiltersBlock}
-                `
-              : html``}
-
-            ${thumbsBlock}
-          ` : html``}
-
-          ${previewAtBottom && showPreviewSection
-            ? html`${showGalleryControls && !fixedMode ? html`<div class="divider"></div>` : html``}${talkbackAbove}${previewBlock}${controlsFixedBlock}${talkbackBelow}`
-            : html``}
+  /** The top toolbar with the day navigation. Part of render(). */
+  _renderToolbar({
+    showGalleryControls,
+    useDatePicker,
+    currentForNav,
+    canPrev,
+    canNext,
+    days,
+    isToday,
+    showTypeFilter,
+    isLive,
+    showLiveToggle,
+    newestDay,
+  }) {
+    if (!showGalleryControls) return html``;
+    // Order from `toolbar_order` config; default to catalog order.
+    // Enabled state stays in the existing `show_*` keys.
+    const orderMap = (this.config?.toolbar_order && typeof this.config.toolbar_order === "object")
+      ? this.config.toolbar_order : {};
+    const toolbarIds = [...TOOLBAR_CATALOG]
+      .map((e) => ({ id: e.id, order: typeof orderMap[e.id] === "number" ? orderMap[e.id] : e.defaultOrder }))
+      .sort((a, b) => a.order - b.order || TOOLBAR_CATALOG.findIndex(c => c.id === a.id) - TOOLBAR_CATALOG.findIndex(c => c.id === b.id))
+      .map((x) => x.id);
+    const datepillBlock = useDatePicker ? html`
+      <div class="datepill has-filters" role="group" aria-label="Day navigation">
+        <div class="dateinfo datepick" @click=${() => this._openDatePicker(days)} title="Select date">
+          <span class="txt">${currentForNav ? formatDay(currentForNav, this._hass?.locale) : "—"}</span>
         </div>
-
-        ${this._showBulkHint && this._selectMode
-          ? html`
-              <div class="bulk-floating-hint">
-                Select thumbnails to delete
-              </div>
-            `
-          : html``}
-
-        ${this._errorToast
-          ? html`
-              <div
-                class="cgc-error-toast"
-                @click=${() => this._dismissErrorToast()}
-                role="alert"
+      </div>
+    ` : html`
+      <div class="datepill" role="group" aria-label="Day navigation">
+        <button class="iconbtn" ?disabled=${!canPrev} @click=${() => this._stepDay(+1, days, currentForNav)} aria-label="Previous day" title="Previous day">
+          <ha-icon icon="mdi:chevron-left"></ha-icon>
+        </button>
+        <div class="dateinfo" title="Selected day">
+          <span class="txt">${currentForNav ? formatDay(currentForNav, this._hass?.locale) : "—"}</span>
+        </div>
+        <button class="iconbtn" ?disabled=${!canNext} @click=${() => this._stepDay(-1, days, currentForNav)} aria-label="Next day" title="Next day">
+          <ha-icon icon="mdi:chevron-right"></ha-icon>
+        </button>
+      </div>
+    `;
+    const renderToolbarBtn = (id) => {
+      switch (id) {
+        case "today":
+          if (this.config?.show_today === false) return null;
+          return html`
+            <div class="seg" role="tablist" aria-label="Filter">
+              <button
+                class="segbtn ${isToday ? "on" : ""}"
+                @click=${() => {
+                  this._selectedDay = newestDay;
+                  this._selectedIndex = 0;
+                  this._pendingScrollToI = null;
+                  this._forceThumbReset = true;
+                  this._exitSelectMode();
+                  if (this.config?.clean_mode) this._previewOpen = false;
+                  if (this._isLiveActive()) this._setViewMode("media");
+                  this.requestUpdate();
+                }}
+                title="Today"
+                role="tab"
+                aria-selected=${isToday}
               >
-                <ha-icon icon="mdi:alert-circle-outline"></ha-icon>
-                <div class="cgc-error-toast-text">
-                  <div class="cgc-error-toast-title">${this._errorToast.title}</div>
-                  <div class="cgc-error-toast-msg">${this._errorToast.message}</div>
-                </div>
-              </div>
-            `
-          : html``}
+                <span>Today</span>
+              </button>
+            </div>
+          `;
+        case "media_filter":
+          if (!(showTypeFilter && this.config?.show_media_filter !== false)) return null;
+          return html`
+            <div class="seg" style="${isLive ? "opacity:0.35;pointer-events:none" : ""}">
+              <button class="segbtn ${this._filterVideo ? "on" : ""}" @click=${() => this._toggleFilterVideo()} title="Videos" style="border-radius:10px 0 0 10px">
+                <ha-icon icon="mdi:video" style="--mdc-icon-size:16px"></ha-icon>
+              </button>
+              <button class="segbtn ${this._filterImage ? "on" : ""}" @click=${() => this._toggleFilterImage()} title="Photos" style="border-radius:0 10px 10px 0">
+                <ha-icon icon="mdi:image" style="--mdc-icon-size:16px"></ha-icon>
+              </button>
+            </div>
+          `;
+        case "favorite":
+          if (this.config?.show_favorite === false) return null;
+          return html`
+            <div class="seg">
+              <button class="segbtn ${this._filterFavorites ? "on" : ""}" @click=${() => this._toggleFilterFavorites()} title="Favorites" style="border-radius:10px">
+                <ha-icon icon="mdi:star" style="--mdc-icon-size:16px"></ha-icon>
+              </button>
+            </div>
+          `;
+        case "live":
+          if (!(showLiveToggle && this.config?.show_live !== false)) return null;
+          return html`
+            <div class="seg">
+              <button
+                class="segbtn livebtn ${isLive ? "on" : ""}"
+                title="${isLive ? "Close live" : "Open live"}"
+                @click=${(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  this._toggleLiveMode();
+                }}
+              >
+                <span>LIVE</span>
+              </button>
+            </div>
+          `;
+        default:
+          return null;
+      }
+    };
+    // Datepill anchored after the first enabled toolbar button if
+    // any, otherwise renders first. Preserves the original layout
+    // (Today + Datepill at the left) when defaults are in play.
+    const rendered = toolbarIds.map((id) => ({ id, tpl: renderToolbarBtn(id) })).filter((x) => x.tpl != null);
+    const firstIdx = rendered.length > 0 ? 0 : -1;
+    return html`
+      <div class="topbar">
+        ${firstIdx >= 0 ? rendered[firstIdx].tpl : html``}
+        ${datepillBlock}
+        ${rendered.slice(firstIdx + 1).map((x) => x.tpl)}
+      </div>
+    `;
+  }
 
-        ${this._renderDatePicker()}
-
-        ${this._renderThumbActionSheet()}
-
-        ${this._renderDebugModal()}
-
-        ${this._imgFsOpen && selectedUrl ? html`
-          <div class="img-fs-overlay" @click=${() => {
-            if (this._zoomScale > 1) {
-              this._resetZoom();
-            } else {
-              this._closeImageFullscreen();
-            }
-          }}>
-            ${selectedIsVideo
-              ? html`<video src=${selectedUrl} controls playsinline
-                  ?autoplay=${this._imgFsHandoff ? this._imgFsHandoff.playing : true}
-                  ?muted=${this._galleryMuted}
-                  @loadedmetadata=${(e) => this._applyImgFsHandoff(e.currentTarget)}
-                  @click=${(e) => e.stopPropagation()}></video>`
-              : html`<img src=${selectedUrl} alt=""
-                  @click=${(e) => e.stopPropagation()}
-                  @dblclick=${(e) => {
-                    if (this.config?.fullscreen_zoom !== false) {
-                      e.stopPropagation();
-                      this._toggleFullscreenZoom(e.clientX, e.clientY);
-                    }
-                  }}
-                />`}
-            ${filtered.length > 1 ? html`
-              <div class="pnav img-fs-nav">
-                <button class="pnavbtn left" ?disabled=${idx <= 0} @pointerdown=${(e) => e.stopPropagation()} @click=${(e) => { e.stopPropagation(); this._navImgFs(-1, filtered.length); }}>
-                  <ha-icon icon="mdi:chevron-left"></ha-icon>
-                </button>
-                <button class="pnavbtn right" ?disabled=${idx >= filtered.length - 1} @pointerdown=${(e) => e.stopPropagation()} @click=${(e) => { e.stopPropagation(); this._navImgFs(1, filtered.length); }}>
-                  <ha-icon icon="mdi:chevron-right"></ha-icon>
-                </button>
-              </div>
-            ` : html``}
-            <button class="img-fs-close" @pointerdown=${(e) => e.stopPropagation()} @click=${(e) => { e.stopPropagation(); this._closeImageFullscreen(); }}>
-              <ha-icon icon="mdi:fullscreen-exit"></ha-icon>
+  /** The fullscreen image or video overlay. Part of render(). */
+  _renderImageFullscreen({ selectedUrl, selectedIsVideo, filtered, idx }) {
+    return this._imgFsOpen && selectedUrl ? html`
+      <div class="img-fs-overlay" @click=${() => {
+        if (this._zoomScale > 1) {
+          this._resetZoom();
+        } else {
+          this._closeImageFullscreen();
+        }
+      }}>
+        ${selectedIsVideo
+          ? html`<video src=${selectedUrl} controls playsinline
+              ?autoplay=${this._imgFsHandoff ? this._imgFsHandoff.playing : true}
+              ?muted=${this._galleryMuted}
+              @loadedmetadata=${(e) => this._applyImgFsHandoff(e.currentTarget)}
+              @click=${(e) => e.stopPropagation()}></video>`
+          : html`<img src=${selectedUrl} alt=""
+              @click=${(e) => e.stopPropagation()}
+              @dblclick=${(e) => {
+                if (this.config?.fullscreen_zoom !== false) {
+                  e.stopPropagation();
+                  this._toggleFullscreenZoom(e.clientX, e.clientY);
+                }
+              }}
+            />`}
+        ${filtered.length > 1 ? html`
+          <div class="pnav img-fs-nav">
+            <button class="pnavbtn left" ?disabled=${idx <= 0} @pointerdown=${(e) => e.stopPropagation()} @click=${(e) => { e.stopPropagation(); this._navImgFs(-1, filtered.length); }}>
+              <ha-icon icon="mdi:chevron-left"></ha-icon>
+            </button>
+            <button class="pnavbtn right" ?disabled=${idx >= filtered.length - 1} @pointerdown=${(e) => e.stopPropagation()} @click=${(e) => { e.stopPropagation(); this._navImgFs(1, filtered.length); }}>
+              <ha-icon icon="mdi:chevron-right"></ha-icon>
             </button>
           </div>
         ` : html``}
-
+        <button class="img-fs-close" @pointerdown=${(e) => e.stopPropagation()} @click=${(e) => { e.stopPropagation(); this._closeImageFullscreen(); }}>
+          <ha-icon icon="mdi:fullscreen-exit"></ha-icon>
+        </button>
       </div>
-    `;
+    ` : html``;
   }
 
   static get styles() {
