@@ -34,7 +34,6 @@ import { MENU_BUTTON_PLACEMENTS } from "../data/menu-buttons";
 import {
   ASPECT_RATIOS,
   TAP_ACTIONS,
-  AVAILABLE_OBJECT_FILTERS,
   BAR_OPACITY_MAX,
   BAR_OPACITY_MIN,
   BAR_POSITIONS,
@@ -626,7 +625,6 @@ export const cameraGalleryCardConfigStruct = type({
   //   - `customIcons: Record<string, string>` (returned alongside the config)
   object_filters: defaulted(array(string()), []),
   object_colors: defaulted(record(string(), string()), {}),
-  entity_filter_map: defaulted(record(string(), enums(AVAILABLE_OBJECT_FILTERS)), {}),
 
   // ─── Layout / styling ──────────────────────────────────────
   bar_opacity: defaulted(intInRange(BAR_OPACITY_MIN, BAR_OPACITY_MAX), DEFAULT_BAR_OPACITY),
@@ -665,7 +663,6 @@ export const cameraGalleryCardConfigStruct = type({
   // ─── Preview ───────────────────────────────────────────────
   preview_position: defaulted(enums(PREVIEW_POSITIONS), DEFAULT_PREVIEW_POSITION),
   clean_mode: defaulted(boolean(), false),
-  preview_close_on_tap: defaulted(boolean(), false),
   fullscreen_zoom: defaulted(boolean(), DEFAULT_FULLSCREEN_ZOOM),
 
   // ─── Misc ──────────────────────────────────────────────────

@@ -429,31 +429,6 @@ describe("object_filters loose input shape", () => {
   });
 });
 
-describe("entity_filter_map filtering", () => {
-  it("drops entries with unknown filter values", () => {
-    const { config } = normalizeConfig({
-      ...minimalSensor,
-      entity_filter_map: {
-        "sensor.a": "person",
-        "sensor.b": "ufo",
-        "sensor.c": "car",
-      },
-    });
-    expect(config.entity_filter_map).toEqual({
-      "sensor.a": "person",
-      "sensor.c": "car",
-    });
-  });
-
-  it("lowercases filter values", () => {
-    const { config } = normalizeConfig({
-      ...minimalSensor,
-      entity_filter_map: { "sensor.a": "PERSON" },
-    });
-    expect(config.entity_filter_map).toEqual({ "sensor.a": "person" });
-  });
-});
-
 describe("Audit fix #4 — numeric clamp ranges as struct refinements", () => {
   it("rejects out-of-range thumb_size", () => {
     expect(() => normalizeConfig({ ...minimalSensor, thumb_size: 30 })).toThrow(/invalid config/);
@@ -801,35 +776,6 @@ describe("url_id (issue #218)", () => {
 
     const at65 = "a".repeat(65);
     expect(() => normalizeConfig({ ...minimalSensor, url_id: at65 })).toThrow(/invalid config/);
-  });
-});
-
-describe("preview_close_on_tap inherits clean_mode by default", () => {
-  it("defaults to true when clean_mode is true and not explicitly set", () => {
-    const { config } = normalizeConfig({ ...minimalSensor, clean_mode: true });
-    expect(config.preview_close_on_tap).toBe(true);
-  });
-
-  it("defaults to false when clean_mode is false", () => {
-    const { config } = normalizeConfig({ ...minimalSensor });
-    expect(config.preview_close_on_tap).toBe(false);
-  });
-
-  it("explicit `preview_close_on_tap: false` wins even when clean_mode is true", () => {
-    const { config } = normalizeConfig({
-      ...minimalSensor,
-      clean_mode: true,
-      preview_close_on_tap: false,
-    });
-    expect(config.preview_close_on_tap).toBe(false);
-  });
-
-  it("explicit `preview_close_on_tap: true` wins when clean_mode is false", () => {
-    const { config } = normalizeConfig({
-      ...minimalSensor,
-      preview_close_on_tap: true,
-    });
-    expect(config.preview_close_on_tap).toBe(true);
   });
 });
 
