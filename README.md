@@ -56,6 +56,7 @@ Got the card installed? Here's the fastest way to see something on screen.
 
 - 🖼️ **[Timeline gallery](https://github.com/TheScubaDiver/camera-gallery-card/blob/main/docs/gallery.md)** — preview, day grouping, filters, favorites, swipe and long-press actions
 - 🎥 **[Live view](https://github.com/TheScubaDiver/camera-gallery-card/blob/main/docs/live-view.md)** — single camera or multi-camera grid, pinch-zoom, fullscreen, snapshot
+- 🗂️ **[Hybrid view](https://github.com/TheScubaDiver/camera-gallery-card/blob/main/docs/live-view.md#hybrid-view)** — live feed with a slide-in drawer of recent clips
 - ⚡ **[Camera triggers](https://github.com/TheScubaDiver/camera-gallery-card/blob/main/docs/live-view.md#camera-triggers)** — switch to a camera on motion, a person or the doorbell
 - 🔄 **[Rotation and crop](https://github.com/TheScubaDiver/camera-gallery-card/blob/main/docs/live-view.md#camera-rotation)** — per camera
 - 🎙️ **[Two-way audio](https://github.com/TheScubaDiver/camera-gallery-card/blob/main/docs/two-way-audio.md)** — talk through the camera's speaker

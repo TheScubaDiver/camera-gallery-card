@@ -418,6 +418,568 @@ export const cardStyles = css`
       transform: translate(-50%, 0);
     }
   }
+  /* ──────────────────────────────────────────────────────────────
+   * Hybrid mode — live view with side-drawer of recent clips.
+   * Hover on desktop / tap on touch reveals a vertical strip of
+   * filtered clips on either edge. Same filter as the gallery, so
+   * the drawer stays in sync with toolbar chips.
+   * ────────────────────────────────────────────────────────────── */
+  /* When the hybrid drawer is open, fade out every overlay so the
+   * drawer is the only interactive surface. Live video + drawer
+   * stay visible; pills, chevrons, talkback bar all disappear. */
+  .preview.hybrid-drawer-open .live-controls-bar,
+  .preview.hybrid-drawer-open .pnav,
+  .preview.hybrid-drawer-open .live-pills-left,
+  .preview.hybrid-drawer-open .live-pills-right,
+  .preview.hybrid-drawer-open .mic-talkback-bar,
+  .preview.hybrid-drawer-open .live-quick-switch,
+  .preview.hybrid-drawer-open .live-picker,
+  .preview.hybrid-drawer-open .live-picker-backdrop,
+  .preview.hybrid-drawer-open .live-hamburger-wrap,
+  .preview.hybrid-drawer-open .live-menu-backdrop,
+  .preview.hybrid-drawer-open .live-menu-panel,
+  .preview.hybrid-drawer-open .gallery-pills {
+    opacity: 0 !important;
+    pointer-events: none !important;
+    transition: opacity 0.18s ease;
+  }
+
+  /* Invisible click-blocker over the whole preview while the drawer is open:
+     catches taps so the live controls (snapshot pill, talkback, …) underneath
+     can't fire, and dismisses the drawer on tap. Sits above the live controls
+     (z auto) but below the edge toggle (z4) and the drawer (z5). */
+  .hybrid-scrim {
+    position: absolute;
+    inset: 0;
+    z-index: 12;
+    background: transparent;
+    cursor: pointer;
+  }
+
+  /* "LIVE" button in the drawer toolbar, shown while a clip plays in-place.
+   * Tapping returns to the live feed and closes the drawer. Red with a breathing
+   * dot — padding-left equals the gap so the dot sits centered between the left
+   * edge and the text. */
+  .hybrid-drawer-live {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    height: 28px;
+    padding: 0 11px 0 8px;
+    border: 0;
+    border-radius: 8px;
+    background: #e23a32;
+    color: #fff;
+    font-size: 11.5px;
+    font-weight: 800;
+    letter-spacing: 0.07em;
+    line-height: 1;
+    white-space: nowrap;
+    cursor: pointer;
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .hybrid-live-arrow {
+    flex: 0 0 auto;
+    --ha-icon-size: 14px;
+    --mdc-icon-size: 14px;
+    width: 14px;
+    height: 14px;
+    animation: hybrid-live-arrow-breathe 2s ease-in-out infinite;
+  }
+  @keyframes hybrid-live-arrow-breathe {
+    0%,
+    100% {
+      opacity: 1;
+      transform: translateX(0);
+    }
+    50% {
+      opacity: 0.45;
+      transform: translateX(-1.5px);
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .hybrid-live-arrow {
+      animation: none;
+    }
+  }
+
+  /* Hybrid drawer day filter: a dropdown listing all available days. */
+  .hybrid-day-filter {
+    flex: none;
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 7px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  }
+  .hybrid-date-row {
+    flex: none;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 10px 4px;
+    font-variant-numeric: tabular-nums;
+  }
+  .hybrid-date-num {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    color: rgba(255, 255, 255, 0.55);
+  }
+  .hybrid-layout-toggle {
+    flex: 0 0 auto;
+    margin-left: auto;
+    display: flex;
+    gap: 2px;
+    padding: 2px;
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.06);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+  }
+  .hyb-lt {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 26px;
+    height: 23px;
+    padding: 0;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: rgba(255, 255, 255, 0.7);
+    cursor: pointer;
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
+    transition:
+      background-color 0.15s,
+      color 0.15s;
+  }
+  .hyb-lt ha-icon {
+    --ha-icon-size: 15px;
+    --mdc-icon-size: 15px;
+    width: 15px;
+    height: 15px;
+  }
+  .hyb-lt:not(.on):hover {
+    color: #fff;
+  }
+  .hyb-lt.on {
+    background: rgba(245, 166, 35, 0.95);
+    color: #1a1305;
+  }
+  .hybrid-day-btn {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    border-radius: 8px;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    background: rgba(255, 255, 255, 0.06);
+    color: rgba(255, 255, 255, 0.85);
+    cursor: pointer;
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
+    transition:
+      background-color 0.15s,
+      color 0.15s;
+  }
+  .hybrid-day-btn ha-icon {
+    --ha-icon-size: 16px;
+    --mdc-icon-size: 16px;
+    width: 16px;
+    height: 16px;
+  }
+  .hybrid-day-btn:not(.on):hover {
+    color: #fff;
+  }
+  .hybrid-day-btn.on {
+    background: rgba(245, 166, 35, 0.95);
+    color: #1a1305;
+    border-color: transparent;
+  }
+  .hybrid-day-menu {
+    position: absolute;
+    top: calc(100% - 2px);
+    left: 8px;
+    right: 8px;
+    z-index: 6;
+    max-height: 240px;
+    overflow-y: auto;
+    padding: 4px;
+    display: flex;
+    flex-direction: column;
+    background: rgba(8, 10, 14, 0.97);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 10px;
+    box-shadow: 0 12px 30px rgba(0, 0, 0, 0.5);
+  }
+  .hybrid-day-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 8px 10px;
+    border: 0;
+    border-radius: 7px;
+    background: transparent;
+    color: #fff;
+    font-size: 13px;
+    font-weight: 600;
+    text-align: left;
+    cursor: pointer;
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .hybrid-day-item:hover {
+    background: rgba(255, 255, 255, 0.06);
+  }
+  .hybrid-day-item.on {
+    background: rgba(255, 159, 67, 0.18);
+  }
+  .hybrid-day-item ha-icon {
+    --ha-icon-size: 16px;
+    --mdc-icon-size: 16px;
+    width: 16px;
+    height: 16px;
+    color: rgba(255, 159, 67, 0.95);
+    flex: 0 0 auto;
+  }
+
+  /* Always-visible chevron toggle. Small target on the right edge,
+   * clearly clickable. Inspired by ACC's drawer pattern — avoids the
+   * iOS "hover-passthrough" pitfall an invisible edge zone creates. */
+  .hybrid-edge-toggle {
+    position: absolute;
+    top: 50%;
+    right: 0;
+    transform: translate(0, -50%);
+    z-index: 13;
+    appearance: none;
+    background: rgba(0, 0, 0, 0.22);
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-right: none;
+    color: #fff;
+    width: 26px;
+    height: 88px;
+    border-radius: 9px 0 0 9px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    padding: 0;
+    transition:
+      background-color 0.15s,
+      transform 0.2s;
+  }
+  .hybrid-edge-toggle:hover {
+    background: rgba(245, 166, 35, 0.45);
+  }
+  .hybrid-edge-label {
+    writing-mode: vertical-rl;
+    text-orientation: mixed;
+    transform: rotate(180deg);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    color: rgba(255, 255, 255, 0.92);
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+    pointer-events: none;
+  }
+
+  /* The drawer is always mounted so open AND close animate. Toggling the
+   * .open class slides the transform between off-screen and 0. Inspired
+   * by ACC's use of side-drawer which does the same trick under the hood. */
+  .hybrid-drawer {
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: 50%;
+    /* Floor the rendered width (regardless of the resize %) so the toolbar
+     * buttons always fit. On a phone, 25% of a narrow card is too small for
+     * the calendar + list/grid buttons and they'd overflow off-screen. */
+    min-width: 124px;
+    background: rgba(8, 10, 14, 0.78);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    z-index: 14;
+    display: flex;
+    flex-direction: column;
+    box-shadow: 0 0 32px rgba(0, 0, 0, 0.5);
+    transform: translateX(100%);
+    transition: transform 0.24s ease;
+    will-change: transform;
+  }
+  /* When the LIVE button is present (clip playing in-place), the toolbar needs
+   * room for LIVE + calendar + layout-toggle — bump the floor so the rightmost
+   * toggle never falls off the right edge. */
+  .hybrid-drawer:has(.hybrid-drawer-live) {
+    min-width: 192px;
+  }
+  .hybrid-drawer.open {
+    transform: translateX(0);
+  }
+
+  /* Invisible drag zone on the left edge of the right drawer. Lives inside the
+   * body gutter so it costs no thumb space; only a soft gradient hints at it on
+   * hover (desktop). On touch the gutter is simply draggable. */
+  .hybrid-resize {
+    position: absolute;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    width: 12px;
+    z-index: 3;
+    cursor: ew-resize;
+    touch-action: none;
+    background: linear-gradient(to right, rgba(245, 166, 35, 0) 0%, rgba(245, 166, 35, 0) 100%);
+    transition: background 0.15s;
+  }
+  /* Desktop hover hint only — on touch, :hover sticks after release and leaves
+   * the glow stuck on, so gate it behind a real hover device. */
+  @media (hover: hover) {
+    .hybrid-resize:hover {
+      background: linear-gradient(
+        to right,
+        rgba(245, 166, 35, 0.35) 0%,
+        rgba(245, 166, 35, 0) 100%
+      );
+    }
+  }
+  /* Active-drag feedback for all devices, driven by JS state so it clears
+   * reliably on release (no sticky-hover on touch). */
+  .hybrid-resize.resizing {
+    background: linear-gradient(to right, rgba(245, 166, 35, 0.35) 0%, rgba(245, 166, 35, 0) 100%);
+  }
+
+  .hybrid-drawer-body {
+    flex: 1;
+    overflow-y: auto;
+    padding: 8px 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    /* Hide scrollbar across browsers — wheel/touch scroll still works. */
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+  .hybrid-drawer-body::-webkit-scrollbar {
+    display: none;
+  }
+  .hybrid-drawer-empty {
+    color: rgba(255, 255, 255, 0.5);
+    font-size: 12px;
+    text-align: center;
+    padding: 16px 8px;
+    font-style: italic;
+  }
+
+  .hybrid-clip {
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 8px;
+    overflow: hidden;
+    cursor: pointer;
+    display: block;
+    width: 100%;
+    padding: 0;
+    text-align: left;
+    color: #fff;
+    /* Flex parent (drawer-body) defaults flex-shrink to 1, which collapses
+     * the clip's intrinsic height when many siblings share the column.
+     * Locking shrink to 0 keeps each thumb at full size and lets the body
+     * overflow vertically for scroll. */
+    flex-shrink: 0;
+    flex-grow: 0;
+    /* Stagger entry: clips start invisible + slightly offset; when the
+     * drawer opens each row eases in with a small per-index delay so the
+     * list feels alive rather than dumping all at once. Hover lift
+     * stays on its own transform-only transition. */
+    opacity: 0;
+    transform: translateY(8px);
+    transition:
+      opacity 0.22s ease,
+      transform 0.22s ease,
+      border-color 0.15s ease;
+  }
+  .hybrid-drawer.open .hybrid-clip {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  .hybrid-drawer.open .hybrid-clip:nth-child(1) {
+    transition-delay: 0.16s, 0.16s, 0s;
+  }
+  .hybrid-drawer.open .hybrid-clip:nth-child(2) {
+    transition-delay: 0.22s, 0.22s, 0s;
+  }
+  .hybrid-drawer.open .hybrid-clip:nth-child(3) {
+    transition-delay: 0.28s, 0.28s, 0s;
+  }
+  .hybrid-drawer.open .hybrid-clip:nth-child(4) {
+    transition-delay: 0.34s, 0.34s, 0s;
+  }
+  .hybrid-drawer.open .hybrid-clip:nth-child(5) {
+    transition-delay: 0.4s, 0.4s, 0s;
+  }
+  .hybrid-drawer.open .hybrid-clip:nth-child(6) {
+    transition-delay: 0.46s, 0.46s, 0s;
+  }
+  .hybrid-drawer.open .hybrid-clip:nth-child(7) {
+    transition-delay: 0.52s, 0.52s, 0s;
+  }
+  .hybrid-drawer.open .hybrid-clip:nth-child(8) {
+    transition-delay: 0.58s, 0.58s, 0s;
+  }
+  .hybrid-drawer.open .hybrid-clip:nth-child(n + 9) {
+    transition-delay: 0.62s, 0.62s, 0s;
+  }
+  .hybrid-clip:hover {
+    border-color: rgba(255, 159, 67, 0.7);
+  }
+  /* Thumbnail keeps the camera's natural ratio (16:9 default). The
+   * card's --cgc-aspect-ratio (set inline on .preview) is honoured so a
+   * 4:3 doorbell renders 4:3 thumbs in the drawer.
+   * padding-bottom hack is used inside the absolute drawer because
+   * aspect-ratio occasionally collapses to 0 in nested flex stacks. */
+  .hybrid-clip-thumb {
+    position: relative;
+    width: 100%;
+    padding-bottom: 56.25%;
+    background: #000;
+    overflow: hidden;
+    flex-shrink: 0;
+  }
+  .hybrid-clip-img {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+  }
+  .hybrid-clip-img.placeholder {
+    background:
+      radial-gradient(circle at center, rgba(255, 255, 255, 0.04) 0%, transparent 60%),
+      linear-gradient(135deg, #2a2d35 0%, #1c1f26 100%);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .hybrid-clip-img.placeholder::after {
+    content: "▶";
+    color: rgba(255, 255, 255, 0.2);
+    font-size: 22px;
+  }
+  /* 3-zone bar: time (left) · cluster (always centered) · object icon (right).
+   * Grid columns are explicit so each item keeps its place even when the
+   * cluster or icon is absent. */
+  .hybrid-clip-meta {
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 8px;
+    font-size: var(--cgc-hyb-meta-fs, 11px);
+    color: rgba(255, 255, 255, 0.85);
+    font-family: ui-monospace, "SF Mono", monospace;
+  }
+  .hybrid-clip-time {
+    grid-column: 1;
+    justify-self: start;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .hybrid-clip-obj {
+    grid-column: 3;
+    justify-self: end;
+    --ha-icon-size: var(--cgc-hyb-obj-sz, 15px);
+    --mdc-icon-size: var(--cgc-hyb-obj-sz, 15px);
+    width: var(--cgc-hyb-obj-sz, 15px);
+    height: var(--cgc-hyb-obj-sz, 15px);
+  }
+  /* Cluster expand/collapse lives centered in the meta bar (not on the thumb).
+   * Always accent-coloured; chevron rotates on open. */
+  .hybrid-clip-cluster {
+    grid-column: 2;
+    justify-self: center;
+    display: inline-flex;
+    align-items: center;
+    gap: 1px;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: rgba(245, 166, 35, 0.95);
+    font: inherit;
+    font-weight: 800;
+    line-height: 1;
+    cursor: pointer;
+    touch-action: manipulation;
+  }
+  .hybrid-clip-cluster ha-icon {
+    --ha-icon-size: 13px;
+    --mdc-icon-size: 13px;
+    width: 13px;
+    height: 13px;
+    transition: transform 0.18s ease;
+  }
+  .hybrid-clip-cluster.open ha-icon {
+    transform: rotate(180deg);
+  }
+  .hybrid-clip.cluster-member {
+    width: 66%;
+    align-self: flex-start;
+    margin-right: auto;
+  }
+
+  /* 2D layout via flex-wrap: two columns at 50% width (minus gap). Keeping the
+   * thumb's original padding-bottom mechanism — that works reliably in flex
+   * contexts, unlike inside a CSS-grid track where the percentage collapsed. */
+  .hybrid-drawer-body.is-grid {
+    display: flex;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-content: flex-start;
+    gap: 1px;
+  }
+  .hybrid-drawer-body.is-grid .hybrid-clip {
+    flex: 0 0 calc(50% - 0.5px);
+    min-width: 0;
+  }
+  .hybrid-drawer-body.is-grid .hybrid-clip.cluster-member {
+    width: calc(50% - 0.5px);
+    margin: 0;
+    align-self: auto;
+  }
+  /* Compact meta bar in grid mode: thumbs are small, so the bar + its
+   * contents shrink to match. Overrides the dynamic --cgc-hyb-* vars set
+   * inline by drawerStyle (those track drawer width, not cell width). */
+  .hybrid-drawer-body.is-grid .hybrid-clip-meta {
+    padding: 2px 6px;
+    font-size: 9.5px;
+    gap: 4px;
+  }
+  .hybrid-drawer-body.is-grid .hybrid-clip-obj {
+    --ha-icon-size: 12px;
+    --mdc-icon-size: 12px;
+    width: 12px;
+    height: 12px;
+  }
+  .hybrid-drawer-body.is-grid .hybrid-clip-cluster ha-icon {
+    --ha-icon-size: 11px;
+    --mdc-icon-size: 11px;
+    width: 11px;
+    height: 11px;
+  }
 
   .live-grid-tile {
     position: relative;
@@ -1549,6 +2111,18 @@ export const cardStyles = css`
      clickable (object indicator, index counter, camera name). */
   .gallery-pill--info {
     cursor: default;
+    pointer-events: none;
+  }
+
+  /* Hybrid view: the camera name pill turns light red while the live feed
+     is showing, so it's clear you're watching live and not a clip. */
+  .gallery-pill--live::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    background: rgb(226, 75, 74);
+    opacity: 0.45;
     pointer-events: none;
   }
 

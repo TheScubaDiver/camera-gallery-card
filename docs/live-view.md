@@ -2,7 +2,7 @@
 
 [← Back to README](../README.md)
 
-Live cameras, the grid, crop and rotation, camera triggers, PTZ, menu buttons and notification deep links.
+Live cameras, the grid, the hybrid view, crop and rotation, camera triggers, PTZ, menu buttons and notification deep links.
 
 ### Live view
 
@@ -19,6 +19,7 @@ Live cameras, the grid, crop and rotation, camera triggers, PTZ, menu buttons an
 - **Multi-camera grid layout** (`live_layout: grid`) — show all cameras at once, tap a tile to focus on one. The grid shapes itself to the camera count so there are no empty cells, every tile keeps the card's configured aspect ratio, and the card's height adapts to fit. Pin the column count with `live_grid_columns`, or leave it automatic (narrow cards drop to fewer columns on their own). Control where the larger tiles land with `live_grid_emphasis`: `bottom` (default), `top`, or `hero`
 - **RTSP streams** — add cameras by stream URL instead of a camera entity (see [Live cameras](#live-cameras))
 - **Frozen-stream recovery** — if the live picture stops moving for about six seconds the card rebuilds the stream by itself, up to three tries (a stream that is still connecting gets 15 seconds before it counts as stuck). After the last try a "Stream stopped — Try again" notice appears. It never acts while the tab is hidden, in Picture-in-Picture, in native video fullscreen, or during talkback, and it only watches single-camera live view (not grid tiles). Turn it off with `live_auto_recover: false` or in the editor's Live tab.
+- **Hybrid view** — the live feed with a drawer of recent clips you slide in from the side. See [Hybrid view](#hybrid-view)
 - **Camera triggers** — motion, a person, the doorbell: the card switches to that camera's live view by itself and goes back afterwards. See [Camera triggers](#camera-triggers)
 - **Rotation per camera** — turn a camera's picture by 90, 180 or 270 degrees, for a camera mounted upside down on a ceiling or on its side. See [Camera rotation](#camera-rotation)
 - **Offline camera placeholder** — unavailable cameras show a clear "offline" tile instead of a black frame
@@ -66,6 +67,29 @@ Stream URLs play through the [AlexxIT/WebRTC](https://github.com/AlexxIT/WebRTC)
 
 > [!NOTE]
 > Older configs used `live_camera_entities`, `live_stream_urls`, `live_stream_url` / `live_stream_name` and `live_mic_streams` for the same information. They still work: the card converts them into `live_cameras` when it loads, and the editor saves the new form the next time you save. The old `live_camera_entity` (default camera) is folded in too, by moving that camera to the top of the list.
+
+---
+
+## Hybrid view
+
+Watch live and look back without leaving the live view: `start_mode: hybrid` opens the card on the live feed with a **CLIPS** tab on the right edge. Tap it (or, on a computer, hold the mouse over it for a moment) and a drawer with the recent clips slides in over the picture.
+
+```yaml
+live_enabled: true
+live_cameras:
+  - entity: camera.front_door
+start_mode: hybrid
+```
+
+- **The clips** are the same ones the gallery shows, with the same filters, newest first (the 50 most recent). Frigate event groups show a count you can tap to expand, and each clip shows the detected object.
+- **Play a clip** by tapping it: it plays in place of the live feed. **LIVE** at the top of the drawer takes you back.
+- **Pick a day** with the calendar button at the top of the drawer.
+- **Resize** the drawer by dragging its left edge, from a quarter to most of the picture.
+- **List or grid**: switch with the button at the top; the card remembers your choice on that device.
+- **Close** the drawer by tapping the live picture or the CLIPS tab again.
+- **Live indicator**: while you watch live, the camera name pill turns light red, so you can tell live from a clip.
+
+In hybrid view the gallery toolbar and thumbnail strip are hidden: the drawer replaces them. In the editor: **Source → View → Default view → Hybrid**.
 
 ---
 
