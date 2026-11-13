@@ -49,7 +49,7 @@ show_media_filter: false
 | Live view       | `live_pills`                               | `mute`, `picker`, `pip`, `fullscreen`, `snapshot`, `refresh`                                                     |
 | Gallery toolbar | `toolbar_order` (order), `show_*` (on/off) | `today` (`show_today`), `media_filter` (`show_media_filter`), `favorite` (`show_favorite`), `live` (`show_live`) |
 
-Each pill takes `enabled` (default `true`) and `order` (a number; the defaults are spaced by 10, so `15` lands between the first two). `gallery_pills_align` only applies when `controls_mode` is `overlay`. Some live pills only appear when they make sense: the camera picker needs at least two cameras, and the hamburger menu, PTZ and debug pills have their own settings.
+Each pill takes `enabled` (default `true`) and `order` (a number; the defaults are spaced by 10, so `15` lands between the first two). Live pills also take `row: 2`, and your own menu buttons can sit between them; see [Rows and order of the live controls](live-view.md#rows-and-order-of-the-live-controls). `gallery_pills_align` only applies when `controls_mode` is `overlay`. Some live pills only appear when they make sense: the camera picker needs at least two cameras, and the hamburger menu, PTZ and debug pills have their own settings.
 
 ---
 

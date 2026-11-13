@@ -1143,6 +1143,14 @@ export const cardStyles = css`
   .live-controls-main--fixed {
     justify-content: center;
   }
+  /* Second row of live controls (#286): right-aligned under the first row
+   * over the video; a second full-width row in fixed mode. */
+  .live-controls-row2 {
+    justify-content: flex-end;
+  }
+  .controls-bar-fixed--row2 {
+    margin-top: calc(var(--cgc-row-gap, 8px) * -1 + 6px);
+  }
   .controls-bar-fixed {
     display: flex;
     flex-direction: row;

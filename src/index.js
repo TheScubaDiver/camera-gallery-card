@@ -44,7 +44,6 @@ import {
   menuButtonLabel,
   menuButtonTap,
   selectOptionCall,
-  splitMenuButtons,
 } from "./data/menu-buttons";
 import { filenameFromUrl, resolveDownloadTarget } from "./data/download-target";
 import { galleryState, SKELETON_THUMB_COUNT } from "./data/gallery-state";
@@ -105,6 +104,7 @@ import {
 import { MIC_NOTIFICATION_ID, WebRtcMicClient } from "./data/webrtc-mic";
 import { syncLiveAudio } from "./data/live-audio";
 import { mediaAspect } from "./data/live-aspect";
+import { itemKey, liveControlZones, zonesToConfig } from "./data/live-controls-layout";
 import { isTalkbackRow, talkbackPosition, talkbackRowJustify } from "./data/talkback-layout";
 import { StreamWatchdog } from "./data/stream-watchdog";
 import {
@@ -4750,6 +4750,26 @@ class CameraGalleryCard extends LitElement {
 
   // ─── Live menu buttons (menu_buttons) ─────────────────────────────
 
+  // A `placement: controls` menu button among the live pills (#215, #286).
+  // The wrap class keeps an open option list from closing on its tap.
+  _renderControlMenuButton(btn) {
+    if (!btn) return null;
+    const { isOn, icon, bg, label } = this._menuButtonView(btn);
+    return html`
+      <div class="live-hamburger-wrap" @pointerdown=${(e) => e.stopPropagation()}>
+        <button
+          class="gallery-pill live-pill-btn ${isOn ? "active" : ""}"
+          title="${label}"
+          aria-label="${label}"
+          style="${bg ? `background:${bg}` : ""}"
+          @click=${(e) => { e.stopPropagation(); this._onMenuButtonTap(btn); }}
+        >
+          <ha-icon icon="${icon}"></ha-icon>
+        </button>
+      </div>
+    `;
+  }
+
   /** Display state for one `menu_buttons` entry. */
   _menuButtonView(btn) {
     const state = this._hass?.states?.[btn.entity];
@@ -6581,11 +6601,16 @@ class CameraGalleryCard extends LitElement {
         ${this.config.show_camera_title !== false && this.config.controls_mode !== "fixed" ? html`<div class="gallery-pill gallery-pill--wide gallery-pill--info"><span>${this._friendlyCameraName(this._getEffectiveLiveCamera())}</span></div>` : html``}
       </div>
     `;
-    const livePillSettings = resolvePillSettings(LIVE_PILL_CATALOG, this.config?.live_pills);
-    const livePillIds = sortPillsByOrder(LIVE_PILL_CATALOG, livePillSettings);
-    const { controls: controlMenuButtons, menu: panelMenuButtons } = splitMenuButtons(
-      this.config.menu_buttons
-    );
+    // Rows 1 and 2 and the hamburger menu (#286): built-in pills and
+    // `placement: controls` menu buttons sorted together per row.
+    const allMenuButtons = Array.isArray(this.config.menu_buttons) ? this.config.menu_buttons : [];
+    const controlZones = liveControlZones(this.config?.live_pills, allMenuButtons);
+    const panelMenuButtons = controlZones.menu.map((i) => allMenuButtons[i.index]).filter(Boolean);
+    const renderControl = (item) =>
+      item.kind === "pill"
+        ? item.enabled ? this._renderLivePillById(item.id) : null
+        : this._renderControlMenuButton(allMenuButtons[item.index]);
+    const liveRow2Controls = controlZones.row2.map(renderControl).filter((tpl) => tpl != null);
     const livePillsRight = html`
       <div class="live-pills-right">
         ${this.config?.live_layout === "grid" && this._liveLayoutOverride === "single" ? html`
@@ -6609,25 +6634,7 @@ class CameraGalleryCard extends LitElement {
             <ha-icon icon="mdi:arrow-all"></ha-icon>
           </button>
         ` : html``}
-        ${livePillIds.map((id) => this._renderLivePillById(id)).filter((tpl) => tpl != null)}
-        ${controlMenuButtons.map((btn) => {
-          // `placement: controls` buttons (#215) sit among the pills. The
-          // wrap class keeps an open option list from closing on their tap.
-          const { isOn, icon, bg, label } = this._menuButtonView(btn);
-          return html`
-            <div class="live-hamburger-wrap" @pointerdown=${(e) => e.stopPropagation()}>
-              <button
-                class="gallery-pill live-pill-btn ${isOn ? "active" : ""}"
-                title="${label}"
-                aria-label="${label}"
-                style="${bg ? `background:${bg}` : ""}"
-                @click=${(e) => { e.stopPropagation(); this._onMenuButtonTap(btn); }}
-              >
-                <ha-icon icon="${icon}"></ha-icon>
-              </button>
-            </div>
-          `;
-        })}
+        ${controlZones.row1.map(renderControl).filter((tpl) => tpl != null)}
         ${panelMenuButtons.length ? html`
           <div class="live-hamburger-wrap" @pointerdown=${(e) => e.stopPropagation()}>
             <button class="gallery-pill live-pill-btn ${this._hamburgerOpen && !this._menuSelectEntity ? 'active' : ''}" @click=${(e) => { e.stopPropagation(); const open = !(this._hamburgerOpen && !this._menuSelectEntity); this._menuSelectEntity = null; this._hamburgerOpen = open; if (!open) this._showPills(2500); }}>
@@ -6787,6 +6794,11 @@ class CameraGalleryCard extends LitElement {
                 <div class="live-controls-main">
                   ${livePillsLeft}${livePillsRight}
                 </div>
+                ${liveRow2Controls.length ? html`
+                  <div class="live-controls-main live-controls-row2">
+                    <div class="live-pills-right">${liveRow2Controls}</div>
+                  </div>
+                ` : html``}
                 ${this._renderMicErrorToast()}
               </div>
             ` : html``}
@@ -6797,6 +6809,7 @@ class CameraGalleryCard extends LitElement {
         `
       : html``;
 
+    const showLiveRow2Fixed = isLive && !isGridLayout(this.config, this._liveLayoutOverride) && liveRow2Controls.length;
     const controlsFixedBlock = fixedMode && showPreviewSection ? html`
       <div class="controls-bar-fixed">
         ${isLive && !isGridLayout(this.config, this._liveLayoutOverride) ? html`
@@ -6807,6 +6820,13 @@ class CameraGalleryCard extends LitElement {
           ${galleryPillsRow}
         ` : html``}
       </div>
+      ${showLiveRow2Fixed ? html`
+        <div class="controls-bar-fixed controls-bar-fixed--row2">
+          <div class="live-controls-main live-controls-main--fixed">
+            <div class="live-pills-right">${liveRow2Controls}</div>
+          </div>
+        </div>
+      ` : html``}
     ` : html``;
 
     // Talkback in its own row below/above the preview (#257). Only when there
@@ -10488,10 +10508,6 @@ class CameraGalleryCardEditor extends HTMLElement {
                         <div style="font-size:0.75em;opacity:0.6;margin-bottom:2px;">State (on)</div>
                         <div class="field"><input type="text" class="ed-input" data-menubtn="${i}" data-mbfield="state_on" value="${(btn.state_on||"").replace(/"/g,"&quot;")}" placeholder="e.g. open" /></div>
                       </div>
-                      <div style="grid-column:1/-1;display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:2px;">
-                        <span style="font-size:0.82em;">Show among live controls</span>
-                        <label class="cgc-switch"><input type="checkbox" data-menubtn-placement="${i}" ${btn.placement === "controls" ? "checked" : ""}><span class="cgc-track"></span></label>
-                      </div>
                     </div>
                   </div>
                 `).join("")}
@@ -10692,16 +10708,6 @@ class CameraGalleryCardEditor extends HTMLElement {
         this._config.live_pills && typeof this._config.live_pills === "object"
           ? this._config.live_pills : {};
       const hasLivePillOverrides = Object.keys(cfgLivePills).length > 0;
-      const livePillSettingsMap = resolvePillSettings(LIVE_PILL_CATALOG, cfgLivePills);
-      const livePillRowsOrdered = [...LIVE_PILL_CATALOG]
-        .map((entry) => ({ entry, s: livePillSettingsMap.get(entry.id) }))
-        .sort((a, b) => {
-          if (a.s.enabled !== b.s.enabled) return a.s.enabled ? -1 : 1;
-          return (
-            a.s.order - b.s.order ||
-            LIVE_PILL_CATALOG.indexOf(a.entry) - LIVE_PILL_CATALOG.indexOf(b.entry)
-          );
-        });
       const liveControlsBody = `
         ${chevronToggleRow(
           "livechevrons",
@@ -10720,32 +10726,52 @@ class CameraGalleryCardEditor extends HTMLElement {
           </div>
         </div>
         <div class="row">
-          <div class="desc">Camera name sits on the left, action pills on the right — layout is fixed. Drag <code>⠿</code> to reorder the action pills, switch one off to hide it.</div>
+          <div class="desc">Drag <code>⠿</code> a control to where you want it: <strong>Row 1</strong> sits next to the camera name, <strong>Row 2</strong> is a second row below it, <strong>Menu</strong> is behind the ☰ button. The order in a box is the order on screen. Switch a built-in control off to hide it. Built-in controls can't go in the menu.</div>
         </div>
-        <div class="pills-dnd-list" id="live-pills-dnd-list">
-          ${livePillRowsOrdered
-            .map((row) => {
-              const entry = row.entry;
-              const enabled = row.s.enabled;
-              const idAttr = String(entry.id).replace(/"/g, "&quot;");
-              const labelEsc = String(entry.label).replace(/</g, "&lt;");
-              const previewMarkup = entry.previewText
-                ? `<span class="pill-dnd-preview-text">${String(entry.previewText).replace(/</g, "&lt;")}</span>`
-                : entry.icon
-                  ? `<ha-icon icon="${entry.icon}" style="--mdc-icon-size:18px;width:18px;height:18px;display:inline-flex;align-items:center;justify-content:center;"></ha-icon>`
-                  : "";
+        <div class="ctl-zones" id="live-ctl-zones">
+          ${(() => {
+            const btns = Array.isArray(this._config.menu_buttons) ? this._config.menu_buttons : [];
+            const zones = liveControlZones(this._config.live_pills, btns);
+            const esc = (s) => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/"/g, "&quot;");
+            const itemHtml = (item) => {
+              const key = esc(itemKey(item));
+              if (item.kind === "pill") {
+                const entry = LIVE_PILL_CATALOG.find((e) => e.id === item.id);
+                if (!entry) return "";
+                const preview = entry.previewText
+                  ? `<span class="pill-dnd-preview-text">${esc(entry.previewText)}</span>`
+                  : entry.icon ? `<ha-icon icon="${entry.icon}" style="--mdc-icon-size:18px;width:18px;height:18px;display:inline-flex;"></ha-icon>` : "";
+                return `
+                  <div class="row pill-dnd-row ${item.enabled ? "" : "pill-dnd-disabled"}" data-ctl-key="${key}" draggable="true">
+                    <div class="pill-dnd-line">
+                      <span class="pill-drag-grip" title="Drag to move" aria-label="Drag to move">⠿</span>
+                      <span class="pill-dnd-icon" aria-hidden="true">${preview}</span>
+                      <div class="lbl pill-dnd-label">${esc(entry.label)}</div>
+                      <label class="cgc-switch"><input type="checkbox" id="live-pill-enable-${esc(entry.id)}" ${item.enabled ? "checked" : ""}><span class="cgc-track"></span></label>
+                    </div>
+                  </div>`;
+              }
+              const btn = btns[item.index];
+              if (!btn) return "";
+              const label = btn.title || entityDisplayName(this._hass, btn.entity) || btn.entity;
               return `
-                <div class="row pill-dnd-row ${enabled ? "" : "pill-dnd-disabled"}" data-live-pill-row="${idAttr}" draggable="true">
+                <div class="row pill-dnd-row" data-ctl-key="${key}" draggable="true">
                   <div class="pill-dnd-line">
-                    <span class="pill-drag-grip" title="Drag to reorder" aria-label="Drag to reorder">⠿</span>
-                    <span class="pill-dnd-icon" aria-hidden="true">${previewMarkup}</span>
-                    <div class="lbl pill-dnd-label">${labelEsc}</div>
-                    <label class="cgc-switch"><input type="checkbox" id="live-pill-enable-${idAttr}" ${enabled ? "checked" : ""}><span class="cgc-track"></span></label>
+                    <span class="pill-drag-grip" title="Drag to move" aria-label="Drag to move">⠿</span>
+                    <span class="pill-dnd-icon" aria-hidden="true"><ha-icon icon="${esc(btn.icon)}" style="--mdc-icon-size:18px;width:18px;height:18px;display:inline-flex;"></ha-icon></span>
+                    <div class="lbl pill-dnd-label">${esc(label)}<span class="ctl-tag">menu button</span></div>
                   </div>
-                </div>
-              `;
-            })
-            .join("")}
+                </div>`;
+            };
+            const zone = (key, title, hint, items) => `
+              <div class="ctl-zone" data-ctl-zone="${key}">
+                <div class="ctl-zone-head"><span>${title}</span><span>${hint}</span></div>
+                ${items.length ? items.map(itemHtml).join("") : `<div class="ctl-zone-empty">Drag a control here</div>`}
+              </div>`;
+            return zone("row1", "Row 1", "next to the camera name", zones.row1)
+              + zone("row2", "Row 2", "below the first row", zones.row2)
+              + zone("menu", "Menu ☰", "behind the menu button", zones.menu);
+          })()}
         </div>
       `;
 
@@ -11951,6 +11977,13 @@ class CameraGalleryCardEditor extends HTMLElement {
         /* Pill row DnD (Pills collapsible). Single-line layout: grip,
          * label, switch — all centred on one row. */
         .pills-dnd-list { display: flex; flex-direction: column; gap: 6px; }
+        .ctl-zones { display: flex; flex-direction: column; gap: 10px; }
+        .ctl-zone { display: flex; flex-direction: column; gap: 6px; border: 1px dashed var(--ed-row-border, rgba(127,127,127,0.35)); border-radius: 12px; padding: 8px; transition: border-color 0.15s, background 0.15s; }
+        .ctl-zone.ctl-zone-over { border-color: var(--primary-color, #03a9f4); background: rgba(3, 169, 244, 0.06); }
+        .ctl-zone-head { display: flex; justify-content: space-between; gap: 8px; font-size: 11px; color: var(--ed-text2); padding: 0 2px; }
+        .ctl-zone-head span:first-child { font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; }
+        .ctl-zone-empty { font-size: 12px; color: var(--ed-text2); text-align: center; padding: 8px 0; }
+        .ctl-tag { font-size: 10px; font-weight: 600; margin-left: 6px; padding: 0 6px; border-radius: 999px; border: 1px solid currentColor; opacity: 0.7; }
         .pill-dnd-row { cursor: default; transition: opacity 0.15s, box-shadow 0.15s; }
         .pill-dnd-row.pill-dnd-dragging { opacity: 0.4; }
         .pill-dnd-row.pill-dnd-over { box-shadow: 0 -2px 0 0 var(--primary-color, #03a9f4); }
@@ -13924,84 +13957,103 @@ details summary { user-select: none; }
       });
     }
 
-    // Same DnD pattern for live pills — distinct list id + dataset key so
-    // the two reorder controllers don't cross-fire.
-    const livePillsList = this.shadowRoot.getElementById("live-pills-dnd-list");
-    if (livePillsList) {
-      let liveDragSrcId = null;
+    // Live controls (#286): drag between Row 1, Row 2 and Menu. Built-in
+    // pills can't go in the menu. Mouse drag-and-drop plus touch on the grip.
+    const ctlRoot = this.shadowRoot.getElementById("live-ctl-zones");
+    if (ctlRoot) {
+      let dragKey = null;
       const clearOver = () =>
-        livePillsList.querySelectorAll(".pill-dnd-over").forEach((el) => el.classList.remove("pill-dnd-over"));
-      const finishReorder = (targetId) => {
-        if (!liveDragSrcId || liveDragSrcId === targetId) return;
-        this._reorderLivePillTo(liveDragSrcId, targetId);
+        ctlRoot.querySelectorAll(".pill-dnd-over, .ctl-zone-over").forEach((el) => el.classList.remove("pill-dnd-over", "ctl-zone-over"));
+      const allowed = (zoneKey) => !(zoneKey === "menu" && String(dragKey || "").startsWith("pill:"));
+      const commit = (zoneKey, beforeKey) => {
+        if (!dragKey || !allowed(zoneKey) || dragKey === beforeKey) return;
+        const lists = {};
+        ctlRoot.querySelectorAll("[data-ctl-zone]").forEach((z) => {
+          lists[z.dataset.ctlZone] = [...z.querySelectorAll("[data-ctl-key]")].map((r) => r.dataset.ctlKey);
+        });
+        for (const k of Object.keys(lists)) lists[k] = lists[k].filter((x) => x !== dragKey);
+        const target = lists[zoneKey] || (lists[zoneKey] = []);
+        const at = beforeKey ? target.indexOf(beforeKey) : -1;
+        if (at >= 0) target.splice(at, 0, dragKey);
+        else target.push(dragKey);
+        const out = zonesToConfig(
+          { row1: lists.row1 || [], row2: lists.row2 || [], menu: lists.menu || [] },
+          this._config.live_pills,
+          this._config.menu_buttons
+        );
+        const next = { ...this._config };
+        if (Object.keys(out.live_pills).length) next.live_pills = out.live_pills;
+        else delete next.live_pills;
+        if (out.menu_buttons.length) next.menu_buttons = out.menu_buttons;
+        else delete next.menu_buttons;
+        this._config = this._stripAlwaysTrueKeys(next);
+        this._fire();
+        this._scheduleRender();
+      };
+      const dropTargetAt = (x, y) => {
+        const el = this.shadowRoot.elementFromPoint
+          ? this.shadowRoot.elementFromPoint(x, y)
+          : document.elementFromPoint(x, y);
+        return { row: el?.closest?.("[data-ctl-key]"), zone: el?.closest?.("[data-ctl-zone]") };
       };
 
-      livePillsList.querySelectorAll(".pill-dnd-row").forEach((row) => {
-        const srcId = row.dataset.livePillRow;
+      ctlRoot.querySelectorAll("[data-ctl-key]").forEach((row) => {
+        const key = row.dataset.ctlKey;
         row.addEventListener("dragstart", (e) => {
-          liveDragSrcId = srcId;
+          dragKey = key;
           row.classList.add("pill-dnd-dragging");
-          if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
+          if (e.dataTransfer) { e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", key); }
         });
-        row.addEventListener("dragend", () => {
-          row.classList.remove("pill-dnd-dragging");
-          clearOver();
-          liveDragSrcId = null;
-        });
+        row.addEventListener("dragend", () => { row.classList.remove("pill-dnd-dragging"); clearOver(); dragKey = null; });
         row.addEventListener("dragover", (e) => {
+          const zoneKey = row.closest("[data-ctl-zone]")?.dataset.ctlZone;
+          if (!allowed(zoneKey)) return;
           e.preventDefault();
-          if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
-          if (srcId !== liveDragSrcId) {
-            clearOver();
-            row.classList.add("pill-dnd-over");
-          }
+          e.stopPropagation();
+          if (key !== dragKey) { clearOver(); row.classList.add("pill-dnd-over"); }
         });
-        row.addEventListener("dragleave", () => row.classList.remove("pill-dnd-over"));
         row.addEventListener("drop", (e) => {
           e.preventDefault();
+          e.stopPropagation();
           clearOver();
-          finishReorder(srcId);
+          commit(row.closest("[data-ctl-zone]")?.dataset.ctlZone, key);
         });
 
         const grip = row.querySelector(".pill-drag-grip");
         if (grip) {
-          grip.addEventListener(
-            "touchstart",
-            (e) => {
-              e.preventDefault();
-              liveDragSrcId = srcId;
-              row.classList.add("pill-dnd-dragging");
-            },
-            { passive: false }
-          );
-          grip.addEventListener(
-            "touchmove",
-            (e) => {
-              e.preventDefault();
-              const touch = e.touches[0];
-              const el = this.shadowRoot.elementFromPoint
-                ? this.shadowRoot.elementFromPoint(touch.clientX, touch.clientY)
-                : document.elementFromPoint(touch.clientX, touch.clientY);
-              const target = el?.closest?.(".pill-dnd-row");
-              clearOver();
-              if (target && target.dataset.livePillRow !== liveDragSrcId) target.classList.add("pill-dnd-over");
-            },
-            { passive: false }
-          );
-          grip.addEventListener(
-            "touchend",
-            (e) => {
-              e.preventDefault();
-              row.classList.remove("pill-dnd-dragging");
-              const over = livePillsList.querySelector(".pill-dnd-over");
-              const targetId = over?.dataset?.livePillRow;
-              clearOver();
-              if (targetId) finishReorder(targetId);
-              liveDragSrcId = null;
-            },
-            { passive: false }
-          );
+          grip.addEventListener("touchstart", (e) => { e.preventDefault(); dragKey = key; row.classList.add("pill-dnd-dragging"); }, { passive: false });
+          grip.addEventListener("touchmove", (e) => {
+            e.preventDefault();
+            const t0 = e.touches[0];
+            const { row: overRow, zone } = dropTargetAt(t0.clientX, t0.clientY);
+            clearOver();
+            if (overRow && overRow.dataset.ctlKey !== dragKey && allowed(zone?.dataset.ctlZone)) overRow.classList.add("pill-dnd-over");
+            else if (zone && allowed(zone.dataset.ctlZone)) zone.classList.add("ctl-zone-over");
+          }, { passive: false });
+          grip.addEventListener("touchend", (e) => {
+            e.preventDefault();
+            row.classList.remove("pill-dnd-dragging");
+            const t0 = e.changedTouches[0];
+            const { row: overRow, zone } = dropTargetAt(t0.clientX, t0.clientY);
+            clearOver();
+            if (zone) commit(zone.dataset.ctlZone, overRow && overRow.dataset.ctlKey !== key ? overRow.dataset.ctlKey : null);
+            dragKey = null;
+          }, { passive: false });
         }
+      });
+      ctlRoot.querySelectorAll("[data-ctl-zone]").forEach((zone) => {
+        zone.addEventListener("dragover", (e) => {
+          if (!allowed(zone.dataset.ctlZone)) return;
+          e.preventDefault();
+          clearOver();
+          zone.classList.add("ctl-zone-over");
+        });
+        zone.addEventListener("dragleave", (e) => { if (!zone.contains(e.relatedTarget)) zone.classList.remove("ctl-zone-over"); });
+        zone.addEventListener("drop", (e) => {
+          e.preventDefault();
+          clearOver();
+          commit(zone.dataset.ctlZone, null);
+        });
       });
     }
 
@@ -14892,20 +14944,6 @@ details summary { user-select: none; }
       });
     });
 
-    // Menu button placement: hamburger menu (default) or live controls (#215).
-    this.shadowRoot.querySelectorAll("input[data-menubtn-placement]").forEach((input) => {
-      input.addEventListener("change", () => {
-        const i = Number(input.dataset.menubtnPlacement);
-        const current = Array.isArray(this._config.menu_buttons) ? [...this._config.menu_buttons] : [];
-        if (!current[i]) return;
-        const updated = { ...current[i] };
-        if (input.checked) updated.placement = "controls";
-        else delete updated.placement;
-        current[i] = updated;
-        this._set("menu_buttons", current);
-      }, _sig);
-    });
-
     // Add menu button.
     const menubtnEntityInput = $("menubtn-entity-input");
     const menubtnEntitySugg = $("menubtn-entity-sugg");
@@ -15400,41 +15438,6 @@ details summary { user-select: none; }
     if (enabled) delete entry.enabled;
     else entry.enabled = false;
     this._commitLivePillEntry(cur, id, entry);
-  }
-
-  _reorderLivePillTo(srcId, targetId) {
-    if (!srcId || !targetId || srcId === targetId) return;
-    const cfgMap =
-      this._config?.live_pills && typeof this._config.live_pills === "object"
-        ? { ...this._config.live_pills }
-        : {};
-    const settings = resolvePillSettings(LIVE_PILL_CATALOG, cfgMap);
-    const visualView = new Map([...settings].map(([k, v]) => [k, { ...v, enabled: true }]));
-    const ordered = sortPillsByOrder(LIVE_PILL_CATALOG, visualView);
-    const fromIdx = ordered.indexOf(srcId);
-    const toIdx = ordered.indexOf(targetId);
-    if (fromIdx < 0 || toIdx < 0) return;
-
-    const newOrder = [...ordered];
-    const [moved] = newOrder.splice(fromIdx, 1);
-    newOrder.splice(toIdx, 0, moved);
-
-    newOrder.forEach((pillId, i) => {
-      const catalogEntry = LIVE_PILL_CATALOG.find((p) => p.id === pillId);
-      const desired = (i + 1) * 10;
-      const entry = { ...(cfgMap[pillId] || {}) };
-      if (catalogEntry && desired === catalogEntry.defaultOrder) delete entry.order;
-      else entry.order = desired;
-      if (entry.enabled === undefined && entry.order === undefined) delete cfgMap[pillId];
-      else cfgMap[pillId] = entry;
-    });
-
-    const next = { ...this._config };
-    if (Object.keys(cfgMap).length === 0) delete next.live_pills;
-    else next.live_pills = cfgMap;
-    this._config = this._stripAlwaysTrueKeys(next);
-    this._fire();
-    this._scheduleRender();
   }
 
   _commitLivePillEntry(map, id, entry) {

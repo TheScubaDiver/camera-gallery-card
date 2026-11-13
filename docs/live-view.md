@@ -9,7 +9,7 @@ Live cameras, the grid, crop and rotation, camera triggers, PTZ, menu buttons an
 - Native Home Assistant **WebRTC live preview**
 - Live view layout: camera name on the left, controls on the right
 - **Controls mode** — choose between `overlay` (controls fade out after inactivity) or `fixed` (always visible)
-- **Live pills** — mute, camera picker, Picture-in-Picture, fullscreen, snapshot (saves a JPEG of the current frame) and refresh stream. Turn each one on or off and reorder them in the editor (see [Pills and toolbar](styling.md#pills-and-toolbar))
+- **Live pills** — mute, camera picker, Picture-in-Picture, fullscreen, snapshot (saves a JPEG of the current frame) and refresh stream. Turn each one on or off, reorder them and put them on a second row (see [Rows and order of the live controls](#rows-and-order-of-the-live-controls))
 - **Native fullscreen** — set `live_fullscreen: video` to open the live stream in the platform's own player instead of the card overlay (grid layout always uses the card)
 - **Pinch to zoom in card fullscreen** — touch, trackpad, and Ctrl + scroll wheel; pan with the mouse after zooming in
 - **Aspect ratio toggle** — quickly switch between 16:9, 4:3 and 1:1, remembered per camera
@@ -145,15 +145,17 @@ menu_buttons:
     color_on: "#f5a623" # stays in the hamburger menu (the default)
 ```
 
-| Key                      | Description                                                                                                       |
-| ------------------------ | ----------------------------------------------------------------------------------------------------------------- |
-| `entity`                 | Entity the button acts on (required)                                                                              |
-| `icon` / `icon_on`       | Icon, and the icon while the entity is "on"                                                                       |
-| `color_on` / `color_off` | Button background while on / off                                                                                  |
-| `title`                  | Label (default: the entity's friendly name)                                                                       |
-| `service`                | Action to call instead of the default, in `domain.service` form. It is called with the button's `entity_id`       |
-| `state_on`               | State that counts as "on" (default: `on`, `open`, `unlocked`, `playing`, `home`, …)                               |
-| `placement`              | `menu` (default) puts the button in the hamburger menu. `controls` shows it directly among the live control pills |
+| Key                      | Description                                                                                                                                                                                               |
+| ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `entity`                 | Entity the button acts on (required)                                                                                                                                                                      |
+| `icon` / `icon_on`       | Icon, and the icon while the entity is "on"                                                                                                                                                               |
+| `color_on` / `color_off` | Button background while on / off                                                                                                                                                                          |
+| `title`                  | Label (default: the entity's friendly name)                                                                                                                                                               |
+| `service`                | Action to call instead of the default, in `domain.service` form. It is called with the button's `entity_id`                                                                                               |
+| `state_on`               | State that counts as "on" (default: `on`, `open`, `unlocked`, `playing`, `home`, …)                                                                                                                       |
+| `placement`              | `menu` (default) puts the button in the hamburger menu. `controls` shows it directly among the live control pills                                                                                         |
+| `order`                  | Position among the live controls, sorted together with the built-in pills (`mute` is 10, `picker` 15, `pip` 20, `fullscreen` 30, `snapshot` 35, `refresh` 40). Without it the button goes after the pills |
+| `row`                    | `2` puts the button on a second row of live controls. See [Rows and order of the live controls](#rows-and-order-of-the-live-controls)                                                                     |
 
 What a tap does:
 
@@ -162,7 +164,34 @@ What a tap does:
 - **Everything else** is toggled.
 - A `service`, when set, always wins over these defaults.
 
-In the editor (Live tab → Menu buttons), turn on **Show among live controls** for a button to set `placement: controls`. Turn it off to move the button back into the hamburger menu.
+In the editor you create buttons under **Live → Menu buttons**, and choose where each one shows under **Live → Controls**.
+
+### Rows and order of the live controls
+
+The live controls can sit on two rows, and your own menu buttons can sit between the built-in ones. In the editor, **Live → Controls** has three boxes:
+
+- **Row 1**: next to the camera name.
+- **Row 2**: a second row below it.
+- **Menu ☰**: behind the menu button. Only your own buttons can go here.
+
+Drag a control to the box and the place where you want it; the order in a box is the order on screen. Switch a built-in control off to hide it.
+
+In YAML, built-in pills take `order` and `row` under `live_pills`, and menu buttons take `placement: controls` with `order` and `row`:
+
+```yaml
+live_pills:
+  snapshot:
+    row: 2
+menu_buttons:
+  - entity: light.porch
+    icon: mdi:lightbulb
+    placement: controls
+    order: 11 # right after mute (10)
+  - entity: siren.garden
+    icon: mdi:alarm-light # no placement: in the menu
+```
+
+"Back to grid", PTZ, debug and the menu button itself keep their fixed place on row 1. Row 2 only appears when something is on it. Over the video it sits right-aligned under row 1; with `controls_mode: fixed` it is a second bar.
 
 ---
 
