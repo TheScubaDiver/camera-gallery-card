@@ -64,6 +64,7 @@ export interface LiveCameraEntryInput {
   crop?: LiveCameraCropInput;
   rotation?: number | string;
   triggers?: string[];
+  tap_action?: Record<string, unknown>;
 }
 
 /** Card-wide camera-trigger settings — input shape. See `liveTriggers` in structs.ts. */
@@ -689,6 +690,16 @@ function preMigrateConfig(input: InputConfig): PreMigrated {
         // Rotation: snap to 0/90/180/270; 0 is the default and stays off.
         const rotation = normalizeRotation(r["rotation"]);
         if (rotation !== 0) built["rotation"] = rotation;
+        // Per-camera tap action: kept as-is when it names an action; the
+        // struct validates the shape.
+        const tapRaw = r["tap_action"];
+        if (
+          tapRaw &&
+          typeof tapRaw === "object" &&
+          typeof (tapRaw as Record<string, unknown>)["action"] === "string"
+        ) {
+          built["tap_action"] = tapRaw;
+        }
         // Trigger entities: trim, drop empties and duplicates, keep order.
         const trigRaw = r["triggers"];
         if (Array.isArray(trigRaw)) {

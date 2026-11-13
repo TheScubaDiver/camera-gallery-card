@@ -185,6 +185,23 @@ const liveCameraCrop = object({
   source_ar: optional(string()),
 });
 
+/**
+ * Home Assistant-style action config, fired when the live preview is tapped.
+ * Standard HA actions plus the card's own `fullscreen` / `snapshot` / `refresh`.
+ * Loose (`type`) so action-specific keys (`perform_action`, `target`, `data`,
+ * `navigation_path`, `url_path`, ...) pass through untouched.
+ */
+const tapAction = type({
+  action: enums(TAP_ACTIONS),
+  entity: optional(string()),
+  perform_action: optional(string()),
+  service: optional(string()),
+  navigation_path: optional(string()),
+  navigation_replace: optional(boolean()),
+  url_path: optional(string()),
+  confirmation: optional(union([boolean(), type({ text: optional(string()) })])),
+});
+
 const liveCameraEntry = object({
   entity: optional(string()),
   url: optional(string()),
@@ -197,6 +214,9 @@ const liveCameraEntry = object({
   // Entities that switch the card to this camera when they turn active
   // (motion, occupancy, a doorbell event). See data/live-triggers.ts.
   triggers: optional(array(string())),
+  // What a tap on this camera does: its grid tile, or its single live view
+  // (overrides the card-wide tap_action there). Unset keeps the default.
+  tap_action: optional(tapAction),
 });
 
 /**
@@ -273,23 +293,6 @@ const ptzServiceCall = object({
 const ptzActionPair = object({
   start: ptzServiceCall,
   stop: optional(ptzServiceCall),
-});
-
-/**
- * Home Assistant-style action config, fired when the live preview is tapped.
- * Standard HA actions plus the card's own `fullscreen` / `snapshot` / `refresh`.
- * Loose (`type`) so action-specific keys (`perform_action`, `target`, `data`,
- * `navigation_path`, `url_path`, ...) pass through untouched.
- */
-const tapAction = type({
-  action: enums(TAP_ACTIONS),
-  entity: optional(string()),
-  perform_action: optional(string()),
-  service: optional(string()),
-  navigation_path: optional(string()),
-  navigation_replace: optional(boolean()),
-  url_path: optional(string()),
-  confirmation: optional(union([boolean(), type({ text: optional(string()) })])),
 });
 
 /**
