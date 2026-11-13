@@ -4487,6 +4487,9 @@ class CameraGalleryCard extends LitElement {
       }
       const camState = st.state ?? "";
       if (camState === "unavailable" || camState === "unknown") {
+        // The camera picker lives in the live stage, which an offline camera
+        // replaces; render it here too so you can still switch away from a
+        // camera that is offline.
         const picUrl = "";
         return html`
           <div class="live-offline">
@@ -4496,6 +4499,7 @@ class CameraGalleryCard extends LitElement {
               <span>${this._friendlyCameraName(entity)}</span>
               <span class="live-offline-state">Offline</span>
             </div>
+            ${this._renderLivePicker()}
           </div>
         `;
       }
