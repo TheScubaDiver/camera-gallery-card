@@ -63,6 +63,7 @@ import {
   hasAnyMicStream,
   hasLiveConfig,
   isGridLayout,
+  liveCameraEntry,
   liveCameraRotation,
   micStreamForCamera,
 } from "./data/live-config";
@@ -2018,11 +2019,9 @@ class CameraGalleryCard extends LitElement {
     if (isGridLayout(this.config, this._liveLayoutOverride)) {
       return this._getGridLayout(getGridCameraEntities(this.config).length).aspectRatio;
     }
-    const cams = Array.isArray(this.config?.live_cameras) ? this.config.live_cameras : [];
     const active = this._getEffectiveLiveCamera?.() || "";
-    if (active && cams.length) {
-      const entry = cams.find((c) => c?.entity === active || c?.url === active);
-      const crop = entry?.crop;
+    if (active) {
+      const crop = liveCameraEntry(active, this.config)?.crop;
       if (crop) {
         const w = Number(crop.w);
         const h = Number(crop.h);
@@ -2085,12 +2084,11 @@ class CameraGalleryCard extends LitElement {
     // all of them. Bail out so the host doesn't pick up the .has-crop
     // class in grid mode.
     if (isGridLayout(this.config, this._liveLayoutOverride)) return "";
-    const cams = Array.isArray(this.config?.live_cameras) ? this.config.live_cameras : [];
-    if (!cams.length) return "";
     const active = this._getEffectiveLiveCamera();
     if (!active) return "";
-    const entry = cams.find((c) => c?.entity === active || c?.url === active);
-    const crop = entry?.crop;
+    // By live id, so stream-URL cameras (`__cgc_stream_<n>__`) find their
+    // crop too.
+    const crop = liveCameraEntry(active, this.config)?.crop;
     if (!crop) return "";
     const x = Number(crop.x);
     const y = Number(crop.y);

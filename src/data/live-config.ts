@@ -644,3 +644,15 @@ export function liveCameraRotation(
 ): Rotation {
   return normalizeRotation(findLiveCamera(cameraId, config)?.rotation);
 }
+
+/**
+ * The `live_cameras` entry for a camera, by the id the live view uses: the
+ * entity id, or `__cgc_stream_<n>__` for stream-URL cameras. Also works for
+ * configs that still use the legacy camera keys. Null when unknown.
+ */
+export function liveCameraEntry(
+  cameraId: string | null | undefined,
+  config: CameraGalleryCardConfig | null | undefined
+): LiveCameraEntry | null {
+  return findLiveCamera(cameraId, config);
+}
