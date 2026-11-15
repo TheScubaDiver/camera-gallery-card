@@ -606,6 +606,11 @@ export function friendlyCameraName(opts: {
     const se = getStreamEntryById(opts.config, id);
     return se ? se.name : "Stream";
   }
+  // A `name` on the camera's own `live_cameras` entry wins over HA's name (#307).
+  const override = getCanonicalLiveCameras(opts.config)
+    .find((c) => String(c?.entity ?? "").trim() === id)
+    ?.name?.trim();
+  if (override) return override;
   const name = entityDisplayName(
     { states: opts.hassStates ?? undefined, formatEntityName: opts.hass?.formatEntityName },
     id

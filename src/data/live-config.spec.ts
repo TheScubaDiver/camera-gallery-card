@@ -256,6 +256,22 @@ describe("friendlyCameraName", () => {
     ).toBe("Front Yard");
   });
 
+  // #307: `name` on a live_cameras entity entry overrides HA's name.
+  it("uses the name set on the live_cameras entry", () => {
+    const hassStates = {
+      "camera.front": state({
+        entity_id: "camera.front",
+        attributes: { friendly_name: "Front Yard" },
+      }),
+    };
+    const c = cfg({ live_cameras: [{ entity: "camera.front", name: "Test" }] });
+    expect(friendlyCameraName({ entityId: "camera.front", config: c, hassStates })).toBe("Test");
+    const blank = cfg({ live_cameras: [{ entity: "camera.front", name: "  " }] });
+    expect(friendlyCameraName({ entityId: "camera.front", config: blank, hassStates })).toBe(
+      "Front Yard"
+    );
+  });
+
   it("falls back to title-cased local part", () => {
     expect(
       friendlyCameraName({ entityId: "camera.back_yard", config: cfg(), hassStates: {} })
