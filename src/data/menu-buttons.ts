@@ -30,6 +30,7 @@ export interface MenuButtonConfig {
   title?: string | undefined;
   service?: string | undefined;
   state_on?: string | undefined;
+  show_state?: boolean | undefined;
   placement?: MenuButtonPlacement | undefined;
   tap_action?: MenuButtonAction | undefined;
 }
@@ -156,4 +157,23 @@ export function menuButtonLabel(
     entityDisplayName({ states, formatEntityName: hass?.formatEntityName }, btn.entity) ||
     btn.entity
   );
+}
+
+/**
+ * State text for a `show_state` button (#306): Home Assistant's own
+ * translated state ("On", "Open", the selected option) when available,
+ * else the raw state. Empty without an entity state.
+ */
+export function menuButtonStateText(
+  state: HassEntity | null | undefined,
+  hass?: { formatEntityState?: (s: HassEntity) => string } | null
+): string {
+  if (!state) return "";
+  try {
+    const text = hass?.formatEntityState?.(state);
+    if (text) return text;
+  } catch {
+    /* fall back to the raw state */
+  }
+  return String(state.state ?? "");
 }

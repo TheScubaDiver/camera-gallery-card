@@ -241,7 +241,13 @@ const liveTriggers = object({
  */
 const galleryPillEntry = object({
   enabled: defaulted(boolean(), true),
-  order: defaulted(integer(), 0),
+  // Optional, not defaulted: an entry that only sets `icon` must keep the
+  // catalog position, and a defaulted 0 would sort it to the front.
+  order: optional(integer()),
+  // Replace the built-in icon; `icon_on` is the icon while the pill is
+  // active (muted, fullscreen, PiP, auto-play). #306.
+  icon: optional(string()),
+  icon_on: optional(string()),
 });
 
 /**
@@ -409,6 +415,8 @@ const livePillEntry = object({
   // defaulted 0 would sort an entry that only sets `row` to the front.
   order: optional(integer()),
   row: optional(enums([1, 2])),
+  icon: optional(string()),
+  icon_on: optional(string()),
 });
 
 const menuButtonFields = object({
@@ -421,6 +429,8 @@ const menuButtonFields = object({
   title: optional(string()),
   service: optional(string()),
   state_on: optional(string()),
+  // Show the entity's state as text next to the icon (#306).
+  show_state: optional(boolean()),
   // `controls` renders the button directly among the live control pills
   // instead of inside the hamburger menu (#215). Absent = menu.
   placement: optional(enums(MENU_BUTTON_PLACEMENTS)),

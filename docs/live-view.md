@@ -200,6 +200,7 @@ menu_buttons:
     icon: mdi:message-reply-text
     title: Auto-reply
     placement: controls # show it among the live controls
+    show_state: true # shows the current reply next to the icon
   - entity: light.porch
     icon: mdi:lightbulb-outline
     icon_on: mdi:lightbulb
@@ -211,9 +212,10 @@ menu_buttons:
 | `entity`                 | Entity the button acts on. Optional when the button has a `tap_action`                                                                                                                                    |
 | `icon` / `icon_on`       | Icon, and the icon while the entity is "on"                                                                                                                                                               |
 | `color_on` / `color_off` | Button background while on / off                                                                                                                                                                          |
-| `title`                  | Label (default: the entity's friendly name)                                                                                                                                                               |
+| `title`                  | Label in the hamburger menu and the tooltip (default: the entity's friendly name)                                                                                                                         |
 | `service`                | Action to call instead of the default, in `domain.service` form. It is called with the button's `entity_id`                                                                                               |
 | `state_on`               | State that counts as "on" (default: `on`, `open`, `unlocked`, `playing`, `home`, …)                                                                                                                       |
+| `show_state`             | `true` shows the entity's state as text next to the icon, as Home Assistant shows it (e.g. "On", "Open", the selected option)                                                                             |
 | `placement`              | `menu` (default) puts the button in the hamburger menu. `controls` shows it directly among the live control pills                                                                                         |
 | `order`                  | Position among the live controls, sorted together with the built-in pills (`mute` is 10, `picker` 15, `pip` 20, `fullscreen` 30, `snapshot` 35, `refresh` 40). Without it the button goes after the pills |
 | `row`                    | `2` puts the button on a second row of live controls. See [Rows and order of the live controls](#rows-and-order-of-the-live-controls)                                                                     |
