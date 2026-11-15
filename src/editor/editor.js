@@ -3494,6 +3494,17 @@ class CameraGalleryCardEditor extends HTMLElement {
       });
     });
 
+    // Name per camera — overrides HA's name on the card. Empty removes it.
+    this.shadowRoot.querySelectorAll("[data-name-cam]").forEach((inp) => {
+      inp.addEventListener("change", (e) => {
+        const id = e.target.dataset.nameCam;
+        const value = String(e.target.value || "").trim();
+        this._updateLiveCamera(id, { name: value });
+        const label = e.target.closest(".livecam-row")?.querySelector(".livecam-rowname");
+        if (label?.firstChild) label.firstChild.textContent = value || e.target.dataset.haName || id;
+      });
+    });
+
     // Trigger entities per camera — comma or space separated entity ids,
     // written to `live_cameras[].triggers`. Empty removes the key.
     this.shadowRoot.querySelectorAll("[data-trig-cam]").forEach((inp) => {
@@ -4685,7 +4696,10 @@ class CameraGalleryCardEditor extends HTMLElement {
             ${liveCameraEntities.length > 0 ? `
             <div class="livecam-rows" id="livecam-tags-dnd">
               ${liveCameraEntities.map((id) => {
-              const name = (entityDisplayName(this._hass, id) || id);
+              const haName = (entityDisplayName(this._hass, id) || id);
+              const customName = String(this._liveCameraEntry(id)?.name || "").trim();
+              const esc = (v) => v.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/"/g, "&quot;");
+              const name = customName ? esc(customName) : haName;
               const mic = String(micStreamForCamera(id, this._config) || "");
               const isOpen = this._livecamRowOpen?.has(id) ? "open" : "";
               return `
@@ -4697,6 +4711,10 @@ class CameraGalleryCardEditor extends HTMLElement {
                       <span class="livecam-chevron">›</span>
                     </div>
                     <div class="livecam-rowbody">
+                      <div class="livecam-fieldrow">
+                        <label>Name</label>
+                        <input type="text" class="ed-input livecam-name-input" data-name-cam="${id}" data-ha-name="${esc(haName)}" value="${esc(customName)}" placeholder="${esc(haName)}" autocomplete="off" />
+                      </div>
                       <div class="livecam-fieldrow">
                         <label>Mic stream</label>
                         <input type="text" class="ed-input livecam-mic-input" data-mic-cam="${id}" value="${mic.replace(/"/g, "&quot;")}" placeholder="go2rtc stream (empty = no mic)" autocomplete="off" />
