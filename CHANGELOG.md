@@ -1,5 +1,19 @@
 # Changelog
 
+## [3.5.0](https://github.com/TheScubaDiver/camera-gallery-card/compare/v3.4.0...v3.5.0) (2026-11-15)
+
+
+### Features
+
+* **live:** hybrid view with a slide-in drawer of clips over the live feed ([#303](https://github.com/TheScubaDiver/camera-gallery-card/issues/303)) ([69c1e1b](https://github.com/TheScubaDiver/camera-gallery-card/commit/69c1e1bd2db9d8325bcf3832b5681a56db2bc6a9))
+* **live:** own icons for built-in pills and show_state for menu buttons ([#310](https://github.com/TheScubaDiver/camera-gallery-card/issues/310)) ([5708440](https://github.com/TheScubaDiver/camera-gallery-card/commit/5708440988cfae3e6742d60d9b5b01e10d0830fd))
+* **live:** tap actions per camera and shortcut menu buttons ([#305](https://github.com/TheScubaDiver/camera-gallery-card/issues/305)) ([bb82cda](https://github.com/TheScubaDiver/camera-gallery-card/commit/bb82cda10056346fe62ea28fdbcc864727670b2b))
+
+
+### Bug Fixes
+
+* **live:** use the name set on a live_cameras entity entry ([#309](https://github.com/TheScubaDiver/camera-gallery-card/issues/309)) ([f615ebc](https://github.com/TheScubaDiver/camera-gallery-card/commit/f615ebc805a67043245d8b1cdf2b3d5aa196adcd))
+
 ## [3.4.0](https://github.com/TheScubaDiver/camera-gallery-card/compare/v3.3.0...v3.4.0) (2026-11-13)
 
 
