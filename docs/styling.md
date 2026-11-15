@@ -38,6 +38,9 @@ gallery_pills_align: left # left, center (default) or right
 live_pills:
   snapshot:
     enabled: false
+  mute:
+    icon: mdi:speaker # your own icon
+    icon_on: mdi:speaker-off # the icon while muted
 toolbar_order:
   live: 5 # put the Live button first
 show_media_filter: false
@@ -49,7 +52,7 @@ show_media_filter: false
 | Live view       | `live_pills`                               | `mute`, `picker`, `pip`, `fullscreen`, `snapshot`, `refresh`                                                     |
 | Gallery toolbar | `toolbar_order` (order), `show_*` (on/off) | `today` (`show_today`), `media_filter` (`show_media_filter`), `favorite` (`show_favorite`), `live` (`show_live`) |
 
-Each pill takes `enabled` (default `true`) and `order` (a number; the defaults are spaced by 10, so `15` lands between the first two). Live pills also take `row: 2`, and your own menu buttons can sit between them; see [Rows and order of the live controls](live-view.md#rows-and-order-of-the-live-controls). `gallery_pills_align` only applies when `controls_mode` is `overlay`. Some live pills only appear when they make sense: the camera picker needs at least two cameras, and the hamburger menu, PTZ and debug pills have their own settings.
+Each pill takes `enabled` (default `true`) and `order` (a number; the defaults are spaced by 10, so `15` lands between the first two). Pills with an icon also take `icon` to replace it, and `icon_on` for the icon while the pill is active (muted, fullscreen, picture-in-picture, auto-play). With only `icon` set, an active pill keeps its built-in active icon, so muted still looks muted. `icon` doesn't apply to pills that show text (`index_counter`, `playback_speed`, `video_time`) or to `object_indicator`, which picks its icon from the clip. Live pills also take `row: 2`, and your own menu buttons can sit between them; see [Rows and order of the live controls](live-view.md#rows-and-order-of-the-live-controls). `gallery_pills_align` only applies when `controls_mode` is `overlay`. Some live pills only appear when they make sense: the camera picker needs at least two cameras, and the hamburger menu, PTZ and debug pills have their own settings.
 
 ---
 
