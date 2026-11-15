@@ -122,7 +122,7 @@ export interface PillSettings {
  */
 export function resolvePillSettings(
   catalog: readonly PillCatalogEntry[],
-  config: Record<string, { enabled?: boolean; order?: number }> | undefined
+  config: Record<string, { enabled?: boolean | undefined; order?: number | undefined }> | undefined
 ): Map<string, PillSettings> {
   const out = new Map<string, PillSettings>();
   for (const entry of catalog) {
@@ -151,4 +151,22 @@ export function sortPillsByOrder(
   });
   items.sort((a, b) => a.order - b.order || a.catalogIdx - b.catalogIdx);
   return items.map((x) => x.id);
+}
+
+/**
+ * Icon for a built-in pill (#306). Active: the user's `icon_on`, else the
+ * built-in "on" icon (so a muted pill still looks muted after only `icon`
+ * changed), else the normal icon. Inactive: the user's `icon`, else the
+ * built-in one.
+ */
+export function resolvePillIcon(
+  entry: { icon?: string; icon_on?: string } | undefined,
+  offDefault: string,
+  onDefault: string | null,
+  isOn: boolean
+): string {
+  const icon = entry?.icon?.trim() || "";
+  const iconOn = entry?.icon_on?.trim() || "";
+  if (isOn && (iconOn || onDefault)) return iconOn || (onDefault as string);
+  return icon || offDefault;
 }

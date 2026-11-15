@@ -5829,7 +5829,7 @@ class CameraGalleryCardEditor extends HTMLElement {
   }
 
   _commitLivePillEntry(map, id, entry) {
-    if (entry.enabled === undefined && entry.order === undefined) {
+    if (Object.keys(entry).length === 0) {
       delete map[id];
     } else {
       map[id] = entry;
@@ -5881,7 +5881,7 @@ class CameraGalleryCardEditor extends HTMLElement {
       const entry = { ...(cfgMap[pillId] || {}) };
       if (catalogEntry && desired === catalogEntry.defaultOrder) delete entry.order;
       else entry.order = desired;
-      if (entry.enabled === undefined && entry.order === undefined) delete cfgMap[pillId];
+      if (Object.keys(entry).length === 0) delete cfgMap[pillId];
       else cfgMap[pillId] = entry;
     });
 
@@ -5892,7 +5892,7 @@ class CameraGalleryCardEditor extends HTMLElement {
   }
 
   _commitGalleryPillEntry(map, id, entry) {
-    if (entry.enabled === undefined && entry.order === undefined) {
+    if (Object.keys(entry).length === 0) {
       delete map[id];
     } else {
       map[id] = entry;

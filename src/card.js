@@ -27,6 +27,7 @@ import { CARD_GRID_OPTIONS, CARD_LAYOUT_OPTIONS, cardEntitySuggestion } from "./
 import {
   isMenuButtonOn,
   menuButtonLabel,
+  menuButtonStateText,
   menuButtonTap,
   selectOptionCall,
 } from "./data/menu-buttons";
@@ -77,6 +78,7 @@ import {
 import {
   GALLERY_PILL_CATALOG,
   TOOLBAR_CATALOG,
+  resolvePillIcon,
   resolvePillSettings,
   sortPillsByOrder,
 } from "./data/pill-catalog";
@@ -4350,7 +4352,7 @@ class CameraGalleryCard extends LitElement {
             @pointerdown=${(e) => e.stopPropagation()}
             @click=${(e) => { e.stopPropagation(); this._toggleAutoplayAll(); this._showPills(); }}
           >
-            <ha-icon icon="mdi:playlist-play"></ha-icon>
+            <ha-icon icon=${this._pillIcon("gallery", "autoplay_all", "mdi:playlist-play", null, active)}></ha-icon>
           </button>
         `;
       }
@@ -4382,7 +4384,7 @@ class CameraGalleryCard extends LitElement {
               this._toggleGalleryMute();
             }}
           >
-            <ha-icon icon=${this._galleryMuted ? "mdi:volume-off" : "mdi:volume-high"}></ha-icon>
+            <ha-icon icon=${this._pillIcon("gallery", "mute", "mdi:volume-high", "mdi:volume-off", this._galleryMuted)}></ha-icon>
           </button>
         `;
 
@@ -4401,7 +4403,7 @@ class CameraGalleryCard extends LitElement {
               this._toggleGalleryPip();
             }}
           >
-            <ha-icon icon="mdi:picture-in-picture-bottom-right"></ha-icon>
+            <ha-icon icon=${this._pillIcon("gallery", "pip", "mdi:picture-in-picture-bottom-right", null, active)}></ha-icon>
           </button>
         `;
       }
@@ -4418,7 +4420,7 @@ class CameraGalleryCard extends LitElement {
               else this._openImageFullscreen();
             }}
           >
-            <ha-icon icon="mdi:fullscreen"></ha-icon>
+            <ha-icon icon=${this._pillIcon("gallery", "fullscreen", "mdi:fullscreen")}></ha-icon>
           </button>
         `;
 
@@ -4433,40 +4435,50 @@ class CameraGalleryCard extends LitElement {
     }
   }
 
+  /**
+   * Icon for a built-in pill: the user's `icon` / `icon_on` from
+   * `gallery_pills` / `live_pills` (#306), else the built-in one.
+   * `onDefault` is the built-in icon while active; null keeps `icon`.
+   */
+  _pillIcon(kind, id, offDefault, onDefault = null, isOn = false) {
+    const entry = this.config?.[kind === "live" ? "live_pills" : "gallery_pills"]?.[id];
+    return resolvePillIcon(entry, offDefault, onDefault, isOn);
+  }
+
   _renderLivePillById(id) {
     switch (id) {
       case "mute":
         return html`<button class="gallery-pill live-pill-btn" @pointerdown=${(e) => e.stopPropagation()} @click=${(e) => { e.stopPropagation(); this._toggleLiveMute(); }}>
-          <ha-icon icon=${this._liveMuted ? "mdi:volume-off" : "mdi:volume-high"}></ha-icon>
+          <ha-icon icon=${this._pillIcon("live", "mute", "mdi:volume-high", "mdi:volume-off", this._liveMuted)}></ha-icon>
         </button>`;
 
       case "picker":
         if (this._getLiveCameraOptions().length <= 1) return null;
         return html`<button class="gallery-pill live-pill-btn" title="Switch camera" @pointerdown=${(e) => e.stopPropagation()} @click=${(e) => { e.stopPropagation(); this._openLivePicker(); }}>
-          <ha-icon icon="mdi:cctv"></ha-icon>
+          <ha-icon icon=${this._pillIcon("live", "picker", "mdi:cctv")}></ha-icon>
         </button>`;
 
       case "pip": {
         if (!document.pictureInPictureEnabled) return null;
         const active = !!this._livePipActive;
         return html`<button class="gallery-pill live-pill-btn ${active ? "active" : ""}" title="Picture-in-Picture" aria-pressed=${active ? "true" : "false"} @pointerdown=${(e) => e.stopPropagation()} @click=${(e) => { e.stopPropagation(); this._toggleLivePip(); }}>
-          <ha-icon icon="mdi:picture-in-picture-bottom-right"></ha-icon>
+          <ha-icon icon=${this._pillIcon("live", "pip", "mdi:picture-in-picture-bottom-right", null, active)}></ha-icon>
         </button>`;
       }
 
       case "fullscreen":
         return html`<button class="gallery-pill live-pill-btn" @pointerdown=${(e) => e.stopPropagation()} @click=${(e) => { e.stopPropagation(); this._toggleLiveFullscreen(); }}>
-          <ha-icon icon=${document.fullscreenElement || document.webkitFullscreenElement || this._liveFullscreen ? "mdi:fullscreen-exit" : "mdi:fullscreen"}></ha-icon>
+          <ha-icon icon=${this._pillIcon("live", "fullscreen", "mdi:fullscreen", "mdi:fullscreen-exit", !!(document.fullscreenElement || document.webkitFullscreenElement || this._liveFullscreen))}></ha-icon>
         </button>`;
 
       case "snapshot":
         return html`<button class="gallery-pill live-pill-btn" title="Snapshot" @pointerdown=${(e) => e.stopPropagation()} @click=${(e) => { e.stopPropagation(); this._captureLiveSnapshot(); }}>
-          <ha-icon icon="mdi:camera"></ha-icon>
+          <ha-icon icon=${this._pillIcon("live", "snapshot", "mdi:camera")}></ha-icon>
         </button>`;
 
       case "refresh":
         return html`<button class="gallery-pill live-pill-btn" title="Refresh stream" @pointerdown=${(e) => e.stopPropagation()} @click=${(e) => { e.stopPropagation(); this._refreshLiveStream(); }}>
-          <ha-icon icon="mdi:refresh"></ha-icon>
+          <ha-icon icon=${this._pillIcon("live", "refresh", "mdi:refresh")}></ha-icon>
         </button>`;
 
       default:
@@ -5220,17 +5232,18 @@ class CameraGalleryCard extends LitElement {
   // The wrap class keeps an open option list from closing on its tap.
   _renderControlMenuButton(btn) {
     if (!btn) return null;
-    const { isOn, icon, bg, label } = this._menuButtonView(btn);
+    const { isOn, icon, bg, label, stateText } = this._menuButtonView(btn);
     return html`
       <div class="live-hamburger-wrap" @pointerdown=${(e) => e.stopPropagation()}>
         <button
-          class="gallery-pill live-pill-btn ${isOn ? "active" : ""}"
+          class="gallery-pill live-pill-btn ${isOn ? "active" : ""} ${stateText ? "gallery-pill--wide" : ""}"
           title="${label}"
           aria-label="${label}"
           style="${bg ? `background:${bg}` : ""}"
           @click=${(e) => { e.stopPropagation(); this._onMenuButtonTap(btn); }}
         >
           <ha-icon icon="${icon}"></ha-icon>
+          ${stateText ? html`<span>${stateText}</span>` : ""}
         </button>
       </div>
     `;
@@ -5245,6 +5258,7 @@ class CameraGalleryCard extends LitElement {
       icon: isOn && btn.icon_on ? btn.icon_on : btn.icon,
       bg: isOn ? btn.color_on || "" : btn.color_off || "",
       label: menuButtonLabel(btn, state, this._hass),
+      stateText: btn.show_state ? menuButtonStateText(state, this._hass) : "",
     };
   }
 
@@ -7316,7 +7330,7 @@ class CameraGalleryCard extends LitElement {
               `;
             })
           : panelMenuButtons.map((btn) => {
-              const { isOn, icon, bg, label } = this._menuButtonView(btn);
+              const { isOn, icon, bg, label, stateText } = this._menuButtonView(btn);
               return html`
                 <button class="live-menu-panel-btn ${isOn ? "active" : ""}"
                   @click=${() => this._onMenuButtonTap(btn)}
@@ -7324,7 +7338,7 @@ class CameraGalleryCard extends LitElement {
                   <div class="panel-btn-icon" style="${bg ? `background:${bg}` : ""}">
                     <ha-icon icon="${icon}"></ha-icon>
                   </div>
-                  <span class="live-menu-panel-lbl">${label}</span>
+                  <span class="live-menu-panel-lbl">${label}${stateText ? html`<br /><small>${stateText}</small>` : ""}</span>
                 </button>
               `;
             })}

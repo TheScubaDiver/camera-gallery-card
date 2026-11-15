@@ -33,6 +33,8 @@ interface PillOverride {
   enabled?: boolean;
   order?: number;
   row?: number;
+  icon?: string;
+  icon_on?: string;
 }
 
 interface ButtonLike {
@@ -117,6 +119,10 @@ export function zonesToConfig<B extends ButtonLike>(
         if (livePills?.[id]?.enabled === false) out.enabled = false;
         if (order !== entry.defaultOrder) out.order = order;
         if (zone === "row2") out.row = 2;
+        // Keep the pill's own icons (#306); only position comes from the drag.
+        const { icon, icon_on } = livePills?.[id] ?? {};
+        if (icon) out.icon = icon;
+        if (icon_on) out.icon_on = icon_on;
         if (Object.keys(out).length) pills[id] = out;
         return;
       }

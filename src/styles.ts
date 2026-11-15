@@ -2106,6 +2106,9 @@ export const cardStyles = css`
     padding: 0 calc(var(--cgc-pill-size, 14px) * 0.7);
     border-radius: 999px;
   }
+  .gallery-pill--wide.active {
+    border-radius: 999px;
+  }
 
   /* Info-only pills — visually identical to action pills but not
      clickable (object indicator, index counter, camera name). */
